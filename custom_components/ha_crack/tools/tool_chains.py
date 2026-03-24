@@ -49,12 +49,12 @@ TOOL_CHAINS: List[ToolChain] = [
         name="single_device_control",
         category=IntentCategory.DEVICE_CONTROL,
         description="控制单个设备（开/关/调节）",
-        tools=["SmartDiscovery", "ServiceCall"],
+        tools=["ServiceCall"],
         keywords=["打开", "关闭", "开灯", "关灯", "开关", "调", "设置", "调节", "调到", "调成"],
         patterns=[r"(打开|关闭|开|关)(.*?)(灯|空调|风扇|窗帘|开关|插座)"],
         priority=10,
-        requires_discovery=True,
-        example="打开客厅灯 → SmartDiscovery找实体 → ServiceCall控制",
+        requires_discovery=False,
+        example="打开客厅灯 → ServiceCall(自动匹配实体)",
     ),
     ToolChain(
         name="batch_device_control",
@@ -71,12 +71,12 @@ TOOL_CHAINS: List[ToolChain] = [
         name="device_state_query",
         category=IntentCategory.DEVICE_QUERY,
         description="查询设备当前状态",
-        tools=["SmartDiscovery", "EntityQuery"],
+        tools=["EntityQuery"],
         keywords=["状态", "怎么样", "开着吗", "关着吗", "是多少", "多少度", "温度", "湿度"],
         patterns=[r"(.*?)(开着|关着|状态|怎么样|是多少|多少度)"],
         priority=8,
-        requires_discovery=True,
-        example="客厅温度多少 → SmartDiscovery找温度传感器 → EntityQuery查状态",
+        requires_discovery=False,
+        example="客厅温度多少 → EntityQuery(自动匹配实体)",
     ),
     ToolChain(
         name="area_devices_query",
@@ -92,12 +92,12 @@ TOOL_CHAINS: List[ToolChain] = [
         name="history_trend_query",
         category=IntentCategory.HISTORY_QUERY,
         description="查询历史状态和趋势",
-        tools=["SmartDiscovery", "HistoryQuery"],
+        tools=["HistoryQuery"],
         keywords=["历史", "趋势", "变化", "过去", "之前", "记录"],
         patterns=[r"(.*?)(历史|趋势|变化|过去|记录)"],
         priority=7,
-        requires_discovery=True,
-        example="温度变化趋势 → SmartDiscovery找传感器 → HistoryQuery查历史",
+        requires_discovery=False,
+        example="温度变化趋势 → HistoryQuery(自动匹配实体)",
     ),
     ToolChain(
         name="stock_query",
@@ -360,7 +360,7 @@ class ToolChainExecutor:
             return self._tool_instances[tool_name]
         
         from .ha_tools import (
-            SmartDiscoveryTool, EntityQueryTool, ServiceCallTool, GetLiveContextTool,
+            EntityQueryTool, ServiceCallTool, GetLiveContextTool,
             BatchControlTool, AreaDevicesTool, HistoryQueryTool, AutomationTool,
             GetSystemIndexTool, FrontendControlTool, InjectJSTool, HACSTool
         )
@@ -370,7 +370,6 @@ class ToolChainExecutor:
         from .misc_tools import ExecutePythonTool, TextCompressTool
         
         tool_map = {
-            "SmartDiscovery": SmartDiscoveryTool,
             "EntityQuery": EntityQueryTool,
             "ServiceCall": ServiceCallTool,
             "GetLiveContext": GetLiveContextTool,
@@ -439,17 +438,7 @@ class ToolChainExecutor:
 
         args = {}
         
-        if tool_name == "SmartDiscovery":
-            if "area" in context:
-                args["area"] = context["area"]
-            if "domain" in context:
-                args["domain"] = context["domain"]
-            if "name_pattern" in context:
-                args["name_pattern"] = context["name_pattern"]
-            if "inferred_type" in context:
-                args["inferred_type"] = context["inferred_type"]
-        
-        elif tool_name == "EntityQuery":
+        if tool_name == "EntityQuery":
             if "entity_id" in context:
                 args["entity_id"] = context["entity_id"]
             elif "discovered_entities" in context and context["discovered_entities"]:
@@ -522,13 +511,7 @@ class ToolChainExecutor:
 
         new_context = context.copy()
         
-        if tool_name == "SmartDiscovery":
-            entities = result.get("entities", [])
-            if entities:
-                new_context["discovered_entities"] = [e["entity_id"] for e in entities]
-                new_context["entity_id"] = entities[0]["entity_id"]
-        
-        elif tool_name == "GetLiveContext":
+        if tool_name == "GetLiveContext":
             entities = result.get("entities", {})
             if entities:
                 new_context["discovered_entities"] = list(entities.keys())

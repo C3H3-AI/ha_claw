@@ -124,8 +124,6 @@ class NewsAPI:
                     news_list = data.get("data", []) if data else []
                     _LOGGER.info(f"Jin10返回 {len(news_list)} 条新闻")
                     return news_list
-                else:
-                    _LOGGER.warning(f"Jin10 API返回状态码: {resp.status}")
         except Exception as e:
             _LOGGER.error(f"Jin10 API error: {e}")
         return []
@@ -389,8 +387,8 @@ class WebSearch:
                     if 'baidu.com' not in real_url:
                         _LOGGER.info(f"从HTML提取真实URL: {real_url[:60]}...")
                         return real_url
-        except Exception as e:
-            _LOGGER.warning(f"百度跳转解析失败: {e}")
+        except Exception:
+            pass
         return baidu_url
 
     async def _search_engine(self, query: str, engine: str, num: int = 5) -> List[SearchResult]:
@@ -406,7 +404,6 @@ class WebSearch:
             _LOGGER.info(f"搜索引擎请求: {engine} - {url}")
             html = await self._make_request(url, headers=self._get_headers())
             if not html:
-                _LOGGER.warning(f"{engine} 返回空响应")
                 return []
             _LOGGER.info(f"{engine} 响应长度: {len(html)}")
             soup = BeautifulSoup(html, "html.parser")
@@ -418,7 +415,6 @@ class WebSearch:
                     break
             else:
                 items = []
-                _LOGGER.warning(f"{engine} 未找到匹配的结果选择器")
             
             for item in items:
                 title_el = None
@@ -457,8 +453,6 @@ class WebSearch:
             if results:
                 self._cache_results(query, engine, results)
                 _LOGGER.info(f"{engine} 成功获取 {len(results)} 个结果")
-            else:
-                _LOGGER.warning(f"{engine} 解析后无有效结果")
         except Exception as e:
             _LOGGER.error(f"{engine} search error: {e}", exc_info=True)
         return results

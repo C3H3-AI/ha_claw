@@ -210,20 +210,18 @@ class TextCompressTool(llm.Tool):
 
 class ThinkContinueTool(llm.Tool):
     name = "ThinkContinue"
-    description = """记录思考过程。用于在回复用户之前记录你的思考。
+    description = """记录思考过程（必须首先调用！）。调用后必须继续执行后续步骤！
 
-重要：thought 是你的内部思考过程，不是给用户的回复！
+重要规则：
+1. thought 是内部思考，不是给用户的回复
+2. 调用此工具后，必须继续执行其他工具或给出最终回复
+3. 不要把此工具的返回值当作最终回复！
 
 参数：
-- thought: 你的思考过程（如"用户打招呼，我需要询问有什么可以帮助的"）
+- thought: 思考过程
 - next_action: 下一步计划（可选）
-- stop: 是否终止循环（默认false）
 
-示例：
-- 用户说"你好" → thought="用户打招呼，我应该友好回应并询问需求"
-- 用户问天气 → thought="用户想知道天气，我需要调用天气服务"
-
-注意：thought 不是最终回复，是你的思考过程！"""
+流程：ThinkContinue → 执行工具/给出回复"""
     parameters = vol.Schema({
         vol.Required("thought"): str,
         vol.Optional("next_action", default=""): str,
@@ -272,11 +270,9 @@ class ThinkContinueTool(llm.Tool):
         return {
             "success": True,
             "stopped": False,
-            "message": "思考已记录，请继续执行",
-            "iteration": iteration,
-            "max_iterations": max_iter,
-            "thought_recorded": thought[:100] + "..." if len(thought) > 100 else thought,
-            "suggested_next": next_action or "继续分析或执行下一步"
+            "continue": True,
+            "instruction": "思考已记录。现在必须继续：执行工具或给出最终回复给用户！不要停在这里！",
+            "next_step": next_action or "根据思考内容执行相应工具或直接回复用户"
         }
 
 
@@ -403,4 +399,5 @@ class AnalyzeIntentTool(llm.Tool):
         
         result = selector.suggest_tools(user_input)
         return result
+
 

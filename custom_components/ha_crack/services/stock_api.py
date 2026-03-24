@@ -202,7 +202,6 @@ class StockAPI:
             _LOGGER.debug(f"美股数据解析: {stock_code}, 字段数: {len(data)}")
             
             if len(data) < 35:
-                _LOGGER.warning(f"美股数据字段不足: {len(data)}")
                 continue
             
             return StockData(

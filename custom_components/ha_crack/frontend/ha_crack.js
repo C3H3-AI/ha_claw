@@ -116,10 +116,19 @@
     function setupThinkingContentDisplay(hass) {
         if (thoughtSubscribed || !hass?.connection) return;
         thoughtSubscribed = true;
+        console.log('[HACrack] Subscribing to ha_crack_thought events...');
         hass.connection.subscribeEvents((event) => {
+            console.log('[HACrack] Received thought event:', event);
             const thought = event.data?.thought;
-            if (thought) showThoughtBubble(thought);
-        }, 'ha_crack_thought');
+            if (thought) {
+                console.log('[HACrack] Showing thought bubble:', thought);
+                showThoughtBubble(thought);
+            }
+        }, 'ha_crack_thought').then(() => {
+            console.log('[HACrack] Successfully subscribed to ha_crack_thought');
+        }).catch(err => {
+            console.error('[HACrack] Failed to subscribe to ha_crack_thought:', err);
+        });
         
         const observer = new MutationObserver(() => {
             const dialog = deepQuery('ha-voice-command-dialog');
