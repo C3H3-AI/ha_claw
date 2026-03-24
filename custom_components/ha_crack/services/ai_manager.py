@@ -381,6 +381,9 @@ class AIManager:
                         response_text = result.response.speech['plain'].get('original_speech', 
                                                                           result.response.speech['plain'].get('speech', '')).strip()
                         
+                        if "ServiceCall失败" in response_text or "extra keys not allowed" in response_text:
+                            continue
+                        
                         if conversation_mode == CONVERSATION_MODE_NO_NAME:
                             result.response.speech['plain'].update({
                                 'speech': response_text,
@@ -426,7 +429,6 @@ class AIManager:
                         
                         return result
                         
-                _LOGGER.warning("Agent %s 返回非 ACTION_DONE 响应，尝试下一个", agent_id)
                 continue
                 
             except Exception as e:

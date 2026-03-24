@@ -17,7 +17,7 @@ from .const import (
     SPEAKER_TYPE_DISABLED, SPEAKER_TYPE_XIAOMI, SPEAKER_TYPE_OTHER, CONF_ENABLE_AI_SUMMARY,
     CONF_ENABLE_WEB_SEARCH,
     DEFAULT_NAME, DEFAULT_CONVERSATION_MODE, DEFAULT_PRIMARY_AGENT,
-    DEFAULT_FALLBACK_AGENT, DEFAULT_ERROR_RESPONSES,
+    DEFAULT_FALLBACK_AGENT,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -293,7 +293,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         current_mode = self._config_entry.options.get(CONF_CONVERSATION_MODE, DEFAULT_CONVERSATION_MODE)
         if not current_mode:
             current_mode = DEFAULT_CONVERSATION_MODE
-        current_error_responses = self._config_entry.options.get(CONF_ERROR_RESPONSES, DEFAULT_ERROR_RESPONSES)
+        current_error_responses = self._config_entry.options.get(CONF_ERROR_RESPONSES, "")
         current_enable_ai_summary = self._config_entry.options.get(CONF_ENABLE_AI_SUMMARY, False)
         current_enable_web_search = self._config_entry.options.get(CONF_ENABLE_WEB_SEARCH, True)
 

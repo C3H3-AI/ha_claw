@@ -30,11 +30,115 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     from .tools.llm_hook import async_setup_llm_hook
     await async_setup_skills(hass)
     await async_setup_llm_hook(hass)
+    _patch_local_intents(hass)
+    _patch_chatlog_tools(hass)
     _install_conversation_hook(hass, entry)
     _setup_ai_coordinator(hass, entry)
     await _register_frontend(hass)
-    LOGGER.info("HA Crack initialized with 10 intents + 23 LLM tools + AI Coordinator + Frontend")
+    LOGGER.info("HA Crack initialized with minimal tools mode")
     return True
+
+
+def _patch_local_intents(hass: HomeAssistant) -> None:
+    """劫持async_handle_intents，为本地Intent响应添加前缀"""
+    from homeassistant.components import conversation as conv_module
+    
+    if hasattr(conv_module, '_ha_crack_intents_patched'):
+        return
+    
+    original_async_handle_intents = conv_module.async_handle_intents
+    
+    async def patched_async_handle_intents(
+        hass_arg,
+        user_input,
+        chat_log,
+        *,
+        intent_filter=None,
+    ):
+        """劫持后的方法：为本地Intent响应添加前缀"""
+        result = await original_async_handle_intents(
+            hass_arg, user_input, chat_log, intent_filter=intent_filter
+        )
+        
+        if result is not None and result.speech:
+            entry = hass.config_entries.async_entries(DOMAIN)
+            if entry:
+                options = entry[0].options
+                conversation_mode = options.get(CONF_CONVERSATION_MODE, CONVERSATION_MODE_ADD_NAME)
+                
+                speech_text = result.speech.get("plain", {}).get("speech", "")
+                if speech_text and conversation_mode != CONVERSATION_MODE_NO_NAME:
+                    agent_name = "Home Assistant"
+                    if conversation_mode == CONVERSATION_MODE_ADD_NAME:
+                        result.speech["plain"]["speech"] = f"({agent_name}) 回复: {speech_text}"
+                    elif conversation_mode == CONVERSATION_MODE_DETAILED:
+                        result.speech["plain"]["speech"] = f"({agent_name}) 回复: {speech_text}"
+                    
+                    result.speech["plain"]["original_speech"] = speech_text
+                    result.speech["plain"]["agent_name"] = agent_name
+        
+        return result
+    
+    conv_module.async_handle_intents = patched_async_handle_intents
+    conv_module._ha_crack_intents_patched = True
+    LOGGER.info("已劫持async_handle_intents，为本地Intent响应添加前缀")
+
+
+def _patch_chatlog_tools(hass: HomeAssistant) -> None:
+    """劫持ChatLog，过滤工具列表为极简模式"""
+    from homeassistant.components.conversation import chat_log as chat_log_module
+    from homeassistant.helpers import llm
+    
+    if hasattr(chat_log_module.ChatLog, '_ha_crack_patched'):
+        return
+    
+    original_async_update_llm_data = chat_log_module.ChatLog.async_update_llm_data
+    
+    async def patched_async_update_llm_data(
+        self,
+        llm_context,
+        user_llm_hass_api,
+        user_llm_prompt,
+        user_extra_system_prompt=None,
+    ):
+        """劫持后的方法：先调用原始方法，然后过滤工具列表"""
+        await original_async_update_llm_data(
+            self, llm_context, user_llm_hass_api, user_llm_prompt, user_extra_system_prompt
+        )
+        
+        if self.llm_api and self.llm_api.tools:
+            if hass.data.get("ha_crack_is_internal_llm"):
+                LOGGER.debug("内部LLM模式：保留原生工具，不注入增强工具")
+                return
+            
+            original_count = len(self.llm_api.tools)
+            
+            from .tools.llm_hook import GetToolIndexTool, ExecuteToolTool
+            from .tools.misc_tools import ThinkContinueTool
+            
+            minimal_tools = [
+                ThinkContinueTool(),
+                GetToolIndexTool(),
+                ExecuteToolTool(),
+            ]
+            
+            live_context = [t for t in self.llm_api.tools if t.name == "GetLiveContext"]
+            
+            filtered_tools = minimal_tools + live_context
+            
+            self.llm_api = llm.APIInstance(
+                api=self.llm_api.api,
+                api_prompt=self.llm_api.api_prompt,
+                llm_context=self.llm_api.llm_context,
+                tools=filtered_tools,
+                custom_serializer=self.llm_api.custom_serializer,
+            )
+            
+            LOGGER.debug(f"外部AI工具列表已精简: {original_count} -> {len(filtered_tools)}")
+    
+    chat_log_module.ChatLog.async_update_llm_data = patched_async_update_llm_data
+    chat_log_module.ChatLog._ha_crack_patched = True
+    LOGGER.info("已劫持ChatLog.async_update_llm_data，启用极简工具模式")
 
 async def _register_frontend(hass: HomeAssistant) -> None:
 
@@ -359,6 +463,39 @@ def _install_conversation_hook(hass: HomeAssistant, entry: ConfigEntry) -> None:
             if output_mode in mode_prompts:
                 base_prompt = f"{base_prompt}\n\n[输出模式]{mode_prompts[output_mode]}"
         
+        from .conversation_utils import get_conversation_history
+        conv_history = get_conversation_history()
+        recent_context = conv_history.get_recent_context(conversation_id or "default", max_turns=3, include_tools=True)
+        
+        internal_context = ""
+        try:
+            from homeassistant.components.conversation.chat_log import DATA_CHAT_LOGS
+            all_chat_logs = hass.data.get(DATA_CHAT_LOGS, {})
+            if conversation_id and conversation_id in all_chat_logs:
+                chat_log = all_chat_logs[conversation_id]
+                internal_msgs = []
+                for c in chat_log.content[-6:]:
+                    if c.role == "user":
+                        internal_msgs.append(f"User: {c.content[:200]}")
+                    elif c.role == "assistant" and c.content:
+                        internal_msgs.append(f"Assistant: {c.content[:200]}")
+                    elif c.role == "tool_result":
+                        status = "OK" if c.tool_result.get("success", True) else "FAILED"
+                        internal_msgs.append(f"Tool[{c.tool_name}]: {status}")
+                if internal_msgs:
+                    internal_context = "\n".join(internal_msgs)
+        except Exception as e:
+            LOGGER.debug(f"Failed to get internal chat log: {e}")
+        
+        if recent_context or internal_context:
+            history_prompt = "\n\n## Recent Conversation History (DO NOT repeat previous actions!):\n"
+            if internal_context:
+                history_prompt += f"### Internal LLM Context:\n{internal_context}\n\n"
+            if recent_context:
+                history_prompt += f"### Our Context:\n{recent_context}\n"
+            history_prompt += f"\nIMPORTANT: Focus on CURRENT request: \"{text}\"\nDo NOT repeat completed actions!"
+            base_prompt = base_prompt + history_prompt
+        
         if extra_system_prompt:
             extra_system_prompt = f"{base_prompt}\n\n{extra_system_prompt}"
         else:
@@ -384,15 +521,19 @@ def _install_conversation_hook(hass: HomeAssistant, entry: ConfigEntry) -> None:
             return aid.split('.')[-1].replace('_', ' ').title()
         
         def is_error_response(result):
+            """智能检测AI响应是否失败 - 基于工具调用结果"""
             if not result or not result.response:
                 return True
             if result.response.response_type == intent.IntentResponseType.ERROR:
                 return True
-            if result.response.speech and 'plain' in result.response.speech:
-                speech = result.response.speech['plain'].get('speech', '')
-                for kw in error_keywords:
-                    if kw in speech:
-                        return True
+            
+            tool_results = hass.data.get("ha_crack_tool_results", [])
+            if tool_results:
+                failed_tools = [t for t in tool_results if not t.get("success", True)]
+                if failed_tools:
+                    LOGGER.debug(f"检测到工具调用失败: {[t['tool_name'] for t in failed_tools]}")
+                    return True
+            
             return False
         
         if enable_ai_summary and len(fallback_agents) >= 2:
@@ -408,15 +549,85 @@ def _install_conversation_hook(hass: HomeAssistant, entry: ConfigEntry) -> None:
         
         agent_index = 0
         agent_errors = []
+        previous_tool_results = []
+        current_extra_prompt = extra_system_prompt
+        
+        ha_internal_agent = "conversation.home_assistant"
+        try:
+            hass.data["ha_crack_tool_results"] = []
+            hass.data["ha_crack_is_internal_llm"] = True
+            
+            internal_result = await original_async_converse(
+                hass, text, conversation_id, context, language,
+                ha_internal_agent, device_id, satellite_id, None
+            )
+            
+            hass.data["ha_crack_is_internal_llm"] = False
+            
+            tool_results = hass.data.get("ha_crack_tool_results", [])
+            failed_tools = [t for t in tool_results if not t.get("success", True)]
+            
+            if not is_error_response(internal_result) and not failed_tools:
+                if internal_result.response.speech and 'plain' in internal_result.response.speech:
+                    response_text = internal_result.response.speech['plain'].get('speech', '').strip()
+                    if response_text:
+                        agent_name = "Home Assistant"
+                        
+                        from .conversation_utils import get_conversation_history
+                        conv_hist = get_conversation_history()
+                        conv_hist.add_turn(conversation_id or "default", original_text, response_text)
+                        
+                        if conversation_mode == CONVERSATION_MODE_NO_NAME:
+                            pass
+                        elif conversation_mode == CONVERSATION_MODE_ADD_NAME:
+                            internal_result.response.speech['plain']['speech'] = f"({agent_name}) 回复: {response_text}"
+                        elif conversation_mode == CONVERSATION_MODE_DETAILED:
+                            internal_result.response.speech['plain']['speech'] = f"({agent_name}) 回复: {response_text}"
+                        
+                        internal_result.response.speech['plain']['original_speech'] = response_text
+                        internal_result.response.speech['plain']['agent_name'] = agent_name
+                        internal_result.response.speech['plain']['agent_id'] = ha_internal_agent
+                        
+                        LOGGER.info(f"HA内部LLM处理成功: {response_text[:50]}...")
+                        return internal_result
+            
+            LOGGER.debug(f"HA内部LLM无法处理，切换到外部AI。Failed tools: {[t.get('tool_name') for t in failed_tools]}")
+            previous_tool_results = tool_results
+        except Exception as e:
+            LOGGER.debug(f"HA内部LLM调用失败: {e}，切换到外部AI")
+        
         for current_agent_id in fallback_agents:
             agent_index += 1
+            hass.data["ha_crack_tool_results"] = []
+            
+            if previous_tool_results:
+                tool_context = "\n\n## Previous Agent Tool Results (DO NOT repeat these calls!):\n"
+                for tr in previous_tool_results:
+                    status = "SUCCESS" if tr.get("success", False) else "FAILED"
+                    tool_context += f"- {tr.get('tool_name', 'unknown')}: {status}"
+                    if tr.get("error"):
+                        tool_context += f" - Error: {tr['error']}"
+                    if tr.get("result"):
+                        result_str = str(tr['result'])[:200]
+                        tool_context += f" - Result: {result_str}"
+                    tool_context += "\n"
+                tool_context += "\nBased on these results, provide a response to the user. Do NOT call the same tools again!\n"
+                current_extra_prompt = extra_system_prompt + tool_context
+            
             try:
                 result = await original_async_converse(
                     hass, text, conversation_id, context, language,
-                    current_agent_id, device_id, satellite_id, extra_system_prompt
+                    current_agent_id, device_id, satellite_id, current_extra_prompt
                 )
                 
                 if is_error_response(result):
+                    failed_tools = [t for t in hass.data.get("ha_crack_tool_results", []) if not t.get("success", True)]
+                    all_tools = hass.data.get("ha_crack_tool_results", [])
+                    previous_tool_results.extend(all_tools)
+                    if failed_tools:
+                        LOGGER.info(f"Agent {current_agent_id} 工具调用失败，尝试下一个agent: {[t['tool_name'] for t in failed_tools]}")
+                    else:
+                        LOGGER.info(f"Agent {current_agent_id} 响应错误，尝试下一个agent")
                     continue
                 
                 if result.response.speech and 'plain' in result.response.speech:
@@ -424,7 +635,6 @@ def _install_conversation_hook(hass: HomeAssistant, entry: ConfigEntry) -> None:
                         result.response.speech['plain'].get('speech', '')).strip()
                     
                     if not response_text:
-                        LOGGER.warning("首轮回复为空，跳过此agent")
                         continue
                     
                     agent_name = get_agent_name(current_agent_id)
@@ -494,7 +704,6 @@ def _install_conversation_hook(hass: HomeAssistant, entry: ConfigEntry) -> None:
                     agent_errors.append(f"{current_agent_id}: 空响应")
                 else:
                     import traceback
-                    LOGGER.warning(f"Agent {current_agent_id} failed: {e}\n{traceback.format_exc()}")
                     agent_errors.append(f"{current_agent_id}: {err_msg[:100]}")
                 continue
         

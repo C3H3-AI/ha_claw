@@ -33,7 +33,6 @@ class TextCompressor:
                 )
                 _LOGGER.info("LLMLingua initialized")
             except ImportError:
-                _LOGGER.warning("LLMLingua not installed, using fallback compression")
                 self.use_llmlingua = False
             except Exception as e:
                 _LOGGER.error(f"LLMLingua init failed: {e}")

@@ -34,7 +34,6 @@ def get_roleplay_presets():
             with open(json_path, "r", encoding="utf-8") as f:
                 _ROLEPLAY_PRESETS = json.load(f)
         except Exception as e:
-            _LOGGER.warning(f"加载角色预设失败: {e}")
             _ROLEPLAY_PRESETS = {}
     return _ROLEPLAY_PRESETS
 
@@ -146,7 +145,6 @@ def get_language_styles():
             with open(json_path, "r", encoding="utf-8") as f:
                 _LANGUAGE_STYLES = json.load(f)
         except Exception as e:
-            _LOGGER.warning(f"加载语言风格失败: {e}")
             _LANGUAGE_STYLES = {}
     return _LANGUAGE_STYLES
 

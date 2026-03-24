@@ -178,7 +178,7 @@ class SmartDiscoveryTool(llm.Tool):
 
 class EntityQueryTool(llm.Tool):
     name = "EntityQuery"
-    description = "查询Home Assistant实体状态。用于获取设备当前状态、传感器数值等。"
+    description = "查询Home Assistant实体状态。用于获取设备当前状态、传感器数值等。支持实体ID或名称模糊匹配。"
     parameters = vol.Schema({
         vol.Required("entity_id"): str,
     })
@@ -188,6 +188,21 @@ class EntityQueryTool(llm.Tool):
         state = hass.states.get(entity_id)
         if state:
             return {"success": True, "entity_id": entity_id, "state": state.state, "attributes": dict(state.attributes), "name": state.name}
+        
+        from ..smart_discovery import get_smart_discovery
+        discovery = get_smart_discovery(hass)
+        results = await discovery.discover_entities(
+            name_contains=entity_id,
+            limit=5,
+            assistant=llm_context.assistant if llm_context else None
+        )
+        
+        if results:
+            matched = results[0]
+            state = hass.states.get(matched.entity_id)
+            if state:
+                return {"success": True, "entity_id": matched.entity_id, "state": state.state, "attributes": dict(state.attributes), "name": state.name, "matched_from": entity_id}
+        
         return {"success": False, "error": f"Entity {entity_id} not found"}
 
 
@@ -210,7 +225,6 @@ class ServiceCallTool(llm.Tool):
     })
 
     async def async_call(self, hass: HomeAssistant, tool_input: llm.ToolInput, llm_context: llm.LLMContext) -> JsonObjectType:
-        _LOGGER.warning(f"=== ServiceCallTool被调用 === args={tool_input.tool_args}")
         
         domain = tool_input.tool_args.get("domain", "")
         service = tool_input.tool_args.get("service", "")
@@ -232,50 +246,32 @@ class ServiceCallTool(llm.Tool):
         if "entity_id" in data:
             entity_id = data["entity_id"]
             if not hass.states.get(entity_id):
-                from homeassistant.helpers.llm import _get_exposed_entities
-                exposed_entities = _get_exposed_entities(hass, llm_context.assistant) if llm_context.assistant else {}
+                from ..smart_discovery import get_smart_discovery
+                discovery = get_smart_discovery(hass)
                 
-                matched = self._find_entity_by_name(hass, entity_id, domain, exposed_entities)
-                if matched:
-                    _LOGGER.warning(f"实体名称匹配: {entity_id} -> {matched}")
+                results = await discovery.discover_entities(
+                    name_contains=entity_id,
+                    domain=domain if domain else None,
+                    limit=5,
+                    assistant=llm_context.assistant if llm_context else None
+                )
+                
+                if results:
+                    matched = results[0].entity_id
                     data["entity_id"] = matched
                 else:
+                    from homeassistant.helpers.llm import _get_exposed_entities
+                    exposed_entities = _get_exposed_entities(hass, llm_context.assistant) if llm_context.assistant else {}
                     exposed = self._get_exposed_entities_list(domain, exposed_entities)
-                    _LOGGER.warning(f"找不到实体: {entity_id}, 可用: {len(exposed)}个")
                     return {"success": False, "error": f"找不到实体: {entity_id}", "available_entities": exposed[:10]}
         
-        _LOGGER.warning(f"ServiceCall执行: {domain}.{service} with data={data}")
         try:
             await hass.services.async_call(domain, service, data, blocking=True)
-            _LOGGER.warning(f"ServiceCall成功: {domain}.{service}")
             return {"success": True, "message": f"已成功调用 {domain}.{service}", "domain": domain, "service": service, "data": data}
         except Exception as e:
             _LOGGER.error(f"ServiceCall失败: {domain}.{service} - {e}")
             return {"success": False, "error": str(e)}
     
-    def _find_entity_by_name(self, hass: HomeAssistant, name: str, domain: str, exposed_entities: dict) -> str | None:
-        name_lower = name.lower().replace("_", " ").replace("-", " ")
-        candidates = []
-        
-        entities = exposed_entities.get("entities", {}) if exposed_entities else {}
-        
-        for entity_id, info in entities.items():
-            if domain and not entity_id.startswith(f"{domain}."):
-                continue
-            
-            names = info.get("names", "").lower()
-            
-            if name_lower == entity_id.lower():
-                return entity_id
-            if name_lower in names:
-                candidates.append((entity_id, 1))
-            elif name_lower in entity_id.lower():
-                candidates.append((entity_id, 2))
-        
-        if candidates:
-            candidates.sort(key=lambda x: x[1])
-            return candidates[0][0]
-        return None
     
     def _get_exposed_entities_list(self, domain: str, exposed_entities: dict) -> list:
         entities = exposed_entities.get("entities", {}) if exposed_entities else {}
@@ -662,7 +658,6 @@ class HAControlTool(llm.Tool):
             except:
                 params = {}
         
-        _LOGGER.warning(f"=== HAControlTool === action={action}, params={params}")
         
         if action == "list_integrations":
             from homeassistant.loader import async_get_integrations
