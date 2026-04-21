@@ -87,33 +87,33 @@ def _render_planner_rules(
 
 
 def _render_final_answer(final_answer: str, steps: list[dict[str, Any]]) -> str:
-    lines = ["执行过程："]
+    lines = ["Execution process:"]
     for step in steps:
         title = step.get("title") or step.get("tool_name") or step.get("kind")
         lines.append(f'{step.get("index", "?")}. {title}')
         explanation = str(step.get("explanation", "")).strip()
         observation = str(step.get("observation", "")).strip()
         if explanation:
-            lines.append(f"说明：{explanation}")
+            lines.append(f"Explanation: {explanation}")
         if observation:
-            lines.append(f"结果：{observation}")
+            lines.append(f"Result: {observation}")
     lines.append("")
-    lines.append("结论：")
+    lines.append("Conclusion:")
     lines.append(final_answer.strip())
     return "\n".join(line for line in lines if line is not None).strip()
 
 
 def _render_step_message(step: AgentStep, index: int) -> str:
-    lines = [f"第{index}步：{step.step_title}"]
+    lines = [f"Step {index}: {step.step_title}"]
     if step.step_explanation:
         lines.append(step.step_explanation)
     if step.expected_output:
-        lines.append(f"预期：{step.expected_output}")
+        lines.append(f"Expected: {step.expected_output}")
     return "\n".join(lines)
 
 
 def _render_observation_message(index: int, title: str, observation: str) -> str:
-    lines = [f"第{index}步结果：{title}"]
+    lines = [f"Step {index} result: {title}"]
     if observation:
         lines.append(observation)
     return "\n".join(lines)
@@ -193,7 +193,7 @@ async def execute_kernel_turn(
                 if not steps:
                     return None
                 final_text = _render_final_answer(
-                    f"我已经完成部分步骤，但规划输出异常：{err}",
+                    f"Completed partial steps, but planner output was invalid: {err}",
                     steps,
                 )
                 await append_final_message_and_pause(agent_id=agent_id, content=final_text)
@@ -215,7 +215,7 @@ async def execute_kernel_turn(
             fingerprint = _step_fingerprint(step)
             if any(existing.get("fingerprint") == fingerprint for existing in steps):
                 final_text = _render_final_answer(
-                    "规划器准备重复同一动作，我停止循环并基于已有信息结束本轮。",
+                    "Planner attempted to repeat the same action; stopping loop and concluding based on existing information.",
                     steps,
                 )
                 await append_final_message_and_pause(agent_id=agent_id, content=final_text)
@@ -284,7 +284,7 @@ async def execute_kernel_turn(
             return None
 
         final_text = _render_final_answer(
-            "达到本轮步骤预算上限，我基于当前已完成步骤结束本轮。",
+            "Step budget reached; concluding based on completed steps.",
             steps,
         )
         await append_final_message_and_pause(agent_id=agent_id, content=final_text)

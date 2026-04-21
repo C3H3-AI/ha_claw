@@ -194,7 +194,7 @@ async def _execute_conversation_turn_inner(
 
     active_conv = get_active_conversation_state(hass)
     if conversation_id and active_conv.get("id") != conversation_id:
-        LOGGER.info("检测到新对话: %s...", conversation_id[:20])
+        LOGGER.info("New conversation detected: %s...", conversation_id[:20])
         task_loop["waiting_choice"] = False
         active_conv["id"] = conversation_id
         await async_refresh_workspace_store(hass)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 
 from home_assistant_intents import get_languages
 from homeassistant.components import assist_pipeline, conversation
@@ -60,10 +61,15 @@ class FallbackConversationAgent(
             manufacturer="kadermanager",
             model="AI Assistant",
         )
+        self._last_active = datetime.now(UTC)
 
     @property
     def supported_languages(self) -> list[str]:
         return get_languages()
+
+    @property
+    def state(self) -> str:
+        return self._last_active.isoformat()
 
     @property
     def state_attributes(self):
@@ -73,6 +79,7 @@ class FallbackConversationAgent(
             attributes["response_content"] = self._attr_chat_response
         if self.last_used_agent is not None:
             attributes["last_used_agent"] = self.last_used_agent
+        attributes["last_active"] = self._last_active.isoformat()
         return attributes
 
     async def async_added_to_hass(self) -> None:
@@ -214,6 +221,7 @@ class FallbackConversationAgent(
         )
 
     def _finalize_result(self, result: conversation.ConversationResult):
+        self._last_active = datetime.now(UTC)
 
         if result and result.response and result.response.speech and "plain" in result.response.speech:
             speech = sanitize_response_text(result.response.speech["plain"]["speech"])

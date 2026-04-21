@@ -175,17 +175,17 @@ class WebSearch:
         try:
             from urllib.parse import quote
             url = f"{cfg['url']}?{cfg['param']}={quote(query)}"
-            _LOGGER.debug(f"搜索引擎请求: {engine} - {url}")
+            _LOGGER.debug("Search engine request: %s - %s", engine, url)
             page = await self.page_fetcher.make_request(url, headers=self._get_headers())
             if not page:
                 return []
-            _LOGGER.debug("%s 响应长度: %s", engine, len(page.text))
+            _LOGGER.debug("%s response length: %s", engine, len(page.text))
             soup = BeautifulSoup(page.text, "html.parser")
 
             for selector in cfg["sel"].split(", "):
                 items = soup.select(selector)[:num]
                 if items:
-                    _LOGGER.debug(f"{engine} 使用选择器 {selector} 找到 {len(items)} 个结果")
+                    _LOGGER.debug("%s found %d results with selector %s", engine, len(items), selector)
                     break
             else:
                 items = []
@@ -224,11 +224,11 @@ class WebSearch:
                         snippet=snippet,
                         metadata={"engine": engine, "timestamp": datetime.now().isoformat()}
                     ))
-                    _LOGGER.debug(f"找到结果: {title[:30]}... -> {href[:50]}...")
+                    _LOGGER.debug("Found result: %s... -> %s...", title[:30], href[:50])
 
             if results:
                 self._cache_results(query, engine, results)
-                _LOGGER.debug(f"{engine} 成功获取 {len(results)} 个结果")
+                _LOGGER.debug("%s successfully fetched %d results", engine, len(results))
         except Exception as e:
             _LOGGER.error(f"{engine} search error: {e}", exc_info=True)
         return results
@@ -241,7 +241,7 @@ class WebSearch:
         if not urls:
             return []
 
-        _LOGGER.debug(f"从查询中提取到URLs: {urls}")
+        _LOGGER.debug("Extracted URLs from query: %s", urls)
         results = []
 
         for url in urls:
@@ -260,13 +260,13 @@ class WebSearch:
         try:
             direct_url_results = await self.process_direct_urls(query)
             if direct_url_results:
-                _LOGGER.debug(f"成功处理直接URL，获取 {len(direct_url_results)} 个结果")
+                _LOGGER.debug("Successfully processed direct URLs, got %d results", len(direct_url_results))
                 return direct_url_results
         except Exception as e:
-            _LOGGER.error(f"处理直接URL失败: {str(e)}")
+            _LOGGER.error("Failed to process direct URLs: %s", e)
 
         engines_to_try = [engine] if engine and engine in SEARCH_ENGINES else list(SEARCH_ENGINES)
-        _LOGGER.debug(f"搜索: {query} (引擎: {engines_to_try})")
+        _LOGGER.debug("Search: %s (engines: %s)", query, engines_to_try)
         engine_tasks = [
             self._search_engine(query, eng, num_results) for eng in engines_to_try
         ]

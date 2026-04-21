@@ -108,31 +108,31 @@ def format_search_results_text(
 ) -> str:
 
     if not results:
-        return "未找到相关结果。"
+        return "No relevant results found."
 
     output: list[str] = []
 
     direct_url_results = [r for r in results if r.metadata.get("source") == "direct_url"]
     if direct_url_results:
-        output.append("直接 URL 提取结果:")
+        output.append("Direct URL extraction results:")
         for i, result in enumerate(direct_url_results, 1):
             output.append(f"\n[URL {i}]")
-            output.append(f"标题: {result.title}")
-            output.append(f"来源: {result.url}")
+            output.append(f"Title: {result.title}")
+            output.append(f"Source: {result.url}")
             if result.content:
                 content = prepare_web_text_for_ai(
                     result.content,
                     max_chars=max_chars_per_result,
                 )
                 if content:
-                    output.append(f"内容:\n{content}")
+                    output.append(f"Content:\n{content}")
             elif result.snippet:
                 note = prepare_web_text_for_ai(
                     result.snippet,
                     max_chars=min(220, max_chars_per_result),
                 )
                 if note:
-                    output.append(f"说明: {note}")
+                    output.append(f"Note: {note}")
             output.append("-" * 30)
         rendered = "\n".join(output)
         if len(rendered) > max_total_chars:
@@ -141,31 +141,31 @@ def format_search_results_text(
 
     search_results = list(results)
 
-    output.append(f"搜索引擎: {engine_label}")
-    output.append(f"查询: '{query}'")
-    output.append(f"结果数量: {len(results)}")
+    output.append(f"Search Engine: {engine_label}")
+    output.append(f"Query: '{query}'")
+    output.append(f"Results: {len(results)}")
     output.append("-" * 50)
 
     if search_results:
-        output.append("\n网页搜索结果:")
+        output.append("\nWeb search results:")
         for i, result in enumerate(search_results, 1):
             output.append(f"\n[{i}]")
-            output.append(f"标题: {result.title}")
-            output.append(f"来源: {result.url}")
+            output.append(f"Title: {result.title}")
+            output.append(f"Source: {result.url}")
             if result.snippet:
                 cleaned_snippet = prepare_web_text_for_ai(
                     result.snippet,
                     max_chars=min(220, max_chars_per_result // 3),
                 )
                 if cleaned_snippet:
-                    output.append(f"描述: {cleaned_snippet}")
+                    output.append(f"Description: {cleaned_snippet}")
             if result.content:
                 content = prepare_web_text_for_ai(
                     result.content,
                     max_chars=max_chars_per_result,
                 )
                 if content:
-                    output.append(f"内容预览:\n{content}")
+                    output.append(f"Content preview:\n{content}")
             output.append("-" * 50)
 
     rendered = "\n".join(output)

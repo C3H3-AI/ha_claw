@@ -737,7 +737,7 @@ class SmartDiscovery:
     def format_results(self, results: List[Dict[str, Any]], query_type: str = "general", query: str = "") -> Dict[str, Any]:
 
         if not results:
-            return {"success": True, "count": 0, "entities": [], "message": "未找到匹配的实体"}
+            return {"success": True, "count": 0, "entities": [], "message": "No matching entities found"}
 
         return {
             "success": True,

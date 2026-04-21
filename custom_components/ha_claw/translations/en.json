@@ -56,14 +56,14 @@
         "title": "Workspace Document Editor",
         "description": "**Instructions:**\nThese documents define the AI assistant's **core personality and behavior** in Markdown format.\nSelect a document to view or edit. Changes are **saved immediately** without restart.",
         "menu_options": {
-          "ws_agents": "AGENTS.md — File roles & operating rules",
-          "ws_bootstrap": "BOOTSTRAP.md — First-run bootstrap",
-          "ws_heartbeat": "HEARTBEAT.md — Scheduled follow-ups",
-          "ws_identity": "IDENTITY.md — Assistant identity",
-          "ws_memory": "MEMORY.md — User preferences",
-          "ws_soul": "SOUL.md — Voice & style",
-          "ws_tools": "TOOLS.md — Environment notes",
-          "ws_user": "USER.md — User info"
+          "ws_agents": "[AGENTS.md] — File roles & operating rules",
+          "ws_bootstrap": "[BOOTSTRAP.md] — First-run bootstrap",
+          "ws_heartbeat": "[HEARTBEAT.md] — Scheduled follow-ups",
+          "ws_identity": "[IDENTITY.md] — Assistant identity",
+          "ws_memory": "[MEMORY.md] — User preferences",
+          "ws_soul": "[SOUL.md] — Voice & style",
+          "ws_tools": "[TOOLS.md] — Environment notes",
+          "ws_user": "[USER.md] — User info"
         }
       },
       "ws_agents": {

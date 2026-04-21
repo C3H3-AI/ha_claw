@@ -9,16 +9,10 @@ from datetime import datetime, timedelta, timezone
 import logging
 from typing import Any
 
-from homeassistant.components.conversation.chat_log import current_chat_log
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import llm
 
 from .master_prompt import build_master_prompt_sections
-from .native_chatlog_bridge import (
-    append_step_message_and_pause,
-    emit_live_tool_call_delta,
-    emit_live_tool_result_delta,
-)
 from .skill_store import format_runtime_prompt_doc
 from .state import (
     get_conversation_status,
@@ -26,7 +20,6 @@ from .state import (
     get_tool_calls_state,
     get_tool_results_state,
 )
-from .tool_result_summary import extract_structured_result_text
 from .workspace_store import (
     build_workspace_prompt_sections,
     build_workspace_startup_bundle,
@@ -585,49 +578,10 @@ def _patch_tool_call_tracking(hass: HomeAssistant) -> None:
 
     original_async_call_tool = llm_module.APIInstance.async_call_tool
 
-    def _render_tool_start_message(tool_name: str, tool_args: dict[str, Any]) -> str:
-        if tool_args:
-            args_preview = ", ".join(
-                f"{key}={value}"
-                for key, value in list(tool_args.items())[:4]
-            )
-            return f"正在执行：{tool_name}\n参数：{args_preview}"
-        return f"正在执行：{tool_name}"
-
-    def _render_tool_result_message(
-        tool_name: str,
-        *,
-        success: bool,
-        error: str | None,
-        result_summary: dict[str, Any] | None,
-    ) -> str:
-        if success:
-            detail = ""
-            if isinstance(result_summary, dict):
-                detail = extract_structured_result_text(result_summary).strip()
-            return f"执行结果：{tool_name}\n{detail or '已完成。'}"
-        return f"执行结果：{tool_name}\n{error or '执行失败。'}"
-
     async def tracked_async_call_tool(self, tool_input):
         tool_results = get_tool_results_state(hass)
         tool_calls = get_tool_calls_state(hass)
         tool_calls.append(tool_input.tool_name)
-        step_index = len(tool_calls)
-        agent_id = None
-        if active_chat_log := current_chat_log.get():
-            tail = active_chat_log.content[-1]
-            agent_id = getattr(tail, "agent_id", None)
-        agent_id = agent_id or "conversation.aiwai_gua_2"
-        await append_step_message_and_pause(
-            agent_id=agent_id,
-            step_index=step_index,
-            phase="tool_call",
-            content=_render_tool_start_message(
-                tool_input.tool_name,
-                dict(tool_input.tool_args),
-            ),
-        )
-        await emit_live_tool_call_delta(hass, agent_id=agent_id, tool_input=tool_input)
 
         try:
             try:
@@ -664,26 +618,6 @@ def _patch_tool_call_tracking(hass: HomeAssistant) -> None:
                     "result": result_summary,
                 }
             )
-            await append_step_message_and_pause(
-                agent_id=agent_id,
-                step_index=step_index,
-                phase="tool_result",
-                content=_render_tool_result_message(
-                    tool_input.tool_name,
-                    success=success,
-                    error=error,
-                    result_summary=result_summary,
-                ),
-            )
-            await emit_live_tool_result_delta(
-                agent_id=agent_id,
-                tool_input=tool_input,
-                tool_result={
-                    "success": success,
-                    **({"error": error} if error else {}),
-                    **({"result": result_summary} if result_summary is not None else {}),
-                },
-            )
             if not success:
                 LOGGER.info("Tool call failed: %s - %s", tool_input.tool_name, error or "unknown")
             else:
@@ -698,22 +632,6 @@ def _patch_tool_call_tracking(hass: HomeAssistant) -> None:
                     "error": str(err),
                     "result": None,
                 }
-            )
-            await append_step_message_and_pause(
-                agent_id=agent_id,
-                step_index=step_index,
-                phase="tool_result",
-                content=_render_tool_result_message(
-                    tool_input.tool_name,
-                    success=False,
-                    error=str(err),
-                    result_summary=None,
-                ),
-            )
-            await emit_live_tool_result_delta(
-                agent_id=agent_id,
-                tool_input=tool_input,
-                tool_result={"success": False, "error": str(err)},
             )
             raise
 

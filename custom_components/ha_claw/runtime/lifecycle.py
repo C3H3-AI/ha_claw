@@ -24,7 +24,6 @@ from .patches import (
     unpatch_hide_tool_calls_from_pipeline,
     unpatch_local_intents,
 )
-from .heartbeat_ticker import async_setup_heartbeat_ticker, async_unload_heartbeat_ticker
 from .skill_store import async_setup_prompt_store
 from .workspace_store import async_setup_workspace_store
 
@@ -46,7 +45,6 @@ async def async_setup_runtime(hass: HomeAssistant, entry: ConfigEntry) -> None:
     install_official_websocket_process_hook(hass)
     setup_ai_coordinator(hass, entry)
     install_conversation_hook(hass, entry)
-    async_setup_heartbeat_ticker(hass)
 
 
 async def async_unload_runtime(hass: HomeAssistant) -> None:
@@ -59,5 +57,4 @@ async def async_unload_runtime(hass: HomeAssistant) -> None:
     unpatch_hide_tool_calls_from_pipeline()
     unpatch_chat_log_result_extraction()
     unpatch_local_intents()
-    async_unload_heartbeat_ticker(hass)
     async_unload_internal_llm(hass)

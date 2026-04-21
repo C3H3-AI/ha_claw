@@ -136,7 +136,7 @@ class WebPageFetcher:
         if "baidu.com/link" in url:
             real_url = await self.resolve_baidu_redirect(url)
             if real_url and real_url != url:
-                _LOGGER.debug("百度跳转解析: %s... -> %s...", url[:50], real_url[:50])
+                _LOGGER.debug("Baidu redirect resolved: %s... -> %s...", url[:50], real_url[:50])
                 url = real_url
 
         for _ in range(2):
@@ -150,7 +150,7 @@ class WebPageFetcher:
                 ) as resp:
                     final_url = str(resp.url)
                     if final_url != url:
-                        _LOGGER.debug("跳转到: %s...", final_url[:80])
+                        _LOGGER.debug("Redirected to: %s...", final_url[:80])
                     if resp.status == 200:
                         content = await resp.text(errors="ignore")
                         if len(content.strip()) > 20:
@@ -180,7 +180,7 @@ class WebPageFetcher:
                 final_url = str(resp.url)
                 if final_url and "baidu.com" not in final_url:
                     _LOGGER.debug(
-                        "百度跳转成功: %s... -> %s...",
+                        "Baidu redirect success: %s... -> %s...",
                         baidu_url[:40],
                         final_url[:60],
                     )
@@ -194,7 +194,7 @@ class WebPageFetcher:
                 if match:
                     real_url = match.group(1)
                     if "baidu.com" not in real_url:
-                        _LOGGER.debug("从HTML提取真实URL: %s...", real_url[:60])
+                        _LOGGER.debug("Extracted real URL from HTML: %s...", real_url[:60])
                         return real_url
         except Exception:
             pass
@@ -221,20 +221,20 @@ class WebPageFetcher:
         url: str,
     ) -> tuple[FetchedPage, ExtractedWebContent] | None:
         if self.is_domain_blocked(url):
-            _LOGGER.debug("跳过被屏蔽的域名: %s", url)
+            _LOGGER.debug("Skipping blocked domain: %s", url)
             return None
 
         real_url = url
         if "baidu.com/link" in url:
             real_url = await self.resolve_baidu_redirect(url)
             if real_url != url:
-                _LOGGER.debug("内容提取：百度跳转 -> %s...", real_url[:80])
+                _LOGGER.debug("Content extraction: Baidu redirect -> %s...", real_url[:80])
 
         try:
-            _LOGGER.debug("开始提取内容: %s", real_url)
+            _LOGGER.debug("Starting content extraction: %s", real_url)
             page = await self.make_request(real_url, headers=self._get_headers())
             if not page:
-                _LOGGER.debug("无法获取页面内容: %s", real_url)
+                _LOGGER.debug("Failed to fetch page content: %s", real_url)
                 return None
 
             kind = _classify_fetched_page(page)
@@ -243,7 +243,7 @@ class WebPageFetcher:
                 if extracted_plaintext:
                     title, content = extracted_plaintext
                     _LOGGER.debug(
-                        "成功提取纯文本文档 (长度:%s): %s",
+                        "Successfully extracted plaintext document (length:%s): %s",
                         len(content),
                         page.final_url,
                     )
@@ -270,22 +270,22 @@ class WebPageFetcher:
             if extracted is not None:
                 if extracted.content:
                     _LOGGER.debug(
-                        "成功提取内容 (策略:%s, 长度:%s): %s",
+                        "Successfully extracted content (strategy:%s, length:%s): %s",
                         extracted.strategy,
                         len(extracted.content),
                         page.final_url,
                     )
                 else:
                     _LOGGER.debug(
-                        "页面没有可靠正文 (策略:%s): %s",
+                        "Page has no reliable body content (strategy:%s): %s",
                         extracted.strategy,
                         page.final_url,
                     )
                 return page, extracted
 
-            _LOGGER.debug("未能提取到有效内容: %s", page.final_url)
+            _LOGGER.debug("Failed to extract valid content: %s", page.final_url)
         except Exception as err:
-            _LOGGER.error("内容提取失败 %s: %s", url, err)
+            _LOGGER.error("Content extraction failed %s: %s", url, err)
         return None
 
     def _extract_rss_content(self, response: str) -> str | None:
@@ -303,10 +303,10 @@ class WebPageFetcher:
                 if title_text:
                     rss_content.append(f"【{title_text}】\n{desc_text[:500]}")
             if rss_content:
-                _LOGGER.debug("RSS解析成功: %s条", len(items))
+                _LOGGER.debug("RSS parsing success: %d items", len(items))
                 return "\n\n".join(rss_content)
         except Exception as err:
-            _LOGGER.debug("RSS解析失败: %s", err)
+            _LOGGER.debug("RSS parsing failed: %s", err)
         return None
 
     async def fetch_url_content(
@@ -314,7 +314,7 @@ class WebPageFetcher:
         url: str,
         search_result_cls: type["SearchResult"],
     ) -> "SearchResult" | None:
-        _LOGGER.debug("直接获取URL内容: %s", url)
+        _LOGGER.debug("Directly fetching URL content: %s", url)
         try:
             platform_patterns = {
                 "bilibili": r"bilibili\.com",
@@ -329,7 +329,7 @@ class WebPageFetcher:
 
             content_tuple = await self.extract_content_with_response(url)
             if not content_tuple:
-                _LOGGER.debug("无法提取URL内容: %s", url)
+                _LOGGER.debug("Failed to extract URL content: %s", url)
                 return None
 
             page, extracted = content_tuple
@@ -364,5 +364,5 @@ class WebPageFetcher:
                 metadata=metadata,
             )
         except Exception as err:
-            _LOGGER.error("获取URL内容失败: %s, 错误: %s", url, err)
+            _LOGGER.error("Failed to fetch URL content: %s, error: %s", url, err)
             return None

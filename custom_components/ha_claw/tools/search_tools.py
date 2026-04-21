@@ -9,6 +9,9 @@ from homeassistant.helpers import llm
 from homeassistant.util.json import JsonObjectType
 
 from ..runtime import mark_tool_called
+from ..services.web_formatter import format_search_results_text, prepare_web_text_for_ai
+from ..services.web_search import WebSearch
+from ..services.stock_api import StockAPI, format_stock_data
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -23,9 +26,6 @@ class WebSearchTool(llm.Tool):
     })
 
     async def async_call(self, hass: HomeAssistant, tool_input: llm.ToolInput, llm_context: llm.LLMContext) -> JsonObjectType:
-        from ..services.web_formatter import format_search_results_text
-        from ..services.web_search import WebSearch
-
         query = tool_input.tool_args.get("query", "")
         num = tool_input.tool_args.get("num_results", 3)
         engine = tool_input.tool_args.get("engine", "")
@@ -61,8 +61,6 @@ class UrlFetchTool(llm.Tool):
     })
 
     async def async_call(self, hass: HomeAssistant, tool_input: llm.ToolInput, llm_context: llm.LLMContext) -> JsonObjectType:
-        from ..services.web_formatter import prepare_web_text_for_ai
-        from ..services.web_search import WebSearch
         url = tool_input.tool_args.get("url", "")
         max_len = tool_input.tool_args.get("max_length", 2000)
         mark_tool_called(hass, "UrlFetch")
@@ -108,8 +106,6 @@ Returns real-time price, change, change percent, open, previous close, high, low
     })
 
     async def async_call(self, hass: HomeAssistant, tool_input: llm.ToolInput, llm_context: llm.LLMContext) -> JsonObjectType:
-        from ..services.stock_api import StockAPI, format_stock_data
-
         codes_str = tool_input.tool_args.get("codes", "")
         codes = [c.strip() for c in codes_str.replace("，", ",").split(",") if c.strip()]
 
