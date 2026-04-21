@@ -1,10 +1,17 @@
 {
+  "entity": {
+    "sensor": {
+      "heartbeat": {
+        "name": "Heartbeat"
+      }
+    }
+  },
   "config": {
-    "title": "Fire sky is great",
+    "title": "AI Sidecar",
     "step": {
       "user": {
-        "title": "First time setting",
-        "description": "## Welcome to Huotian Dayou integration!\n\nThis integration is designed to aggregate and manage your AI conversation entities to provide a more flexible interactive experience. The open source code is provided by KNOOP, and you are welcome to submit PR and usage suggestions.\n\n### User Guide\n- Supports all Home Assistant certified conversation entities\n- Up to three different conversation proxy entities can be added\n- Support multi-level dialogue proxy fallback mechanism\n- Support in-depth thinking intelligent summary\n- Support voice output text content\n- Supports the output of text content directly from attribute values\n\n### Notes\n- We don't produce AI, we are just porters of AI\n- No additional memory burden on the system\n- No other networking methods will be added\n\nPlease set your integration name and click Submit to proceed to the next configuration",
+        "title": "Initial setup",
+        "description": "## Welcome to AI Sidecar\n\nThis integration aggregates and manages Home Assistant conversation agents, giving you a single entry point, fallback routing, and more flexible response display.\n\n### Features\n- Choose primary, fallback, and secondary fallback conversation agents\n- Configure multiple reply display modes\n- Optionally allow web search context when needed\n\nConfirm the integration name and submit to continue.",
         "data": {
           "name": "Integration Name"
         }
@@ -15,76 +22,114 @@
     "step": {
       "init": {
         "title": "Configuration Center",
-        "description": "The following are the relevant instructions:\n\n### Main functions\n\n- **Dialogue Agent Settings**: You can flexibly combine according to the strengths of different AIs, such as setting AI that is good at control (such as Home Assistant) as the primary agent, setting AI that is good at Q&A as the backup agent, and setting the local big model as the secondary backup agent.\n\n- **Dialogue Mode Settings**: Customize the display format and processing logic of AI reply. You can choose streamlined mode, front and back recommendation mode or deep thinking mode. The intelligent summary function can integrate multiple AI responses into one comprehensive response.\n\n### Extended Features\n\n- **Voice Output Settings**: Convert AI's text reply to voice output to enhance interactive experience. Supports Xiaomi speakers and various media players, and can be configured with a variety of TTS services.\n\n\n\n`Note: After selecting the switch intelligent summary function in the dialogue mode option, you must go back to the first step and check the third AI entity again before it is considered to be saved successfully. Currently integrated, it now supports multiple configuration entries. `\n\nPlease select an option to continue the configuration",
-        "data": {
-          "next_step": "Select Menu"
+        "description": "Select a feature area to manage",
+        "menu_options": {
+          "agent_settings": "Agent Settings",
+          "conversation_settings": "Conversation & Display",
+          "workspace_editor": "Workspace Document Editor"
         }
       },
       "agent_settings": {
-        "title": "Dialogue Agent Settings",
-        "description": "Set up a three-level dialogue agent:\n\n- **Primary AI Entity**: The dialogue agent that is mainly used (it is recommended to choose Home Assistant built-in dialogue entity)\n- **Backup AI Entity**: Alternate dialogue agent used when the preferred AI cannot respond\n- **Level 2 backup AI entity**: The dialogue agent used when neither level 2 dialogue agent can respond. If deep thinking is enabled, it will be processed by the last AI\n\nIf a certain level of dialogue agent is not required, you can click (X) after the option to cancel the selection",
+        "title": "Agent Settings",
+        "description": "**Instructions:**\nConfigure the AI conversation routing chain. The system tries each agent in order until a valid reply is obtained.\n\n**Primary AI Entity** — The default agent used first\n**Backup AI Entity** — Automatically used when the primary AI fails\n**Summary AI Entity** — Optional. When set, the first two AIs answer separately and this AI summarizes them into one final reply\n\nTo remove the summary AI, click **(X)** next to the selection.",
         "data": {
           "back": "Return to main menu",
           "save_and_exit": "Save and complete",
           "next_step": "Next step",
           "primary_agent": "Primary AI entity",
           "fallback_agent": "Backup AI entity",
-          "secondary_fallback_agent": "Level 2 backup AI entity (optional)"
+          "secondary_fallback_agent": "Summary AI entity (optional)"
         }
       },
       "conversation_settings": {
-        "title": "Dialogue Mode Settings",
-        "description": "Configure how AI reply is displayed and error response templates:\n\n- **Dialogue Mode**: Select the display format of AI reply\n- **Error filtering field**: Set the error prompt template when AI cannot respond\n- **Finally AI Intelligent Summary**: After enabled, the output of the previous AI is handed over to the last AI to process, and the output is uniformly summarized and outputted by the last AI. The final AI entity configuration is recommended. The Ollama local model processing experience is better\n\nError filtering fields support Jinja2 template syntax, etc.",
+        "title": "Conversation & Display",
+        "description": "**Instructions:**\nConfigure how AI replies appear in the frontend.\n\n**Dialogue Mode:**\n• **No name** — Minimal mode, reply content only\n• **Show AI name** — Recommended, prefixes reply with the responding AI’s name\n• **Full display** — Shows the complete process including tool calls and details\n\n**Web Search:**\nWhen enabled, the AI can automatically supplement replies with online search results.",
         "data": {
           "back": "Return to main menu",
           "save_and_exit": "Save and complete",
           "next_step": "Next step",
           "conversation_mode": "Dialogue Mode",
-          "error_responses": "Error filtering fields",
-          "enable_ai_summary": "Deep Thinking - DeepSeek Edition Intelligent Summary",
           "enable_web_search": "Web Search"
         }
       },
-      "speaker_settings": {
-        "title": "Voice output settings",
-        "description": "The type of voice output device you want to use:\n\n- **Close voice output**: Use text conversation only\n- **Xiaomi speaker**: Use Xiaomi speaker as voice output device\n- **Other speakers**: Use other supported media players and TTS services\n\nAfter selecting, click Next to configure it in detail",
-        "data": {
-          "back": "Return to main menu",
-          "save_and_exit": "Save and complete",
-          "next_step": "Next step",
-          "speaker_type": "Speaker type"
+      "workspace_editor": {
+        "title": "Workspace Document Editor",
+        "description": "**Instructions:**\nThese documents define the AI assistant's **core personality and behavior** in Markdown format.\nSelect a document to view or edit. Changes are **saved immediately** without restart.",
+        "menu_options": {
+          "ws_agents": "AGENTS.md — File roles & operating rules",
+          "ws_bootstrap": "BOOTSTRAP.md — First-run bootstrap",
+          "ws_heartbeat": "HEARTBEAT.md — Scheduled follow-ups",
+          "ws_identity": "IDENTITY.md — Assistant identity",
+          "ws_memory": "MEMORY.md — User preferences",
+          "ws_soul": "SOUL.md — Voice & style",
+          "ws_tools": "TOOLS.md — Environment notes",
+          "ws_user": "USER.md — User info"
         }
       },
-      "xiaomi_speaker": {
-        "title": "Xiaomi speaker settings",
-        "description": "Select the Xiaomi speaker device to use for voice output. The system will automatically detect Xiaomi speaker equipment in your environment.\n\nIf no available Xiaomi speakers are detected, make sure your device is properly connected to Home Assistant.",
+      "ws_agents": {
+        "title": "Edit AGENTS.md",
+        "description": "**File roles & operating rules**\nDefines responsibilities for each workspace document and AI behavioral constraints.\nLike a project README — tells the AI what each file does and what actions are allowed.\n\nMarkdown format. Saved immediately.",
         "data": {
-          "info": "No available Xiaomi speakers were detected",
-          "back": "Return to the previous step",
-          "speaker_entity": "Speaker equipment"
+          "content": "Markdown Editor"
         }
       },
-      "other_speaker": {
-        "title": "Other speaker settings",
-        "description": "Select the device and TTS service to use for voice output:\n\n- **Speaker Device**: Select the supported media player entity\n- **TTS Service**: Select a service for text to voice\n\nIf no available devices or services are detected, make sure you have installed and configured the relevant integration",
+      "ws_bootstrap": {
+        "title": "Edit BOOTSTRAP.md",
+        "description": "**First-run bootstrap**\nOnly active on first launch. Guides the AI through initial setup (collecting user name, preferences, etc.).\nAutomatically deactivates once IDENTITY and USER are complete.\n\nMarkdown format. Saved immediately.",
         "data": {
-          "info": "No available speakers or TTS services were detected",
-          "back": "Return to the previous step",
-          "save_and_exit": "Save and complete",
-          "speaker_entity": "Speaker equipment",
-          "tts_service": "TTS Services"
+          "content": "Markdown Editor"
+        }
+      },
+      "ws_heartbeat": {
+        "title": "Edit HEARTBEAT.md",
+        "description": "**Scheduled follow-ups**\nDefines heartbeat behavior rules. The AI periodically executes follow-up tasks.\nExamples: check device status, send reminders, trigger automations.\n\nMarkdown format. Saved immediately.",
+        "data": {
+          "content": "Markdown Editor"
+        }
+      },
+      "ws_identity": {
+        "title": "Edit IDENTITY.md",
+        "description": "**Assistant identity**\nDefines the AI's name, creature type, personality tags, and representative emoji.\nAffects how the AI perceives itself and its reply style.\n\nExample:\n`- **Name:** My Assistant`\n`- **Creature:** AI Butler`\n\nMarkdown format. Saved immediately.",
+        "data": {
+          "content": "Markdown Editor"
+        }
+      },
+      "ws_memory": {
+        "title": "Edit MEMORY.md",
+        "description": "**User preferences**\nStores long-term user preferences and habits, one per line.\nThe AI auto-matches relevant entries based on conversation context.\n\nExample:\n`- User prefers brief replies`\n`- preferred_address: Boss`\n\nMarkdown format. Saved immediately.",
+        "data": {
+          "content": "Markdown Editor"
+        }
+      },
+      "ws_soul": {
+        "title": "Edit SOUL.md",
+        "description": "**Voice & style**\nDefines the AI's tone and personality.\nExamples: calm and direct, humorous, professionally formal.\n\nExample:\n`- Be calm, direct, practical, and concise.`\n`- Sound like a reliable operator, not a generic chatbot.`\n\nMarkdown format. Saved immediately.",
+        "data": {
+          "content": "Markdown Editor"
+        }
+      },
+      "ws_tools": {
+        "title": "Edit TOOLS.md",
+        "description": "**Environment notes**\nRecords special configurations and device info for your smart home.\nThe AI references these when performing actions.\n\nExample:\n`- Living room camera: camera.living_room`\n`- TTS service: tts.edge_say`\n\nMarkdown format. Saved immediately.",
+        "data": {
+          "content": "Markdown Editor"
+        }
+      },
+      "ws_user": {
+        "title": "Edit USER.md",
+        "description": "**User info**\nStores basic user details. The AI uses these to personalize replies.\n\nExample:\n`- **Name:** John`\n`- **What to call them:** Boss`\n`- **Timezone:** America/New_York`\n\nMarkdown format. Saved immediately.",
+        "data": {
+          "content": "Markdown Editor"
         }
       }
     },
     "error": {
       "invalid_conversation_mode": "Dialogue mode selection is invalid",
-      "invalid_error_responses": "Error filtering field format error",
-      "invalid_speaker": "Speaker device selection is invalid",
-      "invalid_tts_service": "TTS service selection is invalid",
-      "no_speakers_available": "No speaker equipment available",
-      "no_tts_available": "No TTS service available",
       "invalid_agent": "Please select a valid dialogue proxy entity",
       "no_agents_available": "No valid conversation proxy was found, make sure at least one conversation proxy is available"
+    },
+    "abort": {
+      "workspace_doc_saved": "Document saved and applied"
     }
   },
   "selector": {
@@ -93,26 +138,16 @@
       "description": "Please select the part to configure",
       "options": {
         "agent_settings": "Dialogue Agent Settings",
-        "conversation_settings": "Dialogue Mode Settings",
-        "speaker_settings": "Voice output settings"
+        "conversation_settings": "Dialogue Mode Settings"
       }
     },
     "conversation_mode": {
       "label": "Display mode",
       "description": "Select the display format of AI reply",
       "options": {
-        "no_name": "No name displayed",
+        "no_name": "No name displayed (streamlined)",
         "add_name": "Show AI name (recommended)",
-        "detailed": "Detailed display of content (not recommended)"
-      }
-    },
-    "speaker_type": {
-      "label": "Speaker type",
-      "description": "Please select the speaker equipment type",
-      "options": {
-        "disabled": "Turn off voice output",
-        "xiaomi": "Xiaomi speakers",
-        "other": "Other speakers"
+        "detailed": "Full display (multi-AI)"
       }
     },
     "primary_agent": {
@@ -124,16 +159,8 @@
       "description": "Alternate AI to use when the preferred AI cannot respond"
     },
     "secondary_fallback_agent": {
-      "label": "Level 2 backup AI entity",
-      "description": "AI used when the backing AI is also unable to respond"
-    },
-    "speaker_entity": {
-      "label": "Speaker equipment",
-      "description": "Select the device for voice output"
-    },
-    "tts_service": {
-      "label": "TTS Services",
-      "description": "Select a service for text to voice"
+      "label": "Summary AI entity",
+      "description": "When configured, the first two AIs answer separately and this AI summarizes them"
     }
   },
   "navigation": {

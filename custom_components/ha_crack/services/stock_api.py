@@ -46,16 +46,16 @@ class StockAPI:
     def __init__(self):
         self.timeout = ClientTimeout(total=10)
         self.session: Optional[ClientSession] = None
-    
+
     async def __aenter__(self):
         self.session = ClientSession(timeout=self.timeout)
         return self
-    
+
     async def __aexit__(self, *args):
         if self.session and not self.session.closed:
             await self.session.close()
             await asyncio.sleep(0.1)
-    
+
     def _detect_market(self, code: str) -> tuple[str, str]:
         code = code.upper().strip()
         if code.startswith('SH') or code.startswith('SZ'):
@@ -74,41 +74,41 @@ class StockAPI:
         if re.match(r'^[A-Z]+$', code):
             return 'us', f"us{code}"
         return 'cn', f"sh{code}"
-    
+
     async def query_stock(self, code: str) -> Optional[StockData]:
         market, full_code = self._detect_market(code)
         url = f"{TENCENT_API_URL}{full_code}"
-        
-        _LOGGER.info(f"查询股票: {code} -> {full_code} (市场: {market})")
-        
+
+        _LOGGER.debug("Query stock: %s -> %s (market: %s)", code, full_code, market)
+
         try:
             async with self.session.get(url) as resp:
                 if resp.status != 200:
-                    _LOGGER.error(f"股票API返回错误: {resp.status}")
+                    _LOGGER.error("Stock API returned an error: %s", resp.status)
                     return None
-                
+
                 raw_bytes = await resp.read()
                 text = raw_bytes.decode('gbk', errors='ignore')
-                _LOGGER.debug(f"股票API响应: {text[:200]}...")
-                
+                _LOGGER.debug("Stock API response: %s...", text[:200])
+
                 if market == 'cn':
                     return self._parse_cn_stock(text, full_code)
                 elif market == 'us':
                     return self._parse_us_stock(text, full_code)
                 elif market == 'fund':
                     return self._parse_fund(text, full_code)
-        
+
         except Exception as e:
-            _LOGGER.error(f"查询股票失败: {e}")
-        
+            _LOGGER.error("Stock query failed: %s", e)
+
         return None
-    
+
     async def query_stocks(self, codes: List[str]) -> List[StockData]:
         results = []
         cn_codes = []
         us_codes = []
         fund_codes = []
-        
+
         for code in codes:
             market, full_code = self._detect_market(code)
             if market == 'cn':
@@ -129,8 +129,8 @@ class StockAPI:
                             if data:
                                 results.append(data)
             except Exception as e:
-                _LOGGER.error(f"批量查询A股失败: {e}")
-        
+                _LOGGER.error("Batch China stock query failed: %s", e)
+
         if us_codes:
             url = f"{TENCENT_API_URL}{','.join(us_codes)}"
             try:
@@ -143,19 +143,19 @@ class StockAPI:
                             if data:
                                 results.append(data)
             except Exception as e:
-                _LOGGER.error(f"批量查询美股失败: {e}")
-        
+                _LOGGER.error("Batch US stock query failed: %s", e)
+
         if fund_codes:
             for code in fund_codes:
                 data = await self.query_stock(code.replace('jj', ''))
                 if data:
                     results.append(data)
-        
+
         return results
-    
+
     def _parse_cn_stock(self, text: str, code: str) -> Optional[StockData]:
         text = text.replace(" ", "").replace("*", "ST")
-        
+
         matches = CN_DATA_PATTERN.finditer(text)
         for match in matches:
             if len(match.groups()) == len(CN_DATA_FORMAT):
@@ -186,24 +186,24 @@ class StockAPI:
                         }
                     )
         return None
-    
+
     def _parse_us_stock(self, text: str, code: str) -> Optional[StockData]:
         text = text.replace(" ", "")
-        
+
         matches = US_DATA_PATTERN.finditer(text)
         for match in matches:
             stock_code = match.group(1)
             raw_data = match.group(3)
-            
+
             if stock_code.lower() != code.lower():
                 continue
-            
+
             data = raw_data.split('~')
-            _LOGGER.debug(f"美股数据解析: {stock_code}, 字段数: {len(data)}")
-            
+            _LOGGER.debug("US stock data parsed: %s, field count: %s", stock_code, len(data))
+
             if len(data) < 35:
                 continue
-            
+
             return StockData(
                 code=data[2] if len(data) > 2 else code,
                 name=data[1] if len(data) > 1 else '',
@@ -226,20 +226,20 @@ class StockAPI:
                 }
             )
         return None
-    
+
     def _parse_fund(self, text: str, code: str) -> Optional[StockData]:
         matches = FUND_DATA_PATTERN.finditer(text)
         for match in matches:
             fund_code = match.group(1)
             raw_data = match.group(2)
-            
+
             if fund_code.lower() != code.lower():
                 continue
-            
+
             data = raw_data.split('~')
             if len(data) < 5:
                 continue
-            
+
             return StockData(
                 code=data[0] if len(data) > 0 else code.replace('jj', ''),
                 name=data[1] if len(data) > 1 else '',
@@ -260,55 +260,44 @@ class StockAPI:
 
 
 def format_stock_data(data: StockData) -> str:
-    market_name = {'cn': 'A股', 'us': '美股', 'fund': '基金'}.get(data.market, '未知')
-    
+    market_name = {'cn': 'China stock', 'us': 'US stock', 'fund': 'Fund'}.get(data.market, 'Unknown market')
+
+    extra_label_map = {
+        '换手率': 'Turnover rate',
+        '市盈率': 'P/E ratio',
+        '市净率': 'P/B ratio',
+        '总市值': 'Market cap',
+        '流通市值': 'Free-float market cap',
+        '涨停价': 'Limit-up price',
+        '跌停价': 'Limit-down price',
+        '币种': 'Currency',
+        '市值(亿美元)': 'Market cap (USD 100M)',
+        '公司名称': 'Company name',
+    }
+
     lines = [
         f"【{data.name}】({data.code}) - {market_name}",
-        f"当前价格: {data.price}",
-        f"涨跌: {data.change} ({data.change_percent}%)",
+        f"Current price: {data.price}",
+        f"Change: {data.change} ({data.change_percent}%)",
     ]
-    
+
     if data.open_price:
-        lines.append(f"今开: {data.open_price} | 昨收: {data.close_price}")
+        lines.append(f"Open: {data.open_price} | Previous close: {data.close_price}")
     if data.high and data.low:
-        lines.append(f"最高: {data.high} | 最低: {data.low}")
+        lines.append(f"High: {data.high} | Low: {data.low}")
     if data.volume:
-        lines.append(f"成交量: {data.volume}")
+        lines.append(f"Volume: {data.volume}")
     if data.amount:
-        lines.append(f"成交额: {data.amount}")
+        lines.append(f"Turnover: {data.amount}")
     if data.datetime:
-        lines.append(f"更新时间: {data.datetime}")
-    
+        lines.append(f"Updated at: {data.datetime}")
+
     if data.extra:
         extra_items = []
         for k, v in data.extra.items():
             if v:
-                extra_items.append(f"{k}: {v}")
+                extra_items.append(f"{extra_label_map.get(k, k)}: {v}")
         if extra_items:
             lines.append(" | ".join(extra_items[:4]))
-    
+
     return "\n".join(lines)
-
-
-STOCK_KEYWORDS = [
-    "股票", "股价", "股市", "A股", "美股", "港股",
-    "涨跌", "涨停", "跌停", "行情", "大盘",
-    "基金", "净值", "指数",
-    "茅台", "腾讯", "阿里", "特斯拉", "苹果", "英伟达",
-]
-
-STOCK_CODE_PATTERN = re.compile(r'\b(\d{6}|[A-Z]{1,5})\b')
-
-
-def detect_stock_query(text: str) -> tuple[bool, List[str]]:
-    text_lower = text.lower()
-    has_keyword = any(kw in text for kw in STOCK_KEYWORDS)
-    codes = []
-    digit_codes = re.findall(r'\b(\d{6})\b', text)
-    codes.extend(digit_codes)
-    letter_codes = re.findall(r'\b([A-Z]{2,5})\b', text.upper())
-    exclude_words = {'THE', 'AND', 'FOR', 'ARE', 'NOT', 'YOU', 'ALL', 'CAN', 'HER', 'WAS', 'ONE', 'OUR', 'OUT'}
-    letter_codes = [c for c in letter_codes if c not in exclude_words]
-    codes.extend(letter_codes)
-    
-    return has_keyword or len(codes) > 0, codes

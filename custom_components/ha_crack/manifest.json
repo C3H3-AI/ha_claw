@@ -8,14 +8,16 @@
     "dependencies": [
       "conversation",
       "intent",
-      "frontend",
       "websocket_api"
     ],
-    "after_dependencies": ["assist_pipeline"],
+    "after_dependencies": ["assist_pipeline", "ai_hub"],
     "documentation": "https://github.com/knoop7/ha_crack",
     "integration_type": "service",
     "iot_class": "local_polling",
     "issue_tracker": "https://github.com/knoop7/ha_crack/issues",
-    "requirements": [],
-    "version": "5.1.1"
+    "single_config_entry": true,
+    "requirements": [
+      "trafilatura==2.0.0"
+    ],
+    "version": "6.1.1"
   }

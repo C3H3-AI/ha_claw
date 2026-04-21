@@ -11,7 +11,7 @@ def parse_query_time(query: str) -> Tuple[str, Optional[str], Optional[datetime.
     tomorrow_end = tomorrow_start.replace(hour=23, minute=59, second=59, microsecond=999999)
     day_after_tomorrow_start = (now + datetime.timedelta(days=2)).replace(hour=0, minute=0, second=0, microsecond=0)
     day_after_tomorrow_end = day_after_tomorrow_start.replace(hour=23, minute=59, second=59, microsecond=999999)
-    
+
     this_week_start = (now - datetime.timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
     last_week_start = (now - datetime.timedelta(days=now.weekday() + 7)).replace(hour=0, minute=0, second=0, microsecond=0)
     last_week_end = (now - datetime.timedelta(days=now.weekday() + 1)).replace(hour=23, minute=59, second=59, microsecond=999999)
@@ -55,14 +55,14 @@ def parse_query_time(query: str) -> Tuple[str, Optional[str], Optional[datetime.
 
     if not pattern_matched:
         for pattern, time_func in duration_patterns.items():
-            match = re.search(pattern, query) 
+            match = re.search(pattern, query)
             if match:
                 st, et = time_func(match)
                 start_time = st
                 end_time = et
                 pattern_matched = True
-                
-                modified_query = query 
+
+                modified_query = query
                 formatted_date_str = None
                 break
 
@@ -72,4 +72,4 @@ def parse_query_time(query: str) -> Tuple[str, Optional[str], Optional[datetime.
         modified_query = query
         formatted_date_str = None
 
-    return modified_query, formatted_date_str, start_time, end_time 
+    return modified_query, formatted_date_str, start_time, end_time

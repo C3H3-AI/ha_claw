@@ -1,7 +1,4 @@
-"""Smart Entity Discovery System - 完美复刻 mcp_assist 设计
 
-智能实体发现，支持关系理解、模式识别、结构化结果优化LLM交互。
-"""
 from __future__ import annotations
 import logging
 import re
@@ -19,7 +16,7 @@ MAX_ENTITIES_PER_DISCOVERY = 50
 
 
 class QueryType(Enum):
-    """Types of discovery queries."""
+
     PERSON = "person"
     PET = "pet"
     DEVICE = "device"
@@ -30,7 +27,7 @@ class QueryType(Enum):
 
 
 class EntityPattern:
-    """Entity pattern definitions for relationship detection."""
+
 
     PERSON_PATTERNS = [
         (r"^person\.{name}$", "primary", "Person entity"),
@@ -68,13 +65,27 @@ INFERRED_TYPE_PATTERNS = {
 
 
 class SmartDiscovery:
-    """Smart entity discovery with relationship understanding."""
+
 
     def __init__(self, hass: HomeAssistant) -> None:
-        """Initialize smart discovery."""
+
         self.hass = hass
         self._entity_cache = None
         self._cache_time = None
+
+    @staticmethod
+    def _stringify_name(value: Any) -> str:
+
+        if value in (None, ""):
+            return ""
+        if isinstance(value, str):
+            return value
+        return str(value)
+
+    @classmethod
+    def _normalize_name(cls, value: Any) -> str:
+
+        return cls._stringify_name(value).lower()
 
     async def discover_entities(
         self,
@@ -89,10 +100,7 @@ class SmartDiscovery:
         inferred_type: Optional[str] = None,
         assistant: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Smart entity discovery with relationship understanding.
 
-        This is the main entry point that routes to appropriate discovery strategy.
-        """
         query_type = self._detect_query_type(entity_type, area, domain, state, name_contains)
         _LOGGER.debug(f"Detected query type: {query_type}, name_contains: {name_contains}")
 
@@ -117,7 +125,7 @@ class SmartDiscovery:
         state: Optional[str],
         name_contains: Optional[str]
     ) -> QueryType:
-        """Detect the type of query based on parameters."""
+
         if name_contains:
             name_lower = name_contains.lower()
             if self._is_likely_person_name(name_lower):
@@ -137,7 +145,7 @@ class SmartDiscovery:
         return QueryType.GENERAL
 
     def _is_likely_person_name(self, name: str) -> bool:
-        """Check if the name is likely a person's name."""
+
         person_entity = f"person.{name}"
         if self.hass.states.get(person_entity):
             return True
@@ -155,7 +163,7 @@ class SmartDiscovery:
         return False
 
     def _is_likely_pet_name(self, name: str) -> bool:
-        """Check if the name is likely a pet's name."""
+
         name_lower = name.lower()
 
         if name_lower in ["cat", "dog", "pet", "puppy", "kitten", "bird", "fish", "猫", "狗", "宠物"]:
@@ -176,7 +184,7 @@ class SmartDiscovery:
         return has_pet_entities and not has_person_entity and not has_device_tracker
 
     async def _discover_person_entities(self, name: str, limit: int) -> List[Dict[str, Any]]:
-        """Discover entities related to a person with smart grouping."""
+
         name_lower = name.lower()
         results = {
             "query": name,
@@ -213,23 +221,25 @@ class SmartDiscovery:
                     break
 
             if not matched:
-                if name_lower in state_obj.name.lower():
+                state_name = self._normalize_name(state_obj.name)
+                if name_lower in state_name:
                     entity_info = self._create_entity_info(state_obj)
                     results["related_entities"]["other"].append(entity_info)
                 else:
                     entity_entry = entity_registry.async_get(entity_id)
                     if entity_entry and entity_entry.aliases:
                         for alias in entity_entry.aliases:
-                            if name_lower in alias.lower():
+                            alias_text = self._stringify_name(alias)
+                            if name_lower in alias_text.lower():
                                 entity_info = self._create_entity_info(state_obj)
-                                entity_info["matched_alias"] = alias
+                                entity_info["matched_alias"] = alias_text
                                 results["related_entities"]["other"].append(entity_info)
                                 break
 
         return self._format_smart_results(results, limit)
 
     async def _discover_pet_entities(self, name: str, limit: int) -> List[Dict[str, Any]]:
-        """Discover entities related to a pet with smart grouping."""
+
         name_lower = name.lower()
         results = {
             "query": name,
@@ -265,16 +275,18 @@ class SmartDiscovery:
                     break
 
             if not matched:
-                if name_lower in state_obj.name.lower():
+                state_name = self._normalize_name(state_obj.name)
+                if name_lower in state_name:
                     entity_info = self._create_entity_info(state_obj)
                     results["related_entities"]["other"].append(entity_info)
                 else:
                     entity_entry = entity_registry.async_get(entity_id)
                     if entity_entry and entity_entry.aliases:
                         for alias in entity_entry.aliases:
-                            if name_lower in alias.lower():
+                            alias_text = self._stringify_name(alias)
+                            if name_lower in alias_text.lower():
                                 entity_info = self._create_entity_info(state_obj)
-                                entity_info["matched_alias"] = alias
+                                entity_info["matched_alias"] = alias_text
                                 results["related_entities"]["other"].append(entity_info)
                                 break
 
@@ -283,7 +295,7 @@ class SmartDiscovery:
     async def _discover_aggregate_entities(
         self, domain: Optional[str], state: Optional[str], limit: int
     ) -> List[Dict[str, Any]]:
-        """Discover entities for aggregate queries like 'who is home'."""
+
         results = {
             "query": f"{'all ' + domain if domain else 'entities'} {'with state ' + state if state else ''}",
             "query_type": "aggregate",
@@ -321,7 +333,7 @@ class SmartDiscovery:
     async def _discover_area_entities(
         self, area: str, domain: Optional[str], state: Optional[str], limit: int
     ) -> List[Dict[str, Any]]:
-        """Discover entities in a specific area with smart grouping."""
+
         area_registry = ar.async_get(self.hass)
         entity_registry = er.async_get(self.hass)
         device_registry = dr.async_get(self.hass)
@@ -396,7 +408,7 @@ class SmartDiscovery:
         inferred_type: Optional[str],
         assistant: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """General entity discovery with all filters."""
+
         entities = []
         area_registry = ar.async_get(self.hass)
         entity_registry = er.async_get(self.hass)
@@ -436,14 +448,18 @@ class SmartDiscovery:
 
             if name_contains:
                 search_term = name_contains.lower()
+                state_name = self._normalize_name(state_obj.name)
+                friendly_name = self._normalize_name(
+                    state_obj.attributes.get("friendly_name", "")
+                )
                 found_match = (
                     search_term in entity_id.lower() or
-                    search_term in state_obj.name.lower() or
-                    search_term in state_obj.attributes.get("friendly_name", "").lower()
+                    search_term in state_name or
+                    search_term in friendly_name
                 )
                 if not found_match and entity_entry and entity_entry.aliases:
                     for alias in entity_entry.aliases:
-                        if search_term in alias.lower():
+                        if search_term in self._normalize_name(alias):
                             found_match = True
                             break
                 if not found_match:
@@ -505,10 +521,10 @@ class SmartDiscovery:
         return entities
 
     def _create_entity_info(self, state_obj: Any, description: Optional[str] = None) -> Dict[str, Any]:
-        """Create entity information dictionary."""
+
         entity_info = {
             "entity_id": state_obj.entity_id,
-            "name": state_obj.name,
+            "name": self._stringify_name(state_obj.name),
             "domain": state_obj.domain,
             "state": state_obj.state,
         }
@@ -531,10 +547,12 @@ class SmartDiscovery:
             if area_id:
                 area_entry = area_registry.async_get_area(area_id)
                 if area_entry:
-                    entity_info["area"] = area_entry.name
+                    entity_info["area"] = self._stringify_name(area_entry.name)
 
             if entity_entry.aliases:
-                entity_info["aliases"] = list(entity_entry.aliases)
+                entity_info["aliases"] = [
+                    self._stringify_name(alias) for alias in entity_entry.aliases
+                ]
 
         if state_obj.attributes:
             useful_attrs = {}
@@ -548,7 +566,7 @@ class SmartDiscovery:
         return entity_info
 
     def _format_smart_results(self, results: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
-        """Format smart discovery results for the LLM."""
+
         formatted = []
 
         for entity in results.get("primary_entities", [])[:limit]:
@@ -581,7 +599,7 @@ class SmartDiscovery:
         return formatted
 
     async def get_entity_details(self, entity_ids: List[str]) -> Dict[str, Any]:
-        """Get detailed information about specific entities."""
+
         details = {}
         entity_registry = er.async_get(self.hass)
         area_registry = ar.async_get(self.hass)
@@ -607,16 +625,16 @@ class SmartDiscovery:
                     device_entry = device_registry.async_get(entity_entry.device_id)
                     if device_entry:
                         area_id = device_entry.area_id
-                        device_name = device_entry.name
+                        device_name = self._stringify_name(device_entry.name)
 
                 if area_id:
                     area_entry = area_registry.async_get_area(area_id)
                     if area_entry:
-                        area_name = area_entry.name
+                        area_name = self._stringify_name(area_entry.name)
 
             entity_details = {
                 "entity_id": entity_id,
-                "name": state_obj.name,
+                "name": self._stringify_name(state_obj.name),
                 "domain": state_obj.domain,
                 "state": state_obj.state,
                 "attributes": dict(state_obj.attributes),
@@ -638,7 +656,7 @@ class SmartDiscovery:
         return details
 
     async def list_areas(self) -> List[Dict[str, Any]]:
-        """List all areas with entity counts."""
+
         area_registry = ar.async_get(self.hass)
         entity_registry = er.async_get(self.hass)
         device_registry = dr.async_get(self.hass)
@@ -670,7 +688,7 @@ class SmartDiscovery:
         return areas
 
     async def list_domains(self) -> List[Dict[str, Any]]:
-        """List all domains with entity counts."""
+
         domain_counts = {}
 
         for state_obj in self.hass.states.async_all():
@@ -687,7 +705,7 @@ class SmartDiscovery:
         return domains
 
     async def get_entities_by_area(self, area_id: str) -> List[Dict[str, Any]]:
-        """Get all entities in a specific area by area ID."""
+
         entities = []
         entity_registry = er.async_get(self.hass)
         device_registry = dr.async_get(self.hass)
@@ -717,7 +735,7 @@ class SmartDiscovery:
         return entities
 
     def format_results(self, results: List[Dict[str, Any]], query_type: str = "general", query: str = "") -> Dict[str, Any]:
-        """Format discovery results for backward compatibility."""
+
         if not results:
             return {"success": True, "count": 0, "entities": [], "message": "未找到匹配的实体"}
 
@@ -734,7 +752,7 @@ _discovery: Optional[SmartDiscovery] = None
 
 
 def get_smart_discovery(hass: HomeAssistant) -> SmartDiscovery:
-    """Get or create the SmartDiscovery instance."""
+
     global _discovery
     if _discovery is None or _discovery.hass is not hass:
         _discovery = SmartDiscovery(hass)
