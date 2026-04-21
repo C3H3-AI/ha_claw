@@ -1,0 +1,332 @@
+
+
+from __future__ import annotations
+
+import logging
+
+from homeassistant.core import HomeAssistant, callback
+
+from ..const import (
+    CONF_CONVERSATION_MODE,
+    CONVERSATION_MODE_ADD_NAME,
+    CONVERSATION_MODE_DETAILED,
+    CONVERSATION_MODE_NO_NAME,
+    DOMAIN,
+)
+from homeassistant.components.conversation.chat_log import AssistantContent
+
+from .tool_result_summary import build_synthesized_assistant_from_chat_log
+from .state import get_conversation_status
+
+LOGGER = logging.getLogger(__name__)
+
+_LOCAL_INTENTS_PATCHED = "_ha_crack_intents_patched"
+_LOCAL_INTENTS_ORIGINAL = "_ha_crack_original_async_handle_intents"
+_RESULT_PATCHED = "_ha_crack_result_patched"
+_RESULT_ORIGINAL = "_ha_crack_original_result_extraction"
+_STREAM_CLOSURE_PATCHED = "_ha_crack_stream_closure_patched"
+_STREAM_CLOSURE_ORIGINAL = "_ha_crack_original_stream_closure"
+_PIPELINE_FILTER_PATCHED = "_kadermanager_tool_filter_patched"
+_PIPELINE_FILTER_ORIGINAL = "_kadermanager_original_process_event"
+
+
+def _pop_empty_trailing_assistant(chat_log) -> None:
+
+    content = getattr(chat_log, "content", None)
+    if not content:
+        return
+    last = content[-1]
+    if isinstance(last, AssistantContent) and not last.content:
+        content.pop()
+
+
+def patch_local_intents(hass: HomeAssistant) -> None:
+
+    from homeassistant.components import conversation as conv_module
+
+    if hasattr(conv_module, _LOCAL_INTENTS_PATCHED):
+        return
+
+    original_async_handle_intents = conv_module.async_handle_intents
+
+    async def patched_async_handle_intents(
+        hass_arg,
+        user_input,
+        chat_log,
+        *,
+        intent_filter=None,
+    ):
+        result = await original_async_handle_intents(
+            hass_arg, user_input, chat_log, intent_filter=intent_filter
+        )
+
+        if result is not None and result.speech:
+            entries = hass.config_entries.async_entries(DOMAIN)
+            if entries:
+                options = entries[0].options
+                conversation_mode = options.get(
+                    CONF_CONVERSATION_MODE, CONVERSATION_MODE_ADD_NAME
+                )
+
+                speech_text = result.speech.get("plain", {}).get("speech", "")
+                if speech_text and conversation_mode != CONVERSATION_MODE_NO_NAME:
+                    from .response_format import reply_labels
+
+                    agent_name = "Home Assistant"
+                    reply = reply_labels(
+                        getattr(user_input, "language", None)
+                    )["reply"]
+                    if conversation_mode in (
+                        CONVERSATION_MODE_ADD_NAME,
+                        CONVERSATION_MODE_DETAILED,
+                    ):
+                        result.speech["plain"]["speech"] = (
+                            f"({agent_name}) {reply}: {speech_text}"
+                        )
+
+                    result.speech["plain"]["original_speech"] = speech_text
+                    result.speech["plain"]["agent_name"] = agent_name
+
+        return result
+
+    conv_module.async_handle_intents = patched_async_handle_intents
+    setattr(conv_module, _LOCAL_INTENTS_ORIGINAL, original_async_handle_intents)
+    setattr(conv_module, _LOCAL_INTENTS_PATCHED, True)
+    LOGGER.debug("Patched async_handle_intents to add local intent prefixes")
+
+
+def unpatch_local_intents() -> None:
+
+    from homeassistant.components import conversation as conv_module
+
+    original_async_handle_intents = getattr(conv_module, _LOCAL_INTENTS_ORIGINAL, None)
+    if original_async_handle_intents is None:
+        return
+
+    conv_module.async_handle_intents = original_async_handle_intents
+    delattr(conv_module, _LOCAL_INTENTS_ORIGINAL)
+    if hasattr(conv_module, _LOCAL_INTENTS_PATCHED):
+        delattr(conv_module, _LOCAL_INTENTS_PATCHED)
+    LOGGER.debug("Restored async_handle_intents after kadermanager unload")
+
+
+def patch_chat_log_result_extraction(hass: HomeAssistant) -> None:
+
+    from homeassistant.components import conversation as conv_module
+    from homeassistant.components.conversation import util as conv_util
+
+    if hasattr(conv_util, _RESULT_PATCHED):
+        return
+
+    original_async_get_result_from_chat_log = conv_util.async_get_result_from_chat_log
+
+    @callback
+    def patched_async_get_result_from_chat_log(user_input, chat_log):
+        synthesized_content = build_synthesized_assistant_from_chat_log(chat_log)
+        if synthesized_content is not None:
+            _pop_empty_trailing_assistant(chat_log)
+            chat_log.async_add_assistant_content_without_tools(synthesized_content)
+            LOGGER.debug(
+                "Synthesized final AssistantContent from trailing tool results: %s",
+                synthesized_content.agent_id,
+            )
+        return original_async_get_result_from_chat_log(user_input, chat_log)
+
+    conv_util.async_get_result_from_chat_log = patched_async_get_result_from_chat_log
+    conv_module.async_get_result_from_chat_log = patched_async_get_result_from_chat_log
+    setattr(conv_util, _RESULT_ORIGINAL, original_async_get_result_from_chat_log)
+    setattr(conv_util, _RESULT_PATCHED, True)
+    LOGGER.debug("Patched chat log result extraction to close tool-only turns")
+
+
+def unpatch_chat_log_result_extraction() -> None:
+
+    from homeassistant.components import conversation as conv_module
+    from homeassistant.components.conversation import util as conv_util
+
+    original_async_get_result_from_chat_log = getattr(conv_util, _RESULT_ORIGINAL, None)
+    if original_async_get_result_from_chat_log is None:
+        return
+
+    conv_util.async_get_result_from_chat_log = original_async_get_result_from_chat_log
+    conv_module.async_get_result_from_chat_log = original_async_get_result_from_chat_log
+    delattr(conv_util, _RESULT_ORIGINAL)
+    if hasattr(conv_util, _RESULT_PATCHED):
+        delattr(conv_util, _RESULT_PATCHED)
+    LOGGER.debug("Restored chat log result extraction after kadermanager unload")
+
+
+def patch_chat_log_stream_closure(hass: HomeAssistant) -> None:
+
+    from homeassistant.components.conversation import chat_log as chat_log_module
+
+    if hasattr(chat_log_module.ChatLog, _STREAM_CLOSURE_PATCHED):
+        return
+
+    original_async_add_delta_content_stream = (
+        chat_log_module.ChatLog.async_add_delta_content_stream
+    )
+
+    async def patched_async_add_delta_content_stream(self, agent_id, stream):
+        async for content in original_async_add_delta_content_stream(
+            self, agent_id, stream
+        ):
+            yield content
+
+        synthesized_content = build_synthesized_assistant_from_chat_log(self)
+        if synthesized_content is None:
+            return
+
+        _pop_empty_trailing_assistant(self)
+        self.async_add_assistant_content_without_tools(synthesized_content)
+        LOGGER.debug(
+            "Closed native ChatLog stream with synthesized AssistantContent: %s",
+            synthesized_content.agent_id,
+        )
+
+    chat_log_module.ChatLog.async_add_delta_content_stream = (
+        patched_async_add_delta_content_stream
+    )
+    setattr(
+        chat_log_module.ChatLog,
+        _STREAM_CLOSURE_ORIGINAL,
+        original_async_add_delta_content_stream,
+    )
+    setattr(chat_log_module.ChatLog, _STREAM_CLOSURE_PATCHED, True)
+    LOGGER.debug("Patched ChatLog.async_add_delta_content_stream to close tool-only turns")
+
+
+def unpatch_chat_log_stream_closure() -> None:
+
+    from homeassistant.components.conversation import chat_log as chat_log_module
+
+    original_async_add_delta_content_stream = getattr(
+        chat_log_module.ChatLog, _STREAM_CLOSURE_ORIGINAL, None
+    )
+    if original_async_add_delta_content_stream is None:
+        return
+
+    chat_log_module.ChatLog.async_add_delta_content_stream = (
+        original_async_add_delta_content_stream
+    )
+    delattr(chat_log_module.ChatLog, _STREAM_CLOSURE_ORIGINAL)
+    if hasattr(chat_log_module.ChatLog, _STREAM_CLOSURE_PATCHED):
+        delattr(chat_log_module.ChatLog, _STREAM_CLOSURE_PATCHED)
+    LOGGER.debug("Restored chat log stream closure after kadermanager unload")
+
+
+def patch_chatlog_tools(hass: HomeAssistant) -> None:
+
+    from .internal_llm import patch_chatlog_tools as patch_internal_llm_chatlog_tools
+
+    patch_internal_llm_chatlog_tools(hass)
+
+
+def patch_hide_tool_calls_from_pipeline(hass: HomeAssistant) -> None:
+
+    from homeassistant.components.assist_pipeline.pipeline import (
+        PipelineEvent,
+        PipelineEventType,
+        PipelineRun,
+    )
+
+    if getattr(PipelineRun, _PIPELINE_FILTER_PATCHED, False):
+        return
+
+    original_process_event = PipelineRun.process_event
+
+    def _agent_is_ours(run: PipelineRun) -> bool:
+        agent_info = getattr(run, "intent_agent", None)
+        agent_id = getattr(agent_info, "id", None)
+        if not agent_id:
+            return False
+
+
+
+        from homeassistant.helpers import entity_registry as er
+
+        registry = er.async_get(hass)
+        entity = registry.async_get(agent_id)
+        if entity is None:
+            return False
+        return entity.platform == DOMAIN
+
+    def _is_tool_only_delta(delta: dict) -> bool:
+        if not isinstance(delta, dict):
+            return False
+        if delta.get("role") == "tool_result":
+            return True
+        if "tool_calls" in delta and not delta.get("content") and not delta.get(
+            "thinking_content"
+        ):
+            return True
+        return False
+
+    def _extract_step_event(delta: dict) -> dict | None:
+        if not isinstance(delta, dict):
+            return None
+        payload = delta.get("km_step_event")
+        return payload if isinstance(payload, dict) else None
+
+    def _is_detailed_mode() -> bool:
+        entries = hass.config_entries.async_entries(DOMAIN)
+        if not entries:
+            return False
+        return entries[0].options.get(
+            CONF_CONVERSATION_MODE, CONVERSATION_MODE_ADD_NAME
+        ) == CONVERSATION_MODE_DETAILED
+
+    def filtered_process_event(self, event) -> None:
+        delta = (event.data or {}).get("chat_log_delta")
+        if _is_detailed_mode() and _agent_is_ours(self):
+            return original_process_event(self, event)
+        if (
+            event.type == PipelineEventType.INTENT_PROGRESS
+            and get_conversation_status(hass).get("kernel_mode_active")
+            and _agent_is_ours(self)
+            and isinstance(delta, dict)
+            and not _extract_step_event(delta)
+        ):
+            return
+        if (
+            event.type == PipelineEventType.INTENT_PROGRESS
+            and (step_event := _extract_step_event(delta))
+            and _agent_is_ours(self)
+        ):
+            return original_process_event(
+                self,
+                PipelineEvent(
+                    PipelineEventType.INTENT_PROGRESS,
+                    {"km_step_event": step_event},
+                ),
+            )
+        if (
+            event.type == PipelineEventType.INTENT_PROGRESS
+            and _is_tool_only_delta(delta)
+            and _agent_is_ours(self)
+        ):
+            return
+        return original_process_event(self, event)
+
+    PipelineRun.process_event = filtered_process_event
+    setattr(PipelineRun, _PIPELINE_FILTER_ORIGINAL, original_process_event)
+    setattr(PipelineRun, _PIPELINE_FILTER_PATCHED, True)
+    LOGGER.debug(
+        "Patched PipelineRun.process_event to hide tool_calls/tool_result deltas "
+        "from the Assist frontend for kadermanager-owned pipelines"
+    )
+
+
+def unpatch_hide_tool_calls_from_pipeline() -> None:
+
+    from homeassistant.components.assist_pipeline.pipeline import PipelineRun
+
+    original_process_event = getattr(PipelineRun, _PIPELINE_FILTER_ORIGINAL, None)
+    if original_process_event is None:
+        return
+
+    PipelineRun.process_event = original_process_event
+    delattr(PipelineRun, _PIPELINE_FILTER_ORIGINAL)
+    if hasattr(PipelineRun, _PIPELINE_FILTER_PATCHED):
+        delattr(PipelineRun, _PIPELINE_FILTER_PATCHED)
+    LOGGER.debug("Restored PipelineRun.process_event after kadermanager unload")

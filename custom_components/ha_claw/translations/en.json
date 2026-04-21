@@ -1,0 +1,171 @@
+{
+  "entity": {
+    "sensor": {
+      "heartbeat": {
+        "name": "Heartbeat"
+      }
+    }
+  },
+  "config": {
+    "title": "AI Sidecar",
+    "step": {
+      "user": {
+        "title": "Initial setup",
+        "description": "## Welcome to AI Sidecar\n\nThis integration aggregates and manages Home Assistant conversation agents, giving you a single entry point, fallback routing, and more flexible response display.\n\n### Features\n- Choose primary, fallback, and secondary fallback conversation agents\n- Configure multiple reply display modes\n- Optionally allow web search context when needed\n\nConfirm the integration name and submit to continue.",
+        "data": {
+          "name": "Integration Name"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Configuration Center",
+        "description": "Select a feature area to manage",
+        "menu_options": {
+          "agent_settings": "Agent Settings",
+          "conversation_settings": "Conversation & Display",
+          "workspace_editor": "Workspace Document Editor"
+        }
+      },
+      "agent_settings": {
+        "title": "Agent Settings",
+        "description": "**Instructions:**\nConfigure the AI conversation routing chain. The system tries each agent in order until a valid reply is obtained.\n\n**Primary AI Entity** — The default agent used first\n**Backup AI Entity** — Automatically used when the primary AI fails\n**Summary AI Entity** — Optional. When set, the first two AIs answer separately and this AI summarizes them into one final reply\n\nTo remove the summary AI, click **(X)** next to the selection.",
+        "data": {
+          "back": "Return to main menu",
+          "save_and_exit": "Save and complete",
+          "next_step": "Next step",
+          "primary_agent": "Primary AI entity",
+          "fallback_agent": "Backup AI entity",
+          "secondary_fallback_agent": "Summary AI entity (optional)"
+        }
+      },
+      "conversation_settings": {
+        "title": "Conversation & Display",
+        "description": "**Instructions:**\nConfigure how AI replies appear in the frontend.\n\n**Dialogue Mode:**\n• **No name** — Minimal mode, reply content only\n• **Show AI name** — Recommended, prefixes reply with the responding AI’s name\n• **Full display** — Shows the complete process including tool calls and details\n\n**Web Search:**\nWhen enabled, the AI can automatically supplement replies with online search results.",
+        "data": {
+          "back": "Return to main menu",
+          "save_and_exit": "Save and complete",
+          "next_step": "Next step",
+          "conversation_mode": "Dialogue Mode",
+          "enable_web_search": "Web Search"
+        }
+      },
+      "workspace_editor": {
+        "title": "Workspace Document Editor",
+        "description": "**Instructions:**\nThese documents define the AI assistant's **core personality and behavior** in Markdown format.\nSelect a document to view or edit. Changes are **saved immediately** without restart.",
+        "menu_options": {
+          "ws_agents": "AGENTS.md — File roles & operating rules",
+          "ws_bootstrap": "BOOTSTRAP.md — First-run bootstrap",
+          "ws_heartbeat": "HEARTBEAT.md — Scheduled follow-ups",
+          "ws_identity": "IDENTITY.md — Assistant identity",
+          "ws_memory": "MEMORY.md — User preferences",
+          "ws_soul": "SOUL.md — Voice & style",
+          "ws_tools": "TOOLS.md — Environment notes",
+          "ws_user": "USER.md — User info"
+        }
+      },
+      "ws_agents": {
+        "title": "Edit AGENTS.md",
+        "description": "**File roles & operating rules**\nDefines responsibilities for each workspace document and AI behavioral constraints.\nLike a project README — tells the AI what each file does and what actions are allowed.\n\nMarkdown format. Saved immediately.",
+        "data": {
+          "content": "Markdown Editor"
+        }
+      },
+      "ws_bootstrap": {
+        "title": "Edit BOOTSTRAP.md",
+        "description": "**First-run bootstrap**\nOnly active on first launch. Guides the AI through initial setup (collecting user name, preferences, etc.).\nAutomatically deactivates once IDENTITY and USER are complete.\n\nMarkdown format. Saved immediately.",
+        "data": {
+          "content": "Markdown Editor"
+        }
+      },
+      "ws_heartbeat": {
+        "title": "Edit HEARTBEAT.md",
+        "description": "**Scheduled follow-ups**\nDefines heartbeat behavior rules. The AI periodically executes follow-up tasks.\nExamples: check device status, send reminders, trigger automations.\n\nMarkdown format. Saved immediately.",
+        "data": {
+          "content": "Markdown Editor"
+        }
+      },
+      "ws_identity": {
+        "title": "Edit IDENTITY.md",
+        "description": "**Assistant identity**\nDefines the AI's name, creature type, personality tags, and representative emoji.\nAffects how the AI perceives itself and its reply style.\n\nExample:\n`- **Name:** My Assistant`\n`- **Creature:** AI Butler`\n\nMarkdown format. Saved immediately.",
+        "data": {
+          "content": "Markdown Editor"
+        }
+      },
+      "ws_memory": {
+        "title": "Edit MEMORY.md",
+        "description": "**User preferences**\nStores long-term user preferences and habits, one per line.\nThe AI auto-matches relevant entries based on conversation context.\n\nExample:\n`- User prefers brief replies`\n`- preferred_address: Boss`\n\nMarkdown format. Saved immediately.",
+        "data": {
+          "content": "Markdown Editor"
+        }
+      },
+      "ws_soul": {
+        "title": "Edit SOUL.md",
+        "description": "**Voice & style**\nDefines the AI's tone and personality.\nExamples: calm and direct, humorous, professionally formal.\n\nExample:\n`- Be calm, direct, practical, and concise.`\n`- Sound like a reliable operator, not a generic chatbot.`\n\nMarkdown format. Saved immediately.",
+        "data": {
+          "content": "Markdown Editor"
+        }
+      },
+      "ws_tools": {
+        "title": "Edit TOOLS.md",
+        "description": "**Environment notes**\nRecords special configurations and device info for your smart home.\nThe AI references these when performing actions.\n\nExample:\n`- Living room camera: camera.living_room`\n`- TTS service: tts.edge_say`\n\nMarkdown format. Saved immediately.",
+        "data": {
+          "content": "Markdown Editor"
+        }
+      },
+      "ws_user": {
+        "title": "Edit USER.md",
+        "description": "**User info**\nStores basic user details. The AI uses these to personalize replies.\n\nExample:\n`- **Name:** John`\n`- **What to call them:** Boss`\n`- **Timezone:** America/New_York`\n\nMarkdown format. Saved immediately.",
+        "data": {
+          "content": "Markdown Editor"
+        }
+      }
+    },
+    "error": {
+      "invalid_conversation_mode": "Dialogue mode selection is invalid",
+      "invalid_agent": "Please select a valid dialogue proxy entity",
+      "no_agents_available": "No valid conversation proxy was found, make sure at least one conversation proxy is available"
+    },
+    "abort": {
+      "workspace_doc_saved": "Document saved and applied"
+    }
+  },
+  "selector": {
+    "config_sections": {
+      "label": "Configuration Options",
+      "description": "Please select the part to configure",
+      "options": {
+        "agent_settings": "Dialogue Agent Settings",
+        "conversation_settings": "Dialogue Mode Settings"
+      }
+    },
+    "conversation_mode": {
+      "label": "Display mode",
+      "description": "Select the display format of AI reply",
+      "options": {
+        "no_name": "No name displayed (streamlined)",
+        "add_name": "Show AI name (recommended)",
+        "detailed": "Full display (multi-AI)"
+      }
+    },
+    "primary_agent": {
+      "label": "Primary AI entity",
+      "description": "Select the preferred dialogue assistant AI"
+    },
+    "fallback_agent": {
+      "label": "Backup AI entity",
+      "description": "Alternate AI to use when the preferred AI cannot respond"
+    },
+    "secondary_fallback_agent": {
+      "label": "Summary AI entity",
+      "description": "When configured, the first two AIs answer separately and this AI summarizes them"
+    }
+  },
+  "navigation": {
+    "save_and_exit": "Save and complete",
+    "next_step": "Next step",
+    "previous_step": "Previous"
+  }
+}
