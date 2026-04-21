@@ -1,6 +1,4 @@
-"""Domain Registry - Home Assistant 域和服务注册表
-借鉴 mcp-assist 的设计，提供服务参数验证和智能提示
-"""
+
 from __future__ import annotations
 import logging
 from typing import Dict, List, Set, Any, Optional
@@ -58,8 +56,8 @@ DOMAIN_REGISTRY: Dict[str, DomainDef] = {}
 def _register_domains():
 
     global DOMAIN_REGISTRY
-    
-    
+
+
     DOMAIN_REGISTRY["light"] = DomainDef(
         domain="light",
         domain_type=TYPE_CONTROLLABLE,
@@ -86,7 +84,7 @@ def _register_domains():
         ],
         device_classes=["light"]
     )
-    
+
     DOMAIN_REGISTRY["switch"] = DomainDef(
         domain="switch",
         domain_type=TYPE_CONTROLLABLE,
@@ -99,7 +97,7 @@ def _register_domains():
         ],
         device_classes=["outlet", "switch"]
     )
-    
+
     DOMAIN_REGISTRY["climate"] = DomainDef(
         domain="climate",
         domain_type=TYPE_CONTROLLABLE,
@@ -115,7 +113,7 @@ def _register_domains():
                     ServiceParam("temperature", "目标温度", required=True, param_type="number"),
                     ServiceParam("target_temp_high", "最高温度", param_type="number"),
                     ServiceParam("target_temp_low", "最低温度", param_type="number"),
-                    ServiceParam("hvac_mode", "模式", param_type="string", 
+                    ServiceParam("hvac_mode", "模式", param_type="string",
                                enum=["off", "heat", "cool", "heat_cool", "auto", "dry", "fan_only"]),
                 ]
             ),
@@ -137,7 +135,7 @@ def _register_domains():
             ),
         ]
     )
-    
+
     DOMAIN_REGISTRY["cover"] = DomainDef(
         domain="cover",
         domain_type=TYPE_CONTROLLABLE,
@@ -165,8 +163,8 @@ def _register_domains():
         ],
         device_classes=["awning", "blind", "curtain", "damper", "door", "garage", "gate", "shade", "shutter", "window"]
     )
-    
-    
+
+
     DOMAIN_REGISTRY["fan"] = DomainDef(
         domain="fan",
         domain_type=TYPE_CONTROLLABLE,
@@ -195,7 +193,7 @@ def _register_domains():
             ),
         ]
     )
-    
+
     DOMAIN_REGISTRY["media_player"] = DomainDef(
         domain="media_player",
         domain_type=TYPE_CONTROLLABLE,
@@ -234,7 +232,7 @@ def _register_domains():
         ],
         device_classes=["tv", "speaker", "receiver"]
     )
-    
+
     DOMAIN_REGISTRY["lock"] = DomainDef(
         domain="lock",
         domain_type=TYPE_CONTROLLABLE,
@@ -246,7 +244,7 @@ def _register_domains():
             ServiceDef(name="open", description="打开（支持的锁）"),
         ]
     )
-    
+
     DOMAIN_REGISTRY["vacuum"] = DomainDef(
         domain="vacuum",
         domain_type=TYPE_CONTROLLABLE,
@@ -275,8 +273,8 @@ def _register_domains():
             ),
         ]
     )
-    
-    
+
+
     DOMAIN_REGISTRY["sensor"] = DomainDef(
         domain="sensor",
         domain_type=TYPE_READ_ONLY,
@@ -294,7 +292,7 @@ def _register_domains():
             "timestamp", "volatile_organic_compounds", "voltage", "volume", "water", "weight", "wind_speed"
         ]
     )
-    
+
     DOMAIN_REGISTRY["binary_sensor"] = DomainDef(
         domain="binary_sensor",
         domain_type=TYPE_READ_ONLY,
@@ -308,8 +306,8 @@ def _register_domains():
             "running", "safety", "smoke", "sound", "tamper", "update", "vibration", "window"
         ]
     )
-    
-    
+
+
     DOMAIN_REGISTRY["script"] = DomainDef(
         domain="script",
         domain_type=TYPE_SERVICE_ONLY,
@@ -322,7 +320,7 @@ def _register_domains():
             ServiceDef(name="reload", description="重新加载脚本"),
         ]
     )
-    
+
     DOMAIN_REGISTRY["automation"] = DomainDef(
         domain="automation",
         domain_type=TYPE_SERVICE_ONLY,
@@ -338,7 +336,7 @@ def _register_domains():
             ServiceDef(name="reload", description="重新加载自动化"),
         ]
     )
-    
+
     DOMAIN_REGISTRY["scene"] = DomainDef(
         domain="scene",
         domain_type=TYPE_SERVICE_ONLY,
@@ -348,7 +346,7 @@ def _register_domains():
             ServiceDef(name="turn_on", description="激活场景", aliases=["activate"]),
         ]
     )
-    
+
     DOMAIN_REGISTRY["notify"] = DomainDef(
         domain="notify",
         domain_type=TYPE_SERVICE_ONLY,
@@ -367,7 +365,7 @@ def _register_domains():
             ),
         ]
     )
-    
+
     DOMAIN_REGISTRY["tts"] = DomainDef(
         domain="tts",
         domain_type=TYPE_SERVICE_ONLY,
@@ -386,7 +384,7 @@ def _register_domains():
             ),
         ]
     )
-    
+
     DOMAIN_REGISTRY["input_boolean"] = DomainDef(
         domain="input_boolean",
         domain_type=TYPE_CONTROLLABLE,
@@ -398,7 +396,7 @@ def _register_domains():
             ServiceDef(name="toggle", description="切换"),
         ]
     )
-    
+
     DOMAIN_REGISTRY["input_number"] = DomainDef(
         domain="input_number",
         domain_type=TYPE_CONTROLLABLE,
@@ -416,7 +414,7 @@ def _register_domains():
             ServiceDef(name="decrement", description="减少"),
         ]
     )
-    
+
     DOMAIN_REGISTRY["input_select"] = DomainDef(
         domain="input_select",
         domain_type=TYPE_CONTROLLABLE,
@@ -436,8 +434,8 @@ def _register_domains():
             ServiceDef(name="select_previous", description="选择上一个"),
         ]
     )
-    
-    
+
+
     DOMAIN_REGISTRY["alarm_control_panel"] = DomainDef(
         domain="alarm_control_panel",
         domain_type=TYPE_CONTROLLABLE,
@@ -459,7 +457,7 @@ def _register_domains():
             ServiceDef(name="alarm_trigger", description="触发报警"),
         ]
     )
-    
+
     DOMAIN_REGISTRY["camera"] = DomainDef(
         domain="camera",
         domain_type=TYPE_CONTROLLABLE,
@@ -479,7 +477,7 @@ def _register_domains():
             ]),
         ]
     )
-    
+
     DOMAIN_REGISTRY["humidifier"] = DomainDef(
         domain="humidifier",
         domain_type=TYPE_CONTROLLABLE,
@@ -497,7 +495,7 @@ def _register_domains():
             ]),
         ]
     )
-    
+
     DOMAIN_REGISTRY["water_heater"] = DomainDef(
         domain="water_heater",
         domain_type=TYPE_CONTROLLABLE,
@@ -514,7 +512,7 @@ def _register_domains():
             ]),
         ]
     )
-    
+
     DOMAIN_REGISTRY["input_text"] = DomainDef(
         domain="input_text",
         domain_type=TYPE_CONTROLLABLE,
@@ -526,7 +524,7 @@ def _register_domains():
             ]),
         ]
     )
-    
+
     DOMAIN_REGISTRY["input_datetime"] = DomainDef(
         domain="input_datetime",
         domain_type=TYPE_CONTROLLABLE,
@@ -540,7 +538,7 @@ def _register_domains():
             ]),
         ]
     )
-    
+
     DOMAIN_REGISTRY["button"] = DomainDef(
         domain="button",
         domain_type=TYPE_CONTROLLABLE,
@@ -550,7 +548,7 @@ def _register_domains():
             ServiceDef(name="press", description="按下"),
         ]
     )
-    
+
     DOMAIN_REGISTRY["number"] = DomainDef(
         domain="number",
         domain_type=TYPE_CONTROLLABLE,
@@ -562,7 +560,7 @@ def _register_domains():
             ]),
         ]
     )
-    
+
     DOMAIN_REGISTRY["select"] = DomainDef(
         domain="select",
         domain_type=TYPE_CONTROLLABLE,
@@ -574,7 +572,7 @@ def _register_domains():
             ]),
         ]
     )
-    
+
     DOMAIN_REGISTRY["timer"] = DomainDef(
         domain="timer",
         domain_type=TYPE_CONTROLLABLE,
@@ -592,7 +590,7 @@ def _register_domains():
             ]),
         ]
     )
-    
+
     DOMAIN_REGISTRY["counter"] = DomainDef(
         domain="counter",
         domain_type=TYPE_CONTROLLABLE,
@@ -618,27 +616,12 @@ def get_domain(domain: str) -> Optional[DomainDef]:
     return DOMAIN_REGISTRY.get(domain)
 
 
-def get_supported_domains() -> List[str]:
-
-    return list(DOMAIN_REGISTRY.keys())
-
-
-def get_domains_by_type(domain_type: str) -> List[str]:
-
-    return [d.domain for d in DOMAIN_REGISTRY.values() if d.domain_type == domain_type]
-
-
-def get_domains_by_priority(max_priority: int) -> List[str]:
-
-    return [d.domain for d in DOMAIN_REGISTRY.values() if d.priority <= max_priority]
-
-
 def get_service(domain: str, service: str) -> Optional[ServiceDef]:
 
     domain_def = DOMAIN_REGISTRY.get(domain)
     if not domain_def:
         return None
-    
+
     for svc in domain_def.services:
         if svc.name == service or service in svc.aliases:
             return svc
@@ -646,17 +629,7 @@ def get_service(domain: str, service: str) -> Optional[ServiceDef]:
 
 
 def validate_service_call(domain: str, service: str, data: Dict[str, Any] = None) -> Dict[str, Any]:
-    """验证服务调用参数
-    
-    返回:
-    {
-        "valid": bool,
-        "errors": List[str],
-        "warnings": List[str],
-        "normalized_service": str,
-        "suggestions": Dict[str, Any],
-    }
-    """
+
     result = {
         "valid": True,
         "errors": [],
@@ -664,39 +637,39 @@ def validate_service_call(domain: str, service: str, data: Dict[str, Any] = None
         "normalized_service": service,
         "suggestions": {},
     }
-    
+
     domain_def = DOMAIN_REGISTRY.get(domain)
     if not domain_def:
         result["warnings"].append(f"域 '{domain}' 未在注册表中，无法验证")
         return result
-    
+
     service_def = get_service(domain, service)
     if not service_def:
         available = [s.name for s in domain_def.services]
         result["errors"].append(f"域 '{domain}' 不支持服务 '{service}'，可用: {available}")
         result["valid"] = False
         return result
-    
+
     result["normalized_service"] = service_def.name
-    
+
     if not data:
         data = {}
-    
+
     for param in service_def.params:
         if param.required and param.name not in data:
             result["errors"].append(f"缺少必需参数: {param.name} ({param.description})")
             result["valid"] = False
-    
+
     for param in service_def.params:
         if param.name not in data:
             continue
-        
+
         value = data[param.name]
-        
+
         if param.enum and value not in param.enum:
             result["errors"].append(f"参数 '{param.name}' 值 '{value}' 无效，可选: {param.enum}")
             result["valid"] = False
-        
+
         if param.param_type == "number" and isinstance(value, (int, float)):
             if param.min_value is not None and value < param.min_value:
                 result["errors"].append(f"参数 '{param.name}' 值 {value} 小于最小值 {param.min_value}")
@@ -704,7 +677,7 @@ def validate_service_call(domain: str, service: str, data: Dict[str, Any] = None
             if param.max_value is not None and value > param.max_value:
                 result["errors"].append(f"参数 '{param.name}' 值 {value} 大于最大值 {param.max_value}")
                 result["valid"] = False
-    
+
     for param in service_def.params:
         if param.name not in data:
             suggestion = {"description": param.description, "type": param.param_type}
@@ -717,7 +690,7 @@ def validate_service_call(domain: str, service: str, data: Dict[str, Any] = None
             if param.max_value is not None:
                 suggestion["max"] = param.max_value
             result["suggestions"][param.name] = suggestion
-    
+
     return result
 
 
@@ -726,15 +699,15 @@ def get_service_help(domain: str, service: str = None) -> str:
     domain_def = DOMAIN_REGISTRY.get(domain)
     if not domain_def:
         return f"未知域: {domain}"
-    
+
     lines = [f"## {domain} ({domain_def.description})"]
     lines.append(f"类型: {domain_def.domain_type}")
-    
+
     if service:
         service_def = get_service(domain, service)
         if not service_def:
             return f"未知服务: {domain}.{service}"
-        
+
         lines.append(f"\n### {service_def.name}")
         lines.append(f"描述: {service_def.description}")
         if service_def.aliases:
@@ -754,5 +727,5 @@ def get_service_help(domain: str, service: str = None) -> str:
         for svc in domain_def.services:
             aliases = f" (别名: {', '.join(svc.aliases)})" if svc.aliases else ""
             lines.append(f"  - {svc.name}: {svc.description}{aliases}")
-    
+
     return "\n".join(lines)
