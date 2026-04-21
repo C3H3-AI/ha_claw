@@ -332,15 +332,15 @@ async def async_clear_heartbeat_result(hass: HomeAssistant, slug: str = "") -> P
     return await hass.async_add_executor_job(_write_state, state)
 
 
-_INTERVAL_RE = re.compile(r"^(?:every\s+)?(\d+)\s*([mhd])(?:in|our|ay)?s?$", re.IGNORECASE)
-_UNIT_MINUTES = {"m": 1, "h": 60, "d": 1440}
+_INTERVAL_RE = re.compile(r"^(?:every\s+)?(\d+)\s*([smhd])(?:ec|in|our|ay)?s?$", re.IGNORECASE)
+_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 _CRON_RE = re.compile(r"^[*/\d,\-]+(?:\s+[*/\d,\-]+){4}$")
 
 
-def _parse_interval_minutes(schedule: str) -> int | None:
+def _parse_interval_seconds(schedule: str) -> int | None:
     m = _INTERVAL_RE.match(schedule.strip())
     if m:
-        return int(m.group(1)) * _UNIT_MINUTES[m.group(2).lower()[0]]
+        return int(m.group(1)) * _UNIT_SECONDS[m.group(2).lower()[0]]
     return None
 
 
@@ -382,13 +382,13 @@ def _is_cron(schedule: str) -> bool:
     return bool(_CRON_RE.match(schedule.strip()))
 
 
-def _next_due_minutes(schedule: str, last_checked: str, now: datetime) -> int | None:
-    interval = _parse_interval_minutes(schedule)
+def _next_due_seconds(schedule: str, last_checked: str, now: datetime) -> int | None:
+    interval = _parse_interval_seconds(schedule)
     if interval is not None:
         if not last_checked:
             return 0
         try:
-            elapsed = (now - datetime.fromisoformat(last_checked)).total_seconds() / 60
+            elapsed = (now - datetime.fromisoformat(last_checked)).total_seconds()
             remaining = interval - elapsed
             return max(0, int(remaining))
         except ValueError:
@@ -396,7 +396,13 @@ def _next_due_minutes(schedule: str, last_checked: str, now: datetime) -> int | 
 
     if _is_cron(schedule):
         if not last_checked:
-            return 0
+            if _cron_matches_now(schedule, now):
+                return 0
+            for future_min in range(1, 1441):
+                check = now + timedelta(minutes=future_min)
+                if _cron_matches_now(schedule, check):
+                    return future_min
+            return None
         try:
             last_dt = datetime.fromisoformat(last_checked)
             if (now - last_dt).total_seconds() < 60:
@@ -412,7 +418,13 @@ def _next_due_minutes(schedule: str, last_checked: str, now: datetime) -> int | 
                 if _cron_matches_now(schedule, check):
                     return future_min
         except ValueError:
-            return 0
+            if _cron_matches_now(schedule, now):
+                return 0
+            for future_min in range(1, 1441):
+                check = now + timedelta(minutes=future_min)
+                if _cron_matches_now(schedule, check):
+                    return future_min
+            return None
         return None
 
     return None
@@ -428,7 +440,7 @@ def get_due_tasks() -> list[HeartbeatTask]:
             continue
         task_state = state.get("tasks", {}).get(task.slug, {})
         last_checked = task_state.get("last_checked_at", "")
-        remaining = _next_due_minutes(task.schedule, last_checked, now)
+        remaining = _next_due_seconds(task.schedule, last_checked, now)
         if remaining is not None and remaining <= 0:
             due.append(task)
     return due

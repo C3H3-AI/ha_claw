@@ -10,6 +10,7 @@ from .runtime import (
     async_unload_runtime,
     prime_runtime_state,
 )
+from .runtime.heartbeat_ticker import async_setup_heartbeat_ticker, async_unload_heartbeat_ticker
 
 LOGGER = logging.getLogger(__name__)
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -19,6 +20,7 @@ DATA_AGENT = "agent"
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = entry
     prime_runtime_state(hass)
+    async_setup_heartbeat_ticker(hass)
     from .runtime.custom_entity_store import async_load_custom_entities
     await async_load_custom_entities(hass)
     await async_setup_runtime(hass, entry)
@@ -32,6 +34,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return False
     hass.data[DOMAIN].pop(entry.entry_id)
     if not hass.data[DOMAIN]:
+        async_unload_heartbeat_ticker(hass)
         await async_unload_runtime(hass)
     return True
 

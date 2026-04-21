@@ -56,14 +56,14 @@
         "title": "工作区文档编辑",
         "description": "**使用说明：**\n这些文档定义了 AI 助手的**核心人格与行为**，使用 Markdown 格式编写。\n选择一个文档进行查看或编辑，修改保存后**立即生效**，无需重启。",
         "menu_options": {
-          "ws_agents": "AGENTS.md — 文件角色与操作规范",
-          "ws_bootstrap": "BOOTSTRAP.md — 首次引导流程",
-          "ws_heartbeat": "HEARTBEAT.md — 定时跟进任务",
-          "ws_identity": "IDENTITY.md — 助手身份设定",
-          "ws_memory": "MEMORY.md — 用户偏好记忆",
-          "ws_soul": "SOUL.md — 语气与风格",
-          "ws_tools": "TOOLS.md — 环境与工具备注",
-          "ws_user": "USER.md — 用户基本信息"
+          "ws_agents": "「AGENTS.md」 — 文件角色与操作规范",
+          "ws_bootstrap": "「BOOTSTRAP.md」 — 首次引导流程",
+          "ws_heartbeat": "「HEARTBEAT.md」 — 定时跟进任务",
+          "ws_identity": "「IDENTITY.md」 — 助手身份设定",
+          "ws_memory": "「MEMORY.md」 — 用户偏好记忆",
+          "ws_soul": "「SOUL.md」 — 语气与风格",
+          "ws_tools": "「TOOLS.md」 — 环境与工具备注",
+          "ws_user": "「USER.md」 — 用户基本信息"
         }
       },
       "ws_agents": {

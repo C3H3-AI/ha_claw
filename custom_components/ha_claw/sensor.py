@@ -4,6 +4,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.text import TextEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
@@ -13,7 +14,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
 from .runtime.custom_entity_store import get_custom_entities_by_platform
-from .runtime.heartbeat_store import async_list_heartbeat_tasks, _next_due_minutes
+from .runtime.heartbeat_store import async_list_heartbeat_tasks, _next_due_seconds
 
 SCAN_INTERVAL = timedelta(seconds=30)
 _SENSOR_KEY = "_heartbeat_sensor"
@@ -79,12 +80,13 @@ async def async_sync_heartbeat_sensor(hass: HomeAssistant) -> None:
         data[_SENSOR_KEY] = None
 
 
-class HeartbeatSensor(SensorEntity):
+class HeartbeatSensor(TextEntity):
 
     _attr_has_entity_name = True
     _attr_icon = "mdi:heart-pulse"
     _attr_should_poll = True
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
@@ -96,6 +98,7 @@ class HeartbeatSensor(SensorEntity):
         self._next_due_value: int | None = None
         self._next_due_unit: str = "min"
         self._tasks: list[dict] = []
+        self._last_updated = datetime.now(UTC)
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -107,12 +110,12 @@ class HeartbeatSensor(SensorEntity):
         )
 
     @property
-    def native_value(self) -> int | None:
-        return self._next_due_value
-
-    @property
-    def native_unit_of_measurement(self) -> str:
-        return self._next_due_unit
+    def native_value(self) -> str:
+        if self._total_count == 0:
+            return "0 tasks"
+        if self._next_due_value is None:
+            return "Unknown"
+        return f"{self._next_due_value} {self._next_due_unit}"
 
     @property
     def extra_state_attributes(self) -> dict:
@@ -120,6 +123,7 @@ class HeartbeatSensor(SensorEntity):
             "total_tasks": self._total_count,
             "active_tasks": self._active_count,
             "tasks": self._tasks,
+            "last_updated": self._last_updated.strftime("%B %d, %Y at %I:%M %p"),
         }
 
     async def async_added_to_hass(self) -> None:
@@ -127,6 +131,7 @@ class HeartbeatSensor(SensorEntity):
         self.async_write_ha_state()
 
     async def async_update(self) -> None:
+        self._last_updated = datetime.now(UTC)
         tasks = await async_list_heartbeat_tasks(self.hass)
         self._total_count = len(tasks)
         self._active_count = sum(1 for t in tasks if t.get("enabled", False))
@@ -136,7 +141,7 @@ class HeartbeatSensor(SensorEntity):
         for t in tasks:
             if not t.get("enabled"):
                 continue
-            remaining = _next_due_minutes(
+            remaining = _next_due_seconds(
                 t.get("schedule", "") or t.get("when", ""),
                 t.get("last_checked_at", ""),
                 now,
@@ -147,18 +152,18 @@ class HeartbeatSensor(SensorEntity):
                 soonest = remaining
         if soonest is None:
             self._next_due_value = None
-            self._next_due_unit = "min"
-        elif soonest >= 1440:
-            self._next_due_value = soonest // 1440
+            self._next_due_unit = "s"
+        elif soonest >= 86400:
+            self._next_due_value = soonest // 86400
             self._next_due_unit = "d"
+        elif soonest >= 3600:
+            self._next_due_value = soonest // 3600
+            self._next_due_unit = "h"
         elif soonest >= 60:
             self._next_due_value = soonest // 60
-            self._next_due_unit = "h"
-        elif soonest >= 1:
-            self._next_due_value = soonest
             self._next_due_unit = "min"
         else:
-            self._next_due_value = max(0, soonest * 60)
+            self._next_due_value = max(0, soonest)
             self._next_due_unit = "s"
 
 
