@@ -6,8 +6,10 @@
     ],
     "config_flow": true,
     "dependencies": [
+      "config",
       "conversation",
       "intent",
+      "recorder",
       "websocket_api"
     ],
     "after_dependencies": ["assist_pipeline"],
