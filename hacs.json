@@ -1,5 +1,6 @@
 {
-  "name": "HA Claw",
+  "name": "Claw Assistant",
+  "filename": "claw_assistant",
   "render_readme": true,
   "homeassistant": "2025.10.0"
 }
