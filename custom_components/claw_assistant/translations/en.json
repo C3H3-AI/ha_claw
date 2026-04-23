@@ -1,4 +1,5 @@
 {
+  "title": "Claw Assistant",
   "entity": {
     "sensor": {
       "heartbeat": {
@@ -7,7 +8,6 @@
     }
   },
   "config": {
-    "title": "Claw Assistant",
     "step": {
       "user": {
         "title": "Initial setup",
@@ -146,41 +146,5 @@
     "abort": {
       "workspace_doc_saved": "Document saved and applied"
     }
-  },
-  "selector": {
-    "config_sections": {
-      "label": "Configuration Options",
-      "description": "Please select the part to configure",
-      "options": {
-        "agent_settings": "Dialogue Agent Settings",
-        "conversation_settings": "Dialogue Mode Settings"
-      }
-    },
-    "conversation_mode": {
-      "label": "Display mode",
-      "description": "Select the display format of AI reply",
-      "options": {
-        "no_name": "No name displayed (streamlined)",
-        "add_name": "Show AI name (recommended)",
-        "detailed": "Full display (multi-AI)"
-      }
-    },
-    "primary_agent": {
-      "label": "Primary AI entity",
-      "description": "Select the preferred dialogue assistant AI"
-    },
-    "fallback_agent": {
-      "label": "Backup AI entity",
-      "description": "Alternate AI to use when the preferred AI cannot respond"
-    },
-    "secondary_fallback_agent": {
-      "label": "Summary AI entity",
-      "description": "When configured, the first two AIs answer separately and this AI summarizes them"
-    }
-  },
-  "navigation": {
-    "save_and_exit": "Save and complete",
-    "next_step": "Next step",
-    "previous_step": "Previous"
   }
 }

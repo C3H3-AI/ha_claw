@@ -1,4 +1,5 @@
 {
+  "title": "Claw Assistant",
   "entity": {
     "sensor": {
       "heartbeat": {
@@ -7,7 +8,6 @@
     }
   },
   "config": {
-    "title": "Claw Assistant",
     "step": {
       "user": {
         "title": "首次设置",
@@ -130,41 +130,5 @@
     "abort": {
       "workspace_doc_saved": "文档已保存并生效"
     }
-  },
-  "selector": {
-    "config_sections": {
-      "label": "配置选项",
-      "description": "请选择要配置的部分",
-      "options": {
-        "agent_settings": "对话代理设置",
-        "conversation_settings": "对话模式设置"
-      }
-    },
-    "conversation_mode": {
-      "label": "显示模式",
-      "description": "选择AI回复的显示格式",
-      "options": {
-        "no_name": "不显示名称（精简模式）",
-        "add_name": "显示 AI 名称（前后备推荐）",
-        "detailed": "完整显示（多 AI）"
-      }
-    },
-    "primary_agent": {
-      "label": "首要 AI 实体",
-      "description": "选择首选对话助手 AI"
-    },
-    "fallback_agent": {
-      "label": "后备 AI 实体",
-      "description": "当首选 AI 无法响应时使用的备用 AI"
-    },
-    "secondary_fallback_agent": {
-      "label": "总结 AI 实体",
-      "description": "当配置该项时，前两个 AI 会分别回答，再由这个 AI 汇总前两者结果"
-    }
-  },
-  "navigation": {
-    "save_and_exit": "保存并完成",
-    "next_step": "下一步",
-    "previous_step": "上一步"
   }
 }
