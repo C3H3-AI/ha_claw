@@ -6,10 +6,11 @@ from typing import Any
 
 from homeassistant.helpers import llm
 
+from .automation_tools import AutomationTool
+from .script_tools import ScriptTool
 from .ha_core_tools import (
     AgentHandoffTool,
     AreaDevicesTool,
-    AutomationTool,
     BatchControlTool,
     ConfigFileTool,
     EntityQueryTool,
@@ -20,6 +21,7 @@ from .ha_core_tools import (
     ListServicesTool,
     NextAgentHandoffTool,
     NotifyTool,
+    RegistryTool,
     ScriptExecuteTool,
     ServiceCallTool,
     ServiceHelpTool,
@@ -74,19 +76,20 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
     "BatchControl": {"category": "device", "desc": "Control multiple devices in one request. Params: entity_ids (list), action (turn_on/turn_off/toggle), data", "priority": 2},
     "AreaDevices": {"category": "query", "desc": "Get all devices in a specific area. Params: area", "priority": 2},
     "HistoryQuery": {"category": "query", "desc": "Query entity history. Params: entity_id, hours (default 24)", "priority": 2},
-    "Automation": {"category": "system", "desc": "Manage automations (creation is not supported). Params: action (list/trigger/enable/disable), entity_id", "priority": 2},
+    "Automation": {"category": "system", "desc": "Manage automations via official APIs (NOT shell/ConfigFile!). Params: action (list/get/create/update/delete/trigger/enable/disable), entity_id, automation_id, config, icon, area_id. Workflow: get→modify→update. Always use this tool for automation CRUD.", "priority": 2},
+    "Script": {"category": "system", "desc": "Manage scripts via official APIs (NOT shell/ConfigFile!). Params: action (list/get/create/update/delete/run), entity_id, script_id, config, variables, icon, area_id. update merges partial config; run executes with optional variables dict.", "priority": 2},
     "ExecutePython": {"category": "system", "desc": "Execute Python code. Default mode: inline with `hass` access. Sandbox mode (sandbox=true or requirements=[...]): isolated child venv + subprocess, can pip install extra deps. Params: code, sandbox, requirements, timeout", "priority": 2},
     "UrlFetch": {"category": "search", "desc": "Fetch readable content from a URL. Params: url, max_length (default 2000)", "priority": 3},
     "ListServices": {"category": "query", "desc": "List available services for a domain. Params: domain (for example light/switch/climate)", "priority": 2},
     "ScriptExecute": {"category": "system", "desc": "Execute a Home Assistant script. Params: script_id, variables (optional dict)", "priority": 2},
     "Notify": {"category": "device", "desc": "Send a notification. Params: message, title (default 'AI Assistant'), target (default persistent_notification or notify.xxx)", "priority": 2},
     "ConfigEntries": {"category": "system", "desc": "Integration management. INSTALL: flow/init(handler=domain)→flow/configure. CHECK: get(domain). OPTIONS: options/init→options/configure. DELETE/RELOAD: delete/reload(entry_id). SUBENTRY: subentries/flow/init→configure. Do NOT explore randomly — follow the workflow.", "priority": 3},
-    "HAControl": {"category": "system", "desc": "Advanced Home Assistant control + host shell. Params: action (shell/check_config/list_integrations/get_integration/list_entities_by_integration/reload_integration/rename_entry/reload_themes/reload_resources/reload_scripts/reload_automations/get_system_log/get_error_log/get_diagnostics), params (e.g. {command, timeout, cwd} for shell; {domain} for integration actions; {limit} for system_log; {lines} for error_log)", "priority": 3},
+    "HAControl": {"category": "system", "desc": "Advanced Home Assistant control + host shell. Params: action (shell/check_config/list_integrations/get_integration/list_entities_by_integration/reload_integration/rename_entry/reload_themes/reload_resources/reload_scripts/reload_automations/get_system_log/get_error_log/get_diagnostics), params (e.g. {command, timeout, cwd} for shell; {domain} for integration actions). IMPORTANT: before using shell to modify automations.yaml/configuration.yaml/sensors.yaml, politely explain the change and ask the user for confirmation; prefer Automation tool for automations.", "priority": 3},
     "HACS": {"category": "system", "desc": "Manage the HACS store. Params: action (list/search/github_search/info/install/update/uninstall/remove/manage/edit/open_add_integration), repository/source/query/category/params", "priority": 3},
     "SystemControl": {"category": "system", "desc": "System control. Params: action (set_global_inject/set_output_mode/get_status)", "priority": 3},
     "ConversationMemory": {"category": "misc", "desc": "Manage conversation memory. Params: action (save/get/delete/list), key, value", "priority": 3},
     "ParallelToolCall": {"category": "misc", "desc": "Execute multiple independent tools in true parallel and return an aggregated result. Params: tools([{name,args}])", "priority": 3},
-    "GetConversationHistory": {"category": "core", "desc": "Get current conversation history. Params: limit (default 10)", "priority": 1},
+    "GetConversationHistory": {"category": "core", "desc": "Inspect/manage conversation history. action=get|recent|clear|stats. `recent` (default 20 min) returns turns across ALL conversations — use when the window/conversation_id was closed/changed. `clear` (scope=current|all) lets you wipe. Params: action, max_turns, include_tools, recent_minutes, conversation_id, scope.", "priority": 2},
     "InstallSkill": {"category": "core", "desc": "Install a Markdown skill. Params: name, markdown, overwrite", "priority": 2},
     "ListInstalledSkills": {"category": "core", "desc": "List installed skills. No parameters.", "priority": 1},
     "GetInstalledSkill": {"category": "core", "desc": "Read the full content of one installed skill. Params: name", "priority": 1},
@@ -107,7 +110,7 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
     "ServiceHelp": {"category": "query", "desc": "Get help for a domain or service. Params: domain (required), service (optional)", "priority": 2},
     "SmartDiscovery": {"category": "query", "desc": "Smart entity discovery. Params: area/domain/state/name_contains/name_pattern/device_class/inferred_type/person_name/pet_name/limit", "priority": 2},
     "IntentCall": {"category": "query", "desc": "List or call third-party intent handlers (e.g. Holidays, Almanac, TuneFreePlayMusic). action=list to discover; action=call with intent_type and optional slots dict.", "priority": 2},
-    "ConfigFile": {"category": "system", "desc": "Access the Home Assistant config directory. Params: action(list/read/stage_write/stage_append/stage_mkdir/stage_delete/apply/cancel/list_pending), path/content/approval_id", "priority": 3},
+    "ConfigFile": {"category": "system", "desc": "Access the Home Assistant config directory. Params: action(list/read/stage_write/stage_append/stage_mkdir/stage_delete/apply/cancel/list_pending), path/content/approval_id. IMPORTANT: for automations.yaml/configuration.yaml/sensors.yaml, politely explain the change and ask the user for confirmation first; prefer Automation tool for automation edits.", "priority": 3},
     "DeleteSkill": {"category": "core", "desc": "Delete an installed Markdown skill (audited in changelog). Params: name, reason", "priority": 2},
     "UpsertGuideDoc": {"category": "core", "desc": "Create or overwrite a runtime Home Assistant guide Markdown. Params: relative_path, markdown, reason", "priority": 2},
     "DeleteGuideDoc": {"category": "core", "desc": "Delete a runtime Home Assistant guide Markdown (source/ is protected). Params: relative_path, reason", "priority": 2},
@@ -118,6 +121,7 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
     "GetProposal": {"category": "core", "desc": "Read the body of one pending proposal. Params: slug", "priority": 2},
     "DiscardProposal": {"category": "core", "desc": "Remove a pending proposal without applying it. Params: slug", "priority": 2},
     "ApplyProposal": {"category": "core", "desc": "Approve and apply a pending proposal. Params: slug, approved_by", "priority": 2},
+    "Registry": {"category": "system", "desc": "Manage HA registries (areas/floors/labels/categories/entities). Use this for: creating/renaming/deleting areas, assigning entities to areas, adding labels, renaming entities. Params: registry(area/floor/label/category/entity), action(list/get/create/update/delete/rename), *_id, params(dict)", "priority": 1},
 }
 
 CORE_TOOLS = [
@@ -142,6 +146,7 @@ def build_tool_map() -> dict[str, type]:
         "AreaDevices": AreaDevicesTool,
         "HistoryQuery": HistoryQueryTool,
         "Automation": AutomationTool,
+        "Script": ScriptTool,
         "ExecutePython": ExecutePythonTool,
         "UrlFetch": UrlFetchTool,
         "ListServices": ListServicesTool,
@@ -187,6 +192,7 @@ def build_tool_map() -> dict[str, type]:
         "HelperManager": HelperManagerTool,
         "CustomEntityManager": CustomEntityManagerTool,
         "IntentCall": IntentCallTool,
+        "Registry": RegistryTool,
     }
 
 
