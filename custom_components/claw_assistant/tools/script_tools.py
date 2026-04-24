@@ -8,6 +8,7 @@ Mirrors the official frontend pipeline used by the config panel:
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -51,7 +52,7 @@ class ScriptTool(llm.Tool):
             ),
             vol.Optional("entity_id", default=""): str,
             vol.Optional("script_id", default=""): str,
-            vol.Optional("config", default={}): dict,
+            vol.Optional("config", default={}): vol.Any(dict, str),
             vol.Optional("variables", default={}): dict,
             vol.Optional("page", default=1): vol.Coerce(int),
             vol.Optional("page_size", default=10): vol.Coerce(int),
@@ -242,6 +243,11 @@ class ScriptTool(llm.Tool):
         from homeassistant.components.config.script import EditScriptConfigView
         from homeassistant.helpers import config_validation as cv
 
+        if isinstance(config, str):
+            try:
+                config = json.loads(config)
+            except (json.JSONDecodeError, TypeError):
+                return {"success": False, "error": "config must be a dict (got unparseable string)"}
         if not isinstance(config, dict):
             return {"success": False, "error": "config must be a dict"}
 
