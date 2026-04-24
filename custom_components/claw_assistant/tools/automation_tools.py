@@ -1,6 +1,7 @@
 """Automation management tools for Home Assistant."""
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -41,7 +42,7 @@ class AutomationTool(llm.Tool):
                 ["list", "get", "trigger", "enable", "disable", "create", "update", "delete"]
             ),
             vol.Optional("entity_id", default=""): str,
-            vol.Optional("config", default={}): dict,
+            vol.Optional("config", default={}): vol.Any(dict, str),
             vol.Optional("automation_id", default=""): str,
             vol.Optional("page", default=1): vol.Coerce(int),
             vol.Optional("page_size", default=10): vol.Coerce(int),
@@ -231,6 +232,11 @@ class AutomationTool(llm.Tool):
         from homeassistant.components.config.automation import EditAutomationConfigView
         from homeassistant.helpers import config_validation as cv
 
+        if isinstance(config, str):
+            try:
+                config = json.loads(config)
+            except (json.JSONDecodeError, TypeError):
+                return {"success": False, "error": "config must be a dict (got unparseable string)"}
         if not isinstance(config, dict):
             return {"success": False, "error": "config must be a dict"}
 
