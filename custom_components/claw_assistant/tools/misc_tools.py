@@ -337,16 +337,23 @@ class ExecutePythonTool(llm.Tool):
         err_info: dict[str, Any] | None = None
 
         try:
-            with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
-                # With PyCF_ALLOW_TOP_LEVEL_AWAIT, the compiled module body may
-                # evaluate to a coroutine when awaits are present. Use eval (not
-                # exec) so we can capture and await it; regular modules just
-                # return None.
-                import inspect as _inspect
+            import inspect as _inspect
 
-                maybe = eval(compiled, globals_)
-                if _inspect.iscoroutine(maybe):
-                    await asyncio.wait_for(maybe, timeout=max(1, timeout))
+            is_async = compiled.co_flags & 0x100  # CO_COROUTINE
+            if is_async:
+                with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
+                    maybe = eval(compiled, globals_)
+                    if _inspect.iscoroutine(maybe):
+                        await asyncio.wait_for(maybe, timeout=max(1, timeout))
+            else:
+                def _run_sync() -> None:
+                    with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
+                        eval(compiled, globals_)
+
+                await asyncio.wait_for(
+                    hass.async_add_executor_job(_run_sync),
+                    timeout=max(1, timeout),
+                )
         except asyncio.TimeoutError:
             err_info = {
                 "error": f"Inline execution exceeded {timeout}s",
