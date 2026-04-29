@@ -1747,7 +1747,9 @@ class NotifyTool(llm.Tool):
     name = "Notify"
     description = (
         "Send a notification. "
-        "target: 'persistent_notification' (default), 'wechat:account_id:user_id' (push to WeChat), or a notify service target."
+        "target: 'persistent_notification' (default), "
+        "'wechat:account_id:user_id', 'qq:user:openid', 'qq:group:group_openid', "
+        "'qq:channel:channel_id', or a notify service target."
     )
     parameters = vol.Schema(
         {
@@ -1774,6 +1776,18 @@ class NotifyTool(llm.Tool):
                     svc_data["wechat_account_id"] = parts[1]
                 if len(parts) >= 3:
                     svc_data["target"] = parts[2]
+                await hass.services.async_call(
+                    "cn_im_hub", "send_message", svc_data, blocking=True,
+                )
+            elif target.startswith("qq:"):
+                parts = target.split(":", 2)
+                if len(parts) < 3 or parts[1] not in ("user", "group", "channel"):
+                    raise ValueError("QQ target must be qq:user:openid, qq:group:group_openid, or qq:channel:channel_id")
+                svc_data = {
+                    "channel": f"qq/{parts[1]}",
+                    "message": message,
+                    "target": parts[2],
+                }
                 await hass.services.async_call(
                     "cn_im_hub", "send_message", svc_data, blocking=True,
                 )
