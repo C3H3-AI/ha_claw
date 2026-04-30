@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from pathlib import Path
 import time
 
 import voluptuous as vol
@@ -22,8 +24,83 @@ from ..runtime.config_file_store import (
     read_config_file_sync,
     stage_config_operation,
 )
+from ..runtime.data_path import get_output_dir
+from ..runtime.im_transport import async_send_im_payload
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _normalize_camera_service_paths(hass: HomeAssistant, domain: str, service: str, data: dict[str, object]) -> dict[str, object]:
+    if domain != "camera" or service not in {"record", "snapshot"}:
+        return data
+
+    filename = data.get("filename")
+    if not isinstance(filename, str) or not filename.strip():
+        return data
+
+    candidate = filename.strip()
+    resolved: str | None = None
+    output_dir = get_output_dir(hass)
+    output_target = output_dir / (Path(candidate).name or ("camera.mp4" if service == "record" else "camera.jpg"))
+
+    try:
+        output_dir_resolved = output_dir.resolve(strict=False)
+        candidate_path = Path(candidate)
+        if candidate_path.is_absolute():
+            candidate_resolved = candidate_path.resolve(strict=False)
+            try:
+                candidate_resolved.relative_to(output_dir_resolved)
+            except ValueError:
+                pass
+            else:
+                resolved = str(candidate_resolved)
+    except OSError:
+        pass
+
+    if resolved is None and candidate.startswith(
+        ("/config/local/", "/config/www/", "/config/media/", "/local/", "/media/local/", "/media/")
+    ):
+        resolved = str(output_target)
+    elif resolved is None and candidate.startswith("media-source://media_source/local/"):
+        resolved = str(output_target)
+
+    if resolved is None:
+        return data
+
+    updated = dict(data)
+    updated["filename"] = resolved
+    return updated
+
+
+async def _verify_generated_service_file(
+    hass: HomeAssistant,
+    path: str,
+    *,
+    timeout_seconds: int,
+) -> dict[str, object]:
+    def _probe() -> dict[str, object]:
+        file_path = Path(path)
+        if not file_path.exists():
+            return {"exists": False, "verified": False}
+        try:
+            stat = file_path.stat()
+        except OSError as err:
+            return {"exists": False, "verified": False, "error": str(err)}
+        return {
+            "exists": True,
+            "verified": stat.st_size > 0,
+            "size": stat.st_size,
+            "mtime": int(stat.st_mtime),
+        }
+
+    deadline = time.monotonic() + max(1, timeout_seconds)
+    last = {"exists": False, "verified": False}
+    while time.monotonic() < deadline:
+        last = await hass.async_add_executor_job(_probe)
+        if bool(last.get("verified")):
+            return last
+        await asyncio.sleep(0.5)
+    return last
 _TARGET_PARAMS = ("entity_id", "device_id", "area_id", "floor_id", "label_id")
 
 
@@ -267,7 +344,6 @@ async def _consult_agent(
         return {"success": False, "error": f"Cannot get agent {agent_id}: {exc}"}
 
     conv_id = ulid.ulid()
-    # [PEER-CONSULT] marker tells ai_hub to skip intent processing and use LLM directly
     prompt = f"[PEER-CONSULT]\n{question}"
     if context:
         prompt = f"[PEER-CONSULT]\n[Context from calling AI]\n{context}\n\n[Question]\n{question}"
@@ -791,10 +867,34 @@ DISCIPLINE: 1) Only call the service the user asked for — no extra "helpful" c
             if isinstance(k, str):
                 sanitized[k] = v
         data = sanitized
+        data = _normalize_camera_service_paths(hass, domain, service, data)
+
+        if domain == "camera" and service in {"turn_on", "turn_off"}:
+            return {
+                "success": False,
+                "error": "camera.turn_on/turn_off is not a reliable action for many camera entities. Use camera.snapshot or camera.record with an explicit entity_id instead.",
+                "suggestions": {
+                    "preferred_services": ["camera.snapshot", "camera.record"],
+                    "required_fields": ["entity_id", "filename"],
+                },
+            }
 
         service_data, target = _extract_service_target(data)
         requires_target = await _service_requires_explicit_target(hass, domain, service)
         has_target = _has_explicit_target(service_data, target)
+        if domain == "camera" and service in {"record", "snapshot"} and not has_target:
+            return {
+                "success": False,
+                "error": f"camera.{service} requires an explicit camera entity_id target.",
+                "suggestions": {
+                    "required_fields": ["entity_id", "filename"],
+                    "discovery_hint": "Use CameraAnalyze with camera_entity='list' to discover available cameras before calling this service.",
+                    "example": {
+                        "entity_id": "camera.your_camera_entity",
+                        "filename": str(get_output_dir(hass) / ("camera.mp4" if service == "record" else "camera.jpg")),
+                    },
+                },
+            }
         if requires_target and not has_target:
             return _build_missing_target_response(
                 hass=hass,
@@ -855,7 +955,7 @@ DISCIPLINE: 1) Only call the service the user asked for — no extra "helpful" c
                 blocking=True,
                 target=target or None,
             )
-            return {
+            response: dict[str, object] = {
                 "success": True,
                 "message": f"Successfully called {domain}.{service}",
                 "domain": domain,
@@ -863,6 +963,23 @@ DISCIPLINE: 1) Only call the service the user asked for — no extra "helpful" c
                 "data": service_data,
                 "target": target,
             }
+            if domain == "camera" and service in {"record", "snapshot"}:
+                filename = service_data.get("filename")
+                if isinstance(filename, str) and filename.strip():
+                    verification = await _verify_generated_service_file(
+                        hass,
+                        filename,
+                        timeout_seconds=max(
+                            3,
+                            int(service_data.get("duration", 0) or 0) + 5,
+                        ),
+                    )
+                    response["verification"] = verification
+                    if not bool(verification.get("verified")):
+                        response["success"] = False
+                        response["error"] = f"{domain}.{service} did not produce a verified output file"
+                        response["message"] = f"Called {domain}.{service}, but output verification failed"
+            return response
         except Exception as err:
             _LOGGER.error("ServiceCall failed: %s.%s - %s", domain, service, err)
             return {"success": False, "error": str(err)}
@@ -1191,17 +1308,14 @@ class RegistryTool(llm.Tool):
         def _resolve_label_id(ident: str) -> str | None:
             if not ident:
                 return None
-            # Try direct label_id match
             if registry.async_get_label(ident):
                 return ident
-            # Fallback: match by name (case-insensitive)
             ident_lower = ident.strip().lower()
             for entry in registry.async_list_labels():
                 if entry.name.lower() == ident_lower:
                     return entry.label_id
             return None
 
-        # Only resolve when an action needs an existing label
         label_id = None
         if action in ("get", "update", "delete"):
             label_id = _resolve_label_id(raw_identifier)
@@ -1246,7 +1360,6 @@ class RegistryTool(llm.Tool):
             name = params.get("name", "")
             if not name:
                 return {"success": False, "error": "name is required for create"}
-            # If a label with this name already exists, return it idempotently
             existing = registry.async_get_label_by_name(name)
             if existing:
                 return {
@@ -1427,12 +1540,6 @@ class RegistryTool(llm.Tool):
             if "new_entity_id" in params:
                 changes["new_entity_id"] = params["new_entity_id"]
 
-            # Labels: support three modes
-            # - labels (list/set): REPLACE all labels with the given set
-            # - labels_add (list): APPEND to existing labels
-            # - labels_remove (list): REMOVE from existing labels
-            # Each value may be a label_id OR a label name (case-insensitive).
-            # Unknown labels are auto-created by name (so AI-provided Chinese names just work).
             labels_touched = any(
                 k in params for k in ("labels", "labels_add", "labels_remove")
             )
@@ -1455,14 +1562,12 @@ class RegistryTool(llm.Tool):
                         extras = {}
                     if not ident:
                         return None
-                    # Existing by id
                     if lreg.async_get_label(ident):
                         existing_id = ident
                     else:
                         by_name = lreg.async_get_label_by_name(ident)
                         existing_id = by_name.label_id if by_name else None
                     if existing_id:
-                        # Already exists: never re-create, never modify. Just use it.
                         return existing_id
                     if auto_create:
                         try:
@@ -1496,7 +1601,6 @@ class RegistryTool(llm.Tool):
                         text = raw.strip()
                         if not text:
                             return []
-                        # Split on common separators: , ，、; ； / | newline
                         import re as _re
                         parts = _re.split(r"[,\uFF0C\u3001;\uFF1B/|\n]+", text)
                         parts = [p.strip() for p in parts if p.strip()]
@@ -1528,9 +1632,7 @@ class RegistryTool(llm.Tool):
                     unknown_all.extend(unk)
                     current = current | add_set
                 if "labels_remove" in params:
-                    # For remove, don't auto-create; just resolve what exists
                     rem_set, unk = _resolve_list(params["labels_remove"], auto_create=False)
-                    # Unknown removes are not errors — just ignored
                     current = current - rem_set
 
                 changes["labels"] = current
@@ -1767,30 +1869,9 @@ class NotifyTool(llm.Tool):
         target = tool_input.tool_args.get("target", "persistent_notification")
         try:
             if target.startswith("wechat:"):
-                parts = target.split(":", 2)
-                svc_data: dict[str, Any] = {
-                    "channel": "wechat/user_id",
-                    "message": message,
-                }
-                if len(parts) >= 2:
-                    svc_data["wechat_account_id"] = parts[1]
-                if len(parts) >= 3:
-                    svc_data["target"] = parts[2]
-                await hass.services.async_call(
-                    "cn_im_hub", "send_message", svc_data, blocking=True,
-                )
+                await async_send_im_payload(hass, target, message=message)
             elif target.startswith("qq:"):
-                parts = target.split(":", 2)
-                if len(parts) < 3 or parts[1] not in ("user", "group", "channel"):
-                    raise ValueError("QQ target must be qq:user:openid, qq:group:group_openid, or qq:channel:channel_id")
-                svc_data = {
-                    "channel": f"qq/{parts[1]}",
-                    "message": message,
-                    "target": parts[2],
-                }
-                await hass.services.async_call(
-                    "cn_im_hub", "send_message", svc_data, blocking=True,
-                )
+                await async_send_im_payload(hass, target, message=message)
             elif target == "persistent_notification":
                 await hass.services.async_call(
                     "persistent_notification",
