@@ -78,6 +78,103 @@ _OUTPUT_MODE_ALIASES = {
 _OUTPUT_MODE_VALUES = sorted(_OUTPUT_MODE_ALIASES)
 
 
+def _has_top_level_async(tree) -> bool:
+    """Return True when module code requires top-level await execution."""
+
+    import ast
+
+    class _Finder(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.found = False
+
+        def visit_Await(self, node) -> None:  # type: ignore[no-untyped-def]
+            self.found = True
+
+        def visit_AsyncFor(self, node) -> None:  # type: ignore[no-untyped-def]
+            self.found = True
+
+        def visit_AsyncWith(self, node) -> None:  # type: ignore[no-untyped-def]
+            self.found = True
+
+        def visit_FunctionDef(self, node) -> None:  # type: ignore[no-untyped-def]
+            return
+
+        def visit_AsyncFunctionDef(self, node) -> None:  # type: ignore[no-untyped-def]
+            return
+
+        def visit_ClassDef(self, node) -> None:  # type: ignore[no-untyped-def]
+            return
+
+    finder = _Finder()
+    for stmt in tree.body:
+        finder.visit(stmt)
+        if finder.found:
+            return True
+    return False
+
+
+class _MainLoopProxy:
+    """Route HA core method calls back to the main event loop.
+
+    Used by ExecutePython (inline mode, top-level-await branch) so that user
+    code runs on a worker-thread event loop — synchronous I/O inside user
+    code (e.g. ``Path.write_bytes``) no longer blocks HA's main loop.
+
+    Rule for AI: every ``hass.*`` method call must be ``await``-ed, including
+    ones that used to be synchronous (e.g. ``hass.config.path``,
+    ``hass.states.get``). Non-callable attributes (``hass.config.config_dir``)
+    pass through unchanged.
+    """
+
+    __slots__ = ("_t", "_loop")
+
+    def __init__(self, target: Any, main_loop: "asyncio.AbstractEventLoop") -> None:
+        object.__setattr__(self, "_t", target)
+        object.__setattr__(self, "_loop", main_loop)
+
+    def __repr__(self) -> str:  # pragma: no cover - debug only
+        return f"_MainLoopProxy({type(self._t).__name__})"
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._t, name)
+        return _smart_wrap_for_main_loop(attr, self._loop)
+
+
+def _smart_wrap_for_main_loop(attr: Any, main_loop: "asyncio.AbstractEventLoop") -> Any:
+    """Wrap a HA attribute so it executes on ``main_loop``.
+
+    - Callable + not a class: returns an async wrapper (user must ``await``).
+      The wrapper schedules execution on ``main_loop`` via
+      ``run_coroutine_threadsafe`` and transparently awaits any returned
+      coroutine / Future before delivering the result back to the worker
+      thread's event loop.
+    - HA core sub-object (services / states / bus / config / ...): wrapped
+      recursively as another ``_MainLoopProxy``.
+    - Other values (str, primitives, dicts): returned untouched.
+    """
+    import inspect as _inspect
+
+    if callable(attr) and not isinstance(attr, type):
+        async def _route(*args: Any, **kwargs: Any) -> Any:
+            async def _on_loop() -> Any:
+                result = attr(*args, **kwargs)
+                while _inspect.iscoroutine(result) or asyncio.isfuture(result):
+                    result = await result
+                return result
+
+            future = asyncio.run_coroutine_threadsafe(_on_loop(), main_loop)
+            return await asyncio.wrap_future(future)
+
+        _route.__name__ = getattr(attr, "__name__", "main_loop_proxy")
+        _route.__qualname__ = _route.__name__
+        return _route
+
+    module = getattr(type(attr), "__module__", "") or ""
+    if module.startswith("homeassistant."):
+        return _MainLoopProxy(attr, main_loop)
+    return attr
+
+
 def _normalize_github_raw_url(url: str) -> str:
     parsed = urlparse(url)
     if parsed.netloc == "raw.githubusercontent.com":
@@ -194,6 +291,24 @@ def _trim_stream(value: str, limit: int = _PY_STREAM_MAX_CHARS) -> str:
     tail = value[-(limit - half):]
     dropped = len(value) - (len(head) + len(tail))
     return f"{head}\n...[truncated {dropped} chars]...\n{tail}"
+
+
+def _verify_generated_file(path: Path) -> dict[str, object]:
+    try:
+        stat = path.stat()
+    except OSError as err:
+        return {
+            "exists": False,
+            "verified": False,
+            "error": str(err),
+        }
+
+    return {
+        "exists": True,
+        "verified": stat.st_size > 0,
+        "size": stat.st_size,
+        "mtime": int(stat.st_mtime),
+    }
 
 
 def _cap_py_payload(payload: JsonObjectType) -> JsonObjectType:
@@ -319,7 +434,15 @@ class ExecutePythonTool(llm.Tool):
         "See skill `homeassistant_runtime_guide` section ExecutePython for "
         "the full IO contract: injected globals (OUTPUT_DIR, TMP_DIR, "
         "output_url, list_outputs, list_tmp), tmp redirect policy, and "
-        "artefact reporting."
+        "artefact reporting. "
+        "IMPORTANT (top-level await mode): user code runs on a worker-thread "
+        "event loop so synchronous I/O (Path.write_bytes, open().write, "
+        "subprocess) is safe and never blocks HA. Trade-off: every `hass.*` "
+        "method call MUST be `await`-ed, including ones that used to be "
+        "synchronous, e.g. `await hass.config.path('foo')`, "
+        "`await hass.states.get('sensor.x')`, "
+        "`await hass.async_add_executor_job(fn, ...)`. Non-callable attrs "
+        "(`hass.config.config_dir`) still work without await."
     )
     parameters = vol.Schema(
         {
@@ -328,7 +451,6 @@ class ExecutePythonTool(llm.Tool):
             vol.Optional("requirements", default=[]): list,
             vol.Optional("timeout", default=60): int,
             vol.Optional("dry_run", default=False): bool,
-            # sandbox-only extras
             vol.Optional("env", default={}): dict,
             vol.Optional("cwd", default=""): str,
             vol.Optional("stdin", default=""): str,
@@ -421,11 +543,8 @@ class ExecutePythonTool(llm.Tool):
         import time
         import traceback
 
-        PyCF_ALLOW_TOP_LEVEL_AWAIT = 0x2000  # compile flag, Py3.8+
+        PyCF_ALLOW_TOP_LEVEL_AWAIT = 0x2000
 
-        # Rewrite the trailing expression (if any) into an assignment to
-        # __auto_result__ so we can surface the value the same way Jupyter does
-        # — without breaking code that explicitly assigns to `result`.
         auto_key = "__auto_result__"
         try:
             tree = ast.parse(code, mode="exec")
@@ -445,6 +564,7 @@ class ExecutePythonTool(llm.Tool):
             ast.copy_location(assign, last)
             tree.body[-1] = assign
             ast.fix_missing_locations(tree)
+        has_top_level_async = _has_top_level_async(tree)
 
         try:
             compiled = compile(
@@ -461,10 +581,6 @@ class ExecutePythonTool(llm.Tool):
         if dry_run:
             return {"success": True, "dry_run": True, "message": "Compile OK; not executed"}
 
-        # Artifact directories injected for AI use:
-        #   OUTPUT_DIR (Path) — persistent, served as /local/claw_assistant/...
-        #   TMP_DIR    (Path) — ephemeral, auto-pruned after 24h
-        #   output_url(name) -> "/local/claw_assistant/<name>" helper
         import os as _os
         import tempfile as _tempfile
 
@@ -488,12 +604,6 @@ class ExecutePythonTool(llm.Tool):
 
             return _absolute_output_url(hass, name)
 
-        # System scratch dirs we quietly redirect writes away from. The goal
-        # is not to police the AI — writes elsewhere (config/www, HA data,
-        # user paths the admin owns) pass through unchanged. We only steer
-        # the common "open('/tmp/foo.pdf', 'wb')" habit toward our managed
-        # TMP_DIR so the file is not silently lost to the AI, the user, and
-        # the 24h cleanup policy. Resolved lazily (some paths may not exist).
         _system_tmp_candidates = [
             "/tmp", "/var/tmp", "/private/tmp", "/private/var/tmp",
             _tempfile.gettempdir(),
@@ -506,11 +616,6 @@ class ExecutePythonTool(llm.Tool):
                 resolved_root = Path(_raw).resolve(strict=False)
             except OSError:
                 continue
-            # Skip any candidate that would engulf our own managed dirs
-            # (happens e.g. on macOS where $TMPDIR='/var/folders/.../T' can
-            # contain a config dir placed under it). A root that contains
-            # TMP_DIR/OUTPUT_DIR is too broad — it would flag legitimate
-            # writes to those dirs and create redirect loops.
             too_broad = False
             for managed in (_resolved_tmp, _resolved_output):
                 try:
@@ -543,12 +648,9 @@ class ExecutePythonTool(llm.Tool):
                     rel = resolved_cand.relative_to(root)
                 except ValueError:
                     continue
-                # Flatten: /tmp/a/b/c.pdf -> TMP_DIR/c.pdf (with disambig if
-                # the name already exists via the parent-dir hint).
                 rel_posix = rel.as_posix()
                 target = tmp_dir / Path(rel_posix).name
                 if target.exists():
-                    # keep 1 level of parent to reduce collisions
                     parent_hint = Path(rel_posix).parent.name
                     if parent_hint:
                         target = tmp_dir / f"{parent_hint}__{target.name}"
@@ -568,13 +670,6 @@ class ExecutePythonTool(llm.Tool):
                 return target
             return candidate
 
-        # Guarded open(): the ONLY thing it enforces is steering writes away
-        # from system scratch dirs (/tmp, /var/tmp, $TMPDIR) into TMP_DIR.
-        # All other paths — including /config/www/**, /config/**, the user's
-        # home — pass through. Reads are never touched, fd writes are never
-        # touched. Determined bypasses (`import builtins`, Path.write_text
-        # through the C _io layer, `os.open`, subprocess) are accepted;
-        # inline mode is not a sandbox, use sandbox=true for real isolation.
         _real_open = _builtins.open
         _write_mode_chars = frozenset("waxWAX+")
         _resolved_output_dir = output_dir.resolve()
@@ -648,10 +743,6 @@ class ExecutePythonTool(llm.Tool):
             hass.async_add_executor_job(_list_dir_snapshot, tmp_dir),
         )
 
-        # Shadow builtins with a dict whose `open` is the guarded version.
-        # Using a dict for __builtins__ is explicitly supported by CPython;
-        # the interpreter resolves name lookups against this dict for code
-        # executed under `globals_`.
         safe_builtins = dict(vars(_builtins))
         safe_builtins["open"] = _safe_open
 
@@ -675,12 +766,54 @@ class ExecutePythonTool(llm.Tool):
         try:
             import inspect as _inspect
 
-            is_async = compiled.co_flags & 0x100  # CO_COROUTINE
-            if is_async:
-                with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
-                    maybe = eval(compiled, globals_)
-                    if _inspect.iscoroutine(maybe):
-                        await asyncio.wait_for(maybe, timeout=max(1, timeout))
+            if has_top_level_async:
+                # Run user top-level-await code on a *worker-thread* event loop
+                # so that synchronous I/O inside user code (Path.write_bytes,
+                # open(...).write, etc.) does not trip HA's blocking-call
+                # detector and does not stall the main event loop. ``hass`` in
+                # user globals is replaced with ``_MainLoopProxy`` which routes
+                # every method call back to the main loop via
+                # ``run_coroutine_threadsafe``.
+                main_loop = asyncio.get_running_loop()
+                worker_globals = dict(globals_)
+                worker_globals["hass"] = _MainLoopProxy(hass, main_loop)
+                worker_error: list[BaseException] = []
+
+                def _run_user_async() -> None:
+                    worker_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(worker_loop)
+                    try:
+                        with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
+                            maybe = eval(compiled, worker_globals)
+                            if _inspect.iscoroutine(maybe):
+                                worker_loop.run_until_complete(
+                                    asyncio.wait_for(maybe, timeout=max(1, timeout))
+                                )
+                    except BaseException as err:  # noqa: BLE001 - relay
+                        worker_error.append(err)
+                    finally:
+                        try:
+                            pending = asyncio.all_tasks(worker_loop)
+                            for task in pending:
+                                task.cancel()
+                            if pending:
+                                worker_loop.run_until_complete(
+                                    asyncio.gather(*pending, return_exceptions=True)
+                                )
+                        except Exception:  # noqa: BLE001
+                            pass
+                        try:
+                            worker_loop.close()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        asyncio.set_event_loop(None)
+
+                await asyncio.wait_for(
+                    hass.async_add_executor_job(_run_user_async),
+                    timeout=max(1, timeout) + 5,
+                )
+                if worker_error:
+                    raise worker_error[0]
             else:
                 def _run_sync() -> None:
                     with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
@@ -710,8 +843,6 @@ class ExecutePythonTool(llm.Tool):
         stdout_text = _trim_stream(stdout_buf.getvalue())
         stderr_text = _trim_stream(stderr_buf.getvalue())
 
-        # Diff artefact directories so the AI can see exactly what was
-        # written. rglob/scandir is blocking → run in executor, parallel.
         after_output, after_tmp = await asyncio.gather(
             hass.async_add_executor_job(_list_dir_snapshot, output_dir),
             hass.async_add_executor_job(_list_dir_snapshot, tmp_dir),
@@ -726,12 +857,21 @@ class ExecutePythonTool(llm.Tool):
                     "name": name,
                     "path": str(output_dir / name),
                     "url": _output_url_for(name),
+                    "verification": await hass.async_add_executor_job(
+                        _verify_generated_file, output_dir / name
+                    ),
                 }
                 for name in new_output
             ]
         if new_tmp:
             artefacts["tmp"] = [
-                {"name": name, "path": str(tmp_dir / name)}
+                {
+                    "name": name,
+                    "path": str(tmp_dir / name),
+                    "verification": await hass.async_add_executor_job(
+                        _verify_generated_file, tmp_dir / name
+                    ),
+                }
                 for name in new_tmp
             ]
         if redirects:
@@ -750,7 +890,6 @@ class ExecutePythonTool(llm.Tool):
                 payload["artefacts"] = artefacts
             return _cap_py_payload(payload)
 
-        # Prefer explicit `result`, otherwise the trailing expression value.
         result = globals_.get("result")
         if result is None:
             result = globals_.get(auto_key)
@@ -898,7 +1037,7 @@ class ConversationMemoryTool(llm.Tool):
 
 class InstallSkillTool(llm.Tool):
     name = "InstallSkill"
-    description = "Install Markdown skills. Supports direct name+markdown input, or source_url from a GitHub/blob/raw link. Params: name?, markdown?, source_url?, overwrite(false)"
+    description = "Install Markdown skills into `.storage/claw_assistant/skills/` only. Supports direct name+markdown input, or source_url from a GitHub/blob/raw link. Legacy `~/.openclaw/workspace/skills/` and `config/skills/` are import-only and must not be used as install targets. Params: name?, markdown?, source_url?, overwrite(false)"
     parameters = vol.Schema(
         {
             vol.Optional("name", default=""): str,
@@ -944,6 +1083,7 @@ class InstallSkillTool(llm.Tool):
                 "name": name,
                 "file": skill_path.name,
                 "path": str(skill_path),
+                "canonical_dir": str(skill_path.parent),
                 "message": f"Skill installed: {skill_path.stem}",
                 **({"source_url": source_url} if source_url else {}),
             }
@@ -1819,7 +1959,6 @@ class GetConversationHistoryTool(llm.Tool):
                 "removed_turns": removed,
             }
 
-        # action == "get"
         conv_id = _resolve_conv_id()
         context_str = history.get_recent_context(conv_id, max_turns, include_tools)
         turns = history.get_history(conv_id)
