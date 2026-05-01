@@ -42,9 +42,10 @@
         "title": "配置中心",
         "description": "选择要管理的功能区域",
         "menu_options": {
-          "agent_settings": "对话代理设置",
-          "conversation_settings": "对话与显示设置",
-          "workspace_editor": "工作区文档编辑"
+          "agent_settings": "配置智能代理 ｜ 首要、后备、总结链路",
+          "conversation_settings": "调整对话风格 ｜ 显示、流式与维度",
+          "workspace_editor": "编辑工作文档 ｜ 主提示词与技能资料",
+          "skill_editor": "管理安装技能 ｜ 动态查看与编辑"
         }
       },
       "agent_settings": {
@@ -61,21 +62,54 @@
       },
       "conversation_settings": {
         "title": "对话与显示设置",
-        "description": "配置 AI 回复在前端的显示方式和附加功能。",
+        "description": "按功能维度调整 AI 回复行为，选择需要修改的子项进行配置。",
+        "menu_options": {
+          "conv_dialog": "对话 ｜ 回复呈现相关",
+          "conv_display": "界面 ｜ 前端展示相关",
+          "conv_runtime": "运行 ｜ 执行节点相关"
+        }
+      },
+      "conv_dialog": {
+        "title": "对话模式设置",
+        "description": "调整 AI 回复的署名方式和外部信息增强能力。",
         "data": {
-          "back": "返回主菜单",
+          "back": "返回上级菜单",
           "save_and_exit": "保存并完成",
           "next_step": "下一步",
           "conversation_mode": "对话模式",
-          "enable_web_search": "联网搜索",
+          "enable_web_search": "联网搜索"
+        },
+        "data_description": {
+          "conversation_mode": "• **不显示名称** — 精简模式，只显示回复内容\n• **显示 AI 名称** — 推荐，回复前标注响应的 AI 名称\n• **完整显示** — 显示完整调用过程，包含工具调用详情",
+          "enable_web_search": "启用后，AI 可在需要时自动补充联网搜索结果以提升回答质量"
+        }
+      },
+      "conv_display": {
+        "title": "界面显示设置",
+        "description": "控制聊天窗口的呈现节奏与会话连续性。",
+        "data": {
+          "back": "返回上级菜单",
+          "save_and_exit": "保存并完成",
+          "next_step": "下一步",
           "enable_streaming_effect": "流式显示",
+          "continuous_conversation": "连续聊天窗口"
+        },
+        "data_description": {
+          "enable_streaming_effect": "启用后，工具调用进度等消息将以逐字打字机效果呈现；关闭则一次性显示",
+          "continuous_conversation": "启用后，前端聊天框重新打开或激活仍沿用同一个对话，直到发送 /new 才切换新窗口；关闭则保持当前每个窗口独立上下文。"
+        }
+      },
+      "conv_runtime": {
+        "title": "运行节点设置",
+        "description": "调节 AI 在执行任务时的循环上限与等待容忍度。",
+        "data": {
+          "back": "返回上级菜单",
+          "save_and_exit": "保存并完成",
+          "next_step": "下一步",
           "max_tool_repeat": "工具重复上限",
           "pipeline_timeout": "等待时长 (分钟)"
         },
         "data_description": {
-          "conversation_mode": "• **不显示名称** — 精简模式，只显示回复内容\n• **显示 AI 名称** — 推荐，回复前标注响应的 AI 名称\n• **完整显示** — 显示完整调用过程，包含工具调用详情",
-          "enable_web_search": "启用后，AI 可在需要时自动补充联网搜索结果以提升回答质量",
-          "enable_streaming_effect": "启用后，工具调用进度等消息将以逐字打字机效果呈现；关闭则一次性显示",
           "max_tool_repeat": "AI 对同一工具的最大重复调用次数。超过此限制后，AI 将被强制终止当前方案，转而尝试其他方法或坦诚告知用户暂时无法解决",
           "pipeline_timeout": "对话窗口等待 AI 完成的时长。处理复杂任务或多 AI 对话时，请调大以免 AI 被中途打断。"
         }
@@ -133,12 +167,30 @@
         "title": "编辑 USER.md",
         "description": "**用户基本信息**\n存储用户的基本资料，AI 会据此个性化回复。\n\n格式示例：\n`- **Name:** 张三`\n`- **What to call them:** 老板`\n`- **Timezone:** Asia/Shanghai`\n\n使用 Markdown 格式，保存后立即生效。",
         "data": { "content": "Markdown 编辑器" }
+      },
+      "skill_editor": {
+        "title": "已安装技能",
+        "description": "**当前共 {skill_count} 个已安装技能。**\n选择一个技能查看其 Markdown 全文，或直接在下一步进行编辑/删除。\n列表实时从 `.storage/claw_assistant/skills/` 读取，新装/卸载技能即刻反映。",
+        "data": {
+          "skill_slug": "选择技能",
+          "back": "返回主菜单"
+        }
+      },
+      "skill_edit": {
+        "title": "编辑技能：{skill_name}",
+        "description": "**Slug：** `{skill_slug}`\n**文件：** `{skill_file}`\n**字数：** {skill_chars}\n**简介：** {skill_description}\n\n在下方直接修改 Markdown 全文。\n勾选「删除该技能」会移除该技能并写入 self-edit 变更日志。\n保存后立即生效，所有 prompt 与技能命令都会刷新。",
+        "data": {
+          "content": "Markdown 编辑器",
+          "delete": "删除该技能",
+          "back": "返回技能列表"
+        }
       }
     },
     "error": {
       "invalid_conversation_mode": "对话模式选择无效",
       "invalid_agent": "请选择有效的对话代理实体",
-      "no_agents_available": "未找到有效的对话代理，请确保至少有一个对话代理可用"
+      "no_agents_available": "未找到有效的对话代理，请确保至少有一个对话代理可用",
+      "no_installed_skills": "当前没有已安装的技能，可通过 AI 工具 InstallSkill 添加"
     },
     "abort": {
       "workspace_doc_saved": "文档已保存并生效"

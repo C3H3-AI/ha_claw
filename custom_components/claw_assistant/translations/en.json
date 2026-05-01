@@ -42,9 +42,10 @@
         "title": "Configuration Center",
         "description": "Select a feature area to manage",
         "menu_options": {
-          "agent_settings": "Agent Settings",
-          "conversation_settings": "Conversation & Display",
-          "workspace_editor": "Workspace Document Editor"
+          "agent_settings": "Configure AI Agents | Primary, fallback, summarizer chain",
+          "conversation_settings": "Tune Conversation Style | Display, streaming & dimensions",
+          "workspace_editor": "Edit Workspace Docs | Master prompt & skill library",
+          "skill_editor": "Manage Installed Skills | Live view & edit"
         }
       },
       "agent_settings": {
@@ -61,21 +62,54 @@
       },
       "conversation_settings": {
         "title": "Conversation & Display",
-        "description": "Configure how AI replies appear in the frontend.",
+        "description": "Adjust AI reply behavior by category. Pick a sub-section to configure.",
+        "menu_options": {
+          "conv_dialog": "Dialogue | Reply behavior",
+          "conv_display": "Display | Frontend presentation",
+          "conv_runtime": "Runtime | Execution limits"
+        }
+      },
+      "conv_dialog": {
+        "title": "Dialogue Mode",
+        "description": "Tune how AI replies are attributed and whether to enrich them with online context.",
         "data": {
-          "back": "Return to main menu",
+          "back": "Back to previous menu",
           "save_and_exit": "Save and complete",
           "next_step": "Next step",
           "conversation_mode": "Dialogue Mode",
-          "enable_web_search": "Web Search",
+          "enable_web_search": "Web Search"
+        },
+        "data_description": {
+          "conversation_mode": "• **No name** — Minimal mode, reply content only\n• **Show AI name** — Recommended, prefixes reply with the responding AI's name\n• **Full display** — Shows the complete process including tool calls and details",
+          "enable_web_search": "When enabled, the AI can automatically supplement replies with online search results"
+        }
+      },
+      "conv_display": {
+        "title": "Display Settings",
+        "description": "Control how the chat window paces output and whether the session persists across opens.",
+        "data": {
+          "back": "Back to previous menu",
+          "save_and_exit": "Save and complete",
+          "next_step": "Next step",
           "enable_streaming_effect": "Streaming Display",
+          "continuous_conversation": "Continuous Chat Window"
+        },
+        "data_description": {
+          "enable_streaming_effect": "When enabled, tool progress messages appear with a typewriter effect; when disabled, they appear instantly",
+          "continuous_conversation": "When enabled, reopening or activating the frontend chat keeps using the same conversation until /new is sent. Disabled keeps the current per-window behavior."
+        }
+      },
+      "conv_runtime": {
+        "title": "Runtime Settings",
+        "description": "Tune how long and how persistently the AI may iterate on a task.",
+        "data": {
+          "back": "Back to previous menu",
+          "save_and_exit": "Save and complete",
+          "next_step": "Next step",
           "max_tool_repeat": "Tool Repeat Limit",
           "pipeline_timeout": "Wait Time (min)"
         },
         "data_description": {
-          "conversation_mode": "• **No name** — Minimal mode, reply content only\n• **Show AI name** — Recommended, prefixes reply with the responding AI's name\n• **Full display** — Shows the complete process including tool calls and details",
-          "enable_web_search": "When enabled, the AI can automatically supplement replies with online search results",
-          "enable_streaming_effect": "When enabled, tool progress messages appear with a typewriter effect; when disabled, they appear instantly",
           "max_tool_repeat": "Max times AI can call the same tool repeatedly. Once exceeded, AI is forced to stop the current approach and try alternatives or admit it cannot solve the problem",
           "pipeline_timeout": "How long the chat window waits for AI to finish. Increase for long tasks or multi-AI chats so AI is not cut off mid-work."
         }
@@ -149,12 +183,30 @@
         "data": {
           "content": "Markdown Editor"
         }
+      },
+      "skill_editor": {
+        "title": "Installed Skills",
+        "description": "**{skill_count} installed skill(s) detected.**\nPick one to view/edit its full Markdown on the next page. The list is read live from `.storage/claw_assistant/skills/`, so newly installed or removed skills appear immediately.",
+        "data": {
+          "skill_slug": "Pick a skill",
+          "back": "Back to main menu"
+        }
+      },
+      "skill_edit": {
+        "title": "Edit skill: {skill_name}",
+        "description": "**Slug:** `{skill_slug}`\n**File:** `{skill_file}`\n**Chars:** {skill_chars}\n**Description:** {skill_description}\n\nEdit the full Markdown below. Tick `Delete this skill` to remove it (recorded in the self-edit changelog). Saves take effect immediately and refresh all prompts and skill commands.",
+        "data": {
+          "content": "Markdown Editor",
+          "delete": "Delete this skill",
+          "back": "Back to skill list"
+        }
       }
     },
     "error": {
       "invalid_conversation_mode": "Dialogue mode selection is invalid",
       "invalid_agent": "Please select a valid dialogue proxy entity",
-      "no_agents_available": "No valid conversation proxy was found, make sure at least one conversation proxy is available"
+      "no_agents_available": "No valid conversation proxy was found, make sure at least one conversation proxy is available",
+      "no_installed_skills": "No installed skills yet. Install one via the InstallSkill AI tool."
     },
     "abort": {
       "workspace_doc_saved": "Document saved and applied"
