@@ -25,6 +25,12 @@ from ..runtime.self_edit import (
     async_read_proposal,
     async_stage_proposal,
 )
+from ..runtime.memory_store import (
+    async_delete_memory_entry,
+    async_get_memory_entry,
+    async_list_memory_entries,
+    async_save_memory_entry_result,
+)
 from ..runtime.skill_store import (
     async_delete_skill,
     async_install_skill,
@@ -212,10 +218,12 @@ class ProposeSelfEditTool(llm.Tool):
     name = "ProposeSelfEdit"
     description = (
         "Stage a self-edit proposal for human approval. Use this during "
-        "reflection instead of editing directly. "
-        "Params: target_type (skill|guide), target_id "
-        "(skill slug OR guide relative_path), action (create|update|delete), "
-        "markdown (required for create/update), reason"
+        "reflection instead of editing directly. Covers self-evolution "
+        "(skills/guides) and memory hygiene (purification + boundary). "
+        "Params: target_type (skill|guide|memory), target_id "
+        "(skill slug, guide relative_path, OR memory key), "
+        "action (create|update|delete), markdown (required for create/update; "
+        "for memory it is the new value), reason"
     )
     parameters = vol.Schema(
         {
@@ -381,9 +389,44 @@ async def _apply_guide_proposal(
     raise ValueError(f"Unsupported guide action: {action!r}")
 
 
+async def _apply_memory_proposal(
+    hass: HomeAssistant, frontmatter: dict[str, Any], body: str
+) -> dict[str, Any]:
+    action = str(frontmatter.get("action") or "").lower()
+    target_id = str(frontmatter.get("target_id") or "").strip()
+    approver = str(frontmatter.get("approved_by") or "human")
+    reason = f"approved proposal: {frontmatter.get('reason', '')}".strip()
+    if not target_id:
+        raise ValueError("target_id (memory key) is missing from proposal frontmatter")
+
+    if action == "delete":
+        path, deleted = await async_delete_memory_entry(hass, target_id)
+        return {
+            "action": "delete",
+            "path": str(path),
+            "deleted": deleted,
+            "approver": approver,
+            "reason": reason,
+        }
+    if action in {"create", "update"}:
+        if not body.strip():
+            raise ValueError("memory proposal body must contain the new value")
+        result = await async_save_memory_entry_result(hass, target_id, body)
+        return {
+            "action": action,
+            "path": result.get("path", ""),
+            "key": result.get("key", target_id),
+            "status": result.get("status", ""),
+            "approver": approver,
+            "reason": reason,
+        }
+    raise ValueError(f"Unsupported memory action: {action!r}")
+
+
 _EXECUTORS = {
     "skill": _apply_skill_proposal,
     "guide": _apply_guide_proposal,
+    "memory": _apply_memory_proposal,
 }
 
 
@@ -429,13 +472,17 @@ class ApplyProposalTool(llm.Tool):
 class ReviewSelfSkillsTool(llm.Tool):
     name = "ReviewSelfSkills"
     description = (
-        "Return a compact self-critique briefing: installed skills summary, "
-        "available guide docs, and the most recent self-edit changelog "
-        "entries. Use this at the end of a conversation (or when a user "
-        "reports repeated failures) to decide whether any skill needs "
-        "updating, deleting, or creating, then call ProposeSelfEdit for "
-        "each proposed change (do NOT edit skills/guide directly during "
-        "reflection). Params: limit (default 10)"
+        "Return a compact self-critique briefing covering skills, guide docs, "
+        "self-edit changelog AND the curated memory state (key list, char "
+        "usage, duplicate-suspect hints). Use this at the end of a "
+        "conversation (or when failures repeat) to decide whether any "
+        "skill/guide/memory entry needs updating, deleting, or creating, "
+        "then stage proposals via ProposeSelfEdit (do NOT edit directly). "
+        "Memory hygiene covers self-purification (drop dups/stale), "
+        "self-evolution (consolidate fragments), and self-boundary "
+        "(only stable user-level facts belong here; transient or task "
+        "context belongs in conversation history or graph memory). "
+        "Params: limit (default 10)"
     )
     parameters = vol.Schema(
         {
@@ -456,14 +503,18 @@ class ReviewSelfSkillsTool(llm.Tool):
         guide_docs = list_homeassistant_guide_docs()
         recent_changes = await async_read_changelog(hass, limit=limit)
         pending = await async_list_proposals(hass)
+        memory_entries = await async_list_memory_entries(hass)
+        memory_snapshot = _build_memory_snapshot(memory_entries)
         return {
             "success": True,
             "instructions": (
-                "Review installed skills and recent self-edits. If a skill is "
-                "obsolete, misleading, or missing, stage a proposal with "
-                "ProposeSelfEdit (never edit the skill/guide directly in this "
-                "reflection turn). A human will approve or discard each "
-                "proposal."
+                "Review installed skills, guides, recent self-edits AND curated "
+                "memory. Stage every change via ProposeSelfEdit (never edit "
+                "directly in this reflection turn). For memory: enforce "
+                "self-purification (drop dups/stale), self-evolution "
+                "(consolidate fragments under canonical keys), and "
+                "self-boundary (stable user-level facts only). A human "
+                "approves or discards each proposal."
             ),
             "installed_skills": [
                 {"slug": s.get("slug"), "title": s.get("title"), "description": s.get("description")}
@@ -476,4 +527,33 @@ class ReviewSelfSkillsTool(llm.Tool):
             ],
             "recent_changes": recent_changes,
             "pending_proposals": pending,
+            "memory_snapshot": memory_snapshot,
         }
+
+
+def _build_memory_snapshot(entries: list[dict[str, str]]) -> dict[str, Any]:
+    total_chars = sum(len(e.get("key", "")) + len(e.get("value", "")) + 6 for e in entries)
+    seen: dict[str, list[str]] = {}
+    for entry in entries:
+        normalized = " ".join(str(entry.get("value", "")).lower().split())
+        seen.setdefault(normalized, []).append(entry.get("key", ""))
+    duplicate_suspects = [
+        {"value_preview": value[:60], "keys": keys}
+        for value, keys in seen.items()
+        if value and len(keys) > 1
+    ]
+    return {
+        "entry_count": len(entries),
+        "total_chars": total_chars,
+        "keys": [entry.get("key") for entry in entries],
+        "entries": [
+            {"key": entry.get("key"), "value_preview": entry.get("value", "")[:120]}
+            for entry in entries
+        ],
+        "duplicate_suspects": duplicate_suspects,
+        "boundary_policy": (
+            "Keep only stable, user-level, durable facts. "
+            "Move task-specific or session context to conversation history. "
+            "Move structured/relational knowledge to MemoryGraph."
+        ),
+    }

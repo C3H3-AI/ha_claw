@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import voluptuous as vol
@@ -13,8 +14,6 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.loader import async_get_integration
 from homeassistant.helpers.selector import (
     BooleanSelector,
-    ConversationAgentSelector,
-    ConversationAgentSelectorConfig,
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
@@ -26,6 +25,7 @@ from homeassistant.helpers.selector import (
 
 from .const import (
     CONF_CONVERSATION_MODE,
+    CONF_CONTINUOUS_CONVERSATION,
     CONF_ENABLE_AI_SUMMARY,
     CONF_ENABLE_STREAMING_EFFECT,
     CONF_ENABLE_WEB_SEARCH,
@@ -47,6 +47,35 @@ from .const import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+_HTML_BLOCK_RE = re.compile(
+    r"<(script|style|head|noscript|svg|iframe)[^>]*>.*?</\1\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_HTML_DOCTYPE_RE = re.compile(r"<!DOCTYPE[^>]*>", re.IGNORECASE)
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_MULTI_BLANK_RE = re.compile(r"\n{3,}")
+
+
+def _sanitize_skill_markdown_for_display(text: str) -> str:
+    """Strip raw HTML noise (doctype/script/style/tags) for safe editor display.
+
+    Plain Markdown is preserved. Only HTML wrapper soup produced by imported
+    web pages is removed. The cleaned string is what the editor shows and what
+    gets saved if the user submits without further edits.
+    """
+
+    if not text:
+        return ""
+    cleaned = _HTML_COMMENT_RE.sub("", text)
+    cleaned = _HTML_DOCTYPE_RE.sub("", cleaned)
+    cleaned = _HTML_BLOCK_RE.sub("", cleaned)
+    cleaned = _HTML_TAG_RE.sub("", cleaned)
+    cleaned = _MULTI_BLANK_RE.sub("\n\n", cleaned)
+    return cleaned.strip()
+
+
 _REMOVED_OPTION_KEYS = (
     CONF_ERROR_RESPONSES,
     CONF_ENABLE_AI_SUMMARY,
@@ -64,6 +93,8 @@ def _get_agent_options(hass: HomeAssistant) -> list[dict[str, str]]:
     agents: list[dict[str, str]] = []
     for entity_id in hass.states.async_entity_ids("conversation"):
         try:
+            if entity_id == "conversation.home_assistant":
+                continue
             reg = ent_reg.async_get(entity_id)
             if reg and (reg.platform == DOMAIN or reg.config_entry_id in own_entry_ids):
                 continue
@@ -171,7 +202,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             current_options = dict(self._config_entry.options)
 
             agent_keys = [CONF_PRIMARY_AGENT, CONF_FALLBACK_AGENT, CONF_SECONDARY_FALLBACK_AGENT]
-            conversation_keys = [CONF_CONVERSATION_MODE, CONF_ENABLE_WEB_SEARCH, CONF_ENABLE_STREAMING_EFFECT, CONF_MAX_TOOL_REPEAT, CONF_PIPELINE_TIMEOUT]
+            conversation_keys = [CONF_CONVERSATION_MODE, CONF_ENABLE_WEB_SEARCH, CONF_ENABLE_STREAMING_EFFECT, CONF_CONTINUOUS_CONVERSATION, CONF_MAX_TOOL_REPEAT, CONF_PIPELINE_TIMEOUT]
 
             if not allow_agent_changes:
                 for key in agent_keys:
@@ -183,7 +214,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     if key in current_options:
                         self._user_input[key] = current_options[key]
 
-            bool_keys = [CONF_ENABLE_WEB_SEARCH, CONF_ENABLE_STREAMING_EFFECT]
+            bool_keys = [CONF_ENABLE_WEB_SEARCH, CONF_ENABLE_STREAMING_EFFECT, CONF_CONTINUOUS_CONVERSATION]
 
             for key, value in user_input.items():
                 if key not in exclude_keys:
@@ -227,7 +258,12 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         return self.async_show_menu(
             step_id="init",
-            menu_options=["agent_settings", "conversation_settings", "workspace_editor"],
+            menu_options=[
+                "agent_settings",
+                "conversation_settings",
+                "workspace_editor",
+                "skill_editor",
+            ],
             description_placeholders={"integration_title": "integration_title", "current_config": "current_config"},
         )
 
@@ -291,6 +327,115 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_ws_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         return await self._workspace_edit("USER", user_input)
 
+    async def async_step_skill_editor(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        from .runtime.skill_store import list_installed_skills
+
+        if user_input is not None:
+            if user_input.get("back"):
+                return await self.async_step_init()
+            slug = str(user_input.get("skill_slug") or "").strip()
+            if slug:
+                self._skill_editor_target = slug
+                return await self.async_step_skill_edit()
+
+        from .runtime.skill_store import _INTERNAL_SKILL_SLUGS
+
+        skills = list_installed_skills()
+        options = []
+        for skill in skills:
+            value = str(skill.get("slug") or skill.get("file") or skill.get("name") or "")
+            if not value or value in _INTERNAL_SKILL_SLUGS:
+                continue
+            name = str(skill.get("name") or skill.get("slug") or "skill")
+            version = str(skill.get("version") or "").strip()
+            label = f"{name} · v{version}" if version else name
+            options.append({"value": value, "label": label})
+
+        if not options:
+            return self.async_show_form(
+                step_id="skill_editor",
+                data_schema=vol.Schema({vol.Optional("back", default=True): bool}),
+                description_placeholders={"skill_count": "0"},
+                errors={"base": "no_installed_skills"},
+            )
+
+        schema = vol.Schema({
+            vol.Required("skill_slug"): SelectSelector(
+                SelectSelectorConfig(options=options, mode=SelectSelectorMode.DROPDOWN)
+            ),
+            vol.Optional("back", default=False): bool,
+        })
+        return self.async_show_form(
+            step_id="skill_editor",
+            data_schema=schema,
+            description_placeholders={"skill_count": str(len(options))},
+        )
+
+    async def async_step_skill_edit(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        from .runtime.skill_store import (
+            async_delete_skill,
+            async_install_skill,
+            async_read_skill_markdown,
+            get_installed_skill,
+        )
+
+        slug = getattr(self, "_skill_editor_target", "") or ""
+        if not slug:
+            return await self.async_step_skill_editor()
+
+        if user_input is not None:
+            if user_input.get("back"):
+                self._skill_editor_target = ""
+                return await self.async_step_skill_editor()
+            if user_input.get("delete"):
+                try:
+                    await async_delete_skill(
+                        self.hass, slug, actor="options_flow", reason="user deleted via options"
+                    )
+                except (FileNotFoundError, ValueError) as err:
+                    LOGGER.warning("Skill delete failed: %s", err)
+                self._skill_editor_target = ""
+                return await self.async_step_skill_editor()
+            content = str(user_input.get("content") or "")
+            if content.strip():
+                try:
+                    await async_install_skill(
+                        self.hass,
+                        slug,
+                        content,
+                        overwrite=True,
+                        actor="options_flow",
+                        reason="user edited via options",
+                    )
+                except Exception as err:  # noqa: BLE001
+                    LOGGER.warning("Skill save failed: %s", err)
+            self._skill_editor_target = ""
+            return await self.async_step_skill_editor()
+
+        try:
+            meta = get_installed_skill(slug)
+        except ValueError:
+            meta = {"name": slug, "slug": slug}
+        raw_content = await async_read_skill_markdown(self.hass, slug)
+        current_content = _sanitize_skill_markdown_for_display(raw_content)
+
+        schema = vol.Schema({
+            vol.Required("content", default=current_content): TemplateSelector(),
+            vol.Optional("delete", default=False): bool,
+            vol.Optional("back", default=False): bool,
+        })
+        return self.async_show_form(
+            step_id="skill_edit",
+            data_schema=schema,
+            description_placeholders={
+                "skill_name": str(meta.get("name") or slug),
+                "skill_slug": slug,
+                "skill_file": str(meta.get("file") or f"{slug}.md"),
+                "skill_chars": str(meta.get("chars") or len(current_content)),
+                "skill_description": str(meta.get("description") or ""),
+            },
+        )
+
     async def async_step_agent_settings(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         errors = {}
 
@@ -317,9 +462,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         current_fallback = self._config_entry.options.get(CONF_FALLBACK_AGENT, DEFAULT_FALLBACK_AGENT)
         current_secondary = self._config_entry.options.get(CONF_SECONDARY_FALLBACK_AGENT, None)
 
-        conv_sel = ConversationAgentSelector(
-            ConversationAgentSelectorConfig(language=self.hass.config.language)
-        )
+        conv_sel = _agent_selector(self.hass)
         schema = vol.Schema({
             vol.Required(CONF_PRIMARY_AGENT, description={"suggested_value": current_primary}): conv_sel,
             vol.Required(CONF_FALLBACK_AGENT, description={"suggested_value": current_fallback}): conv_sel,
@@ -335,28 +478,31 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         )
 
     async def async_step_conversation_settings(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        errors = {}
+        return self.async_show_menu(
+            step_id="conversation_settings",
+            menu_options=["conv_dialog", "conv_display", "conv_runtime"],
+        )
 
+    def _save_conversation_subform(self, user_input: dict[str, Any]) -> FlowResult:
+        self._process_user_input(
+            user_input,
+            exclude_keys=["back", "next_step", "save_and_exit"],
+            allow_conversation_changes=True,
+        )
+        return self.async_create_entry(title="", data=self._user_input)
+
+    async def async_step_conv_dialog(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        errors: dict[str, str] = {}
         if user_input is not None:
             if user_input.get("back"):
-                return await self.async_step_init()
-
+                return await self.async_step_conversation_settings()
             if not user_input.get(CONF_CONVERSATION_MODE):
                 errors[CONF_CONVERSATION_MODE] = "invalid_conversation_mode"
-
             if not errors:
-                self._process_user_input(user_input, exclude_keys=["back", "next_step", "save_and_exit"],
-                                      allow_conversation_changes=True)
-                return self.async_create_entry(title="", data=self._user_input)
+                return self._save_conversation_subform(user_input)
 
-        current_mode = self._config_entry.options.get(CONF_CONVERSATION_MODE, DEFAULT_CONVERSATION_MODE)
-        if not current_mode:
-            current_mode = DEFAULT_CONVERSATION_MODE
+        current_mode = self._config_entry.options.get(CONF_CONVERSATION_MODE, DEFAULT_CONVERSATION_MODE) or DEFAULT_CONVERSATION_MODE
         current_enable_web_search = self._config_entry.options.get(CONF_ENABLE_WEB_SEARCH, True)
-        current_enable_streaming = self._config_entry.options.get(CONF_ENABLE_STREAMING_EFFECT, True)
-        current_max_tool_repeat = self._config_entry.options.get(CONF_MAX_TOOL_REPEAT, DEFAULT_MAX_TOOL_REPEAT)
-        current_pipeline_timeout = self._config_entry.options.get(CONF_PIPELINE_TIMEOUT, DEFAULT_PIPELINE_TIMEOUT)
-        display_timeout = current_pipeline_timeout // 60 if current_pipeline_timeout else 5
 
         schema = vol.Schema({
             vol.Required(CONF_CONVERSATION_MODE, description={"suggested_value": current_mode}): SelectSelector(
@@ -367,11 +513,52 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         CONVERSATION_MODE_DETAILED,
                     ],
                     translation_key="conversation_mode",
-                    mode=SelectSelectorMode.DROPDOWN
+                    mode=SelectSelectorMode.DROPDOWN,
                 )
             ),
             vol.Optional(CONF_ENABLE_WEB_SEARCH, default=current_enable_web_search): BooleanSelector(),
+            vol.Optional("back", default=False): bool,
+        })
+
+        return self.async_show_form(
+            step_id="conv_dialog",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={},
+        )
+
+    async def async_step_conv_display(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        if user_input is not None:
+            if user_input.get("back"):
+                return await self.async_step_conversation_settings()
+            return self._save_conversation_subform(user_input)
+
+        current_enable_streaming = self._config_entry.options.get(CONF_ENABLE_STREAMING_EFFECT, True)
+        current_continuous_conversation = self._config_entry.options.get(CONF_CONTINUOUS_CONVERSATION, False)
+
+        schema = vol.Schema({
             vol.Optional(CONF_ENABLE_STREAMING_EFFECT, default=current_enable_streaming): BooleanSelector(),
+            vol.Optional(CONF_CONTINUOUS_CONVERSATION, default=current_continuous_conversation): BooleanSelector(),
+            vol.Optional("back", default=False): bool,
+        })
+
+        return self.async_show_form(
+            step_id="conv_display",
+            data_schema=schema,
+            description_placeholders={},
+        )
+
+    async def async_step_conv_runtime(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        if user_input is not None:
+            if user_input.get("back"):
+                return await self.async_step_conversation_settings()
+            return self._save_conversation_subform(user_input)
+
+        current_max_tool_repeat = self._config_entry.options.get(CONF_MAX_TOOL_REPEAT, DEFAULT_MAX_TOOL_REPEAT)
+        current_pipeline_timeout = self._config_entry.options.get(CONF_PIPELINE_TIMEOUT, DEFAULT_PIPELINE_TIMEOUT)
+        display_timeout = current_pipeline_timeout // 60 if current_pipeline_timeout else 5
+
+        schema = vol.Schema({
             vol.Optional(CONF_MAX_TOOL_REPEAT, default=current_max_tool_repeat): NumberSelector(
                 NumberSelectorConfig(min=3, max=50, step=1, unit_of_measurement="loop", mode=NumberSelectorMode.SLIDER)
             ),
@@ -382,8 +569,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         })
 
         return self.async_show_form(
-            step_id="conversation_settings",
+            step_id="conv_runtime",
             data_schema=schema,
-            errors=errors,
-            description_placeholders={}
+            description_placeholders={},
         )
