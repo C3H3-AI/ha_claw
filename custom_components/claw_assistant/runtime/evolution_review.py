@@ -19,22 +19,33 @@ _MAX_TRACKED_REVIEWS = 100
 _REVIEW_MARKER = "[EVOLUTION-REVIEW]"
 _REVIEW_SYSTEM_PROMPT = (
     "Internal background evolution review.\n"
-    "This is not a user-facing turn.\n"
-    "Review the completed task and decide whether any reusable skill, runtime "
-    "guide, or curated memory entry should evolve.\n"
-    "You must not edit anything directly.\n"
-    "If review is warranted, call ReviewSelfSkills first (it now also returns "
-    "the memory snapshot, char usage and duplicate suspects), then stage one "
-    "or more ProposeSelfEdit proposals.\n"
-    "Skills/guides: prefer updating an existing one over creating a new one. "
-    "Work at the task-class level, not the single-instance level.\n"
+    "This is not a user-facing turn.\n\n"
+    "RUBRIC — any ONE signal below warrants a skill/guide update:\n"
+    "  • User corrected your style, tone, format, verbosity, or approach. "
+    "Frustration ('stop doing X', 'don't format like this') is a FIRST-CLASS "
+    "skill signal — embed the lesson in the skill that governs that task class.\n"
+    "  • User corrected your workflow or sequence of steps. Encode the "
+    "correction as a pitfall or explicit step in the governing skill.\n"
+    "  • Non-trivial technique, fix, workaround, debugging path, or tool-usage "
+    "pattern emerged that a future session would benefit from.\n"
+    "  • A skill that got loaded this session turned out wrong, missing a "
+    "step, or outdated — patch it NOW.\n\n"
+    "Preference order — pick the earliest that fits:\n"
+    "  1. UPDATE A CURRENTLY-LOADED SKILL. If any loaded skill covers the "
+    "territory of the new learning, PATCH that one first (active-update bias).\n"
+    "  2. UPDATE AN EXISTING UMBRELLA. If no loaded skill fits but an existing "
+    "class-level skill does, patch it.\n"
+    "  3. CREATE A NEW CLASS-LEVEL SKILL when nothing exists. Name at the "
+    "class level — NOT a specific error string or session artifact.\n\n"
+    "Stage every change via ProposeSelfEdit (never edit directly). "
+    "Call ReviewSelfSkills first to see current skills/guides/memory.\n\n"
     "Memory hygiene (target_type=memory):\n"
     "- self-purification: stage delete for stale, redundant, or duplicate keys.\n"
     "- self-evolution: stage update to consolidate fragmented entries under a "
     "canonical key.\n"
     "- self-boundary: only stable, user-level, durable facts belong in memory. "
     "Transient session context belongs in conversation history. Structured "
-    "relations belong in MemoryGraph. Reject anything else.\n"
+    "relations belong in MemoryGraph. Reject anything else.\n\n"
     "Never call ApplyProposal.\n"
     "If nothing is worth saving, reply exactly: Nothing to save."
 )
@@ -127,23 +138,31 @@ def _build_review_prompt(
     assistant_text: str,
     tool_calls: list[Any],
     tool_summary: str,
+    loaded_skills: list[str] | None = None,
 ) -> str:
     tool_line = ", ".join(str(item) for item in tool_calls) if tool_calls else "none"
     tool_summary_block = tool_summary.strip() or "No structured tool result summary available."
+    loaded_block = ""
+    if loaded_skills:
+        loaded_block = (
+            "\nSkills loaded this session (active-update bias — prefer patching these):\n"
+            + "\n".join(f"  - {s}" for s in loaded_skills)
+            + "\n"
+        )
     return (
         f"{_REVIEW_MARKER}\n"
         "Review this completed task for reusable learning.\n\n"
         "User request:\n"
         f"{original_text.strip()}\n\n"
-        "Assistant outcome:\n"
+        "Assistant outcome (tool messages excluded for clarity):\n"
         f"{assistant_text.strip()}\n\n"
         "Tools used:\n"
         f"{tool_line}\n\n"
         "Tool result summary:\n"
-        f"{tool_summary_block}\n\n"
-        "Decide whether any reusable skill, guide, or curated memory entry "
-        "should evolve. Use ReviewSelfSkills first (skills/guides/changelog/"
-        "memory snapshot), then ProposeSelfEdit only when worthwhile. "
+        f"{tool_summary_block}\n"
+        f"{loaded_block}\n"
+        "Apply the rubric from your system prompt. Use ReviewSelfSkills "
+        "first, then ProposeSelfEdit only when worthwhile. "
         "For memory entries apply the purification/evolution/boundary policy."
     )
 
@@ -184,6 +203,7 @@ def async_schedule_evolution_review(
     language: str | None,
     agent_id: str | None,
     original_async_converse=None,
+    loaded_skills: list[str] | None = None,
 ) -> None:
     if not _should_review(
         original_text=original_text,
@@ -216,6 +236,7 @@ def async_schedule_evolution_review(
         assistant_text=assistant_text,
         tool_calls=tool_calls,
         tool_summary=tool_summary,
+        loaded_skills=loaded_skills,
     )
     review_conversation_id = f"evolution:{conversation_id or 'default'}:{fingerprint}"
     task = asyncio.create_task(
