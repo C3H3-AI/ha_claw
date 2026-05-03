@@ -89,7 +89,7 @@ async def _run_shell(hass: HomeAssistant, params: dict) -> JsonObjectType:
             from ..runtime.data_path import get_tmp_dir
             _sh_tmp = get_tmp_dir(hass)
             _sh_file = _sh_tmp / f"shell_{_uuid.uuid4().hex[:12]}.sh"
-            _sh_file.write_text(command, encoding="utf-8")
+            await hass.async_add_executor_job(_sh_file.write_text, command, "utf-8")
             tmp_script = _sh_file
             exec_cmd = f"/bin/sh {tmp_script}"
         else:
@@ -110,7 +110,7 @@ async def _run_shell(hass: HomeAssistant, params: dict) -> JsonObjectType:
     except Exception as err:
         if tmp_script:
             try:
-                tmp_script.unlink()
+                await hass.async_add_executor_job(tmp_script.unlink)
             except OSError:
                 pass
         return {"success": False, "error": f"spawn failed: {err}"}
@@ -129,7 +129,7 @@ async def _run_shell(hass: HomeAssistant, params: dict) -> JsonObjectType:
     finally:
         if tmp_script:
             try:
-                tmp_script.unlink()
+                await hass.async_add_executor_job(tmp_script.unlink)
             except OSError:
                 pass
 
