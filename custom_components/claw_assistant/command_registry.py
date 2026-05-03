@@ -9,6 +9,7 @@ class CommandSpec:
     usage: str
     description: str
     category: str
+    description_zh: str = ""
     aliases: tuple[str, ...] = ()
 
 
@@ -17,37 +18,51 @@ CORE_COMMAND_REGISTRY: tuple[CommandSpec, ...] = (
         name="new",
         usage="/new",
         description="Start a fresh conversation in the current chat surface.",
+        description_zh="在当前聊天窗口开始新对话。",
         category="Session",
     ),
     CommandSpec(
         name="reset",
         usage="/reset",
         description="Clear history and runtime state for the current conversation.",
+        description_zh="清除当前对话的历史和运行时状态。",
         category="Session",
     ),
     CommandSpec(
         name="stop",
         usage="/stop",
         description="Cancel the currently running turn for this conversation.",
+        description_zh="取消当前正在运行的对话轮次。",
         category="Session",
     ),
     CommandSpec(
         name="history",
         usage="/history <clear|stats|recent>",
         description="Manage or inspect stored conversation history for this assistant.",
+        description_zh="管理或查看助手的对话历史记录。",
         category="Session",
     ),
     CommandSpec(
         name="skill",
         usage="/skill <name> [input]",
         description="Inspect installed skills or invoke one by name.",
+        description_zh="查看已安装技能或按名称调用。",
         category="Skills",
         aliases=("skills",),
+    ),
+    CommandSpec(
+        name="model",
+        usage="/model [number]",
+        description="List available AI agents or switch primary/fallback by number.",
+        description_zh="列出可用模型或按序号切换主力/备用。",
+        category="Config",
+        aliases=("models",),
     ),
     CommandSpec(
         name="help",
         usage="/help [command]",
         description="Show command help or inspect a single command.",
+        description_zh="显示命令帮助或查看单个命令详情。",
         category="Info",
         aliases=("h",),
     ),
@@ -55,6 +70,7 @@ CORE_COMMAND_REGISTRY: tuple[CommandSpec, ...] = (
         name="commands",
         usage="/commands",
         description="List all core commands and generated skill commands.",
+        description_zh="列出所有核心命令和技能命令。",
         category="Info",
         aliases=("cmds",),
     ),
