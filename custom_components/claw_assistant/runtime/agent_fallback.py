@@ -334,11 +334,7 @@ def _schedule_transient_retry(
 
     retries += 1
     transient_retry_counts[current_agent_id] = retries
-    if current_agent_id == primary_agent_id and retries == 1:
-        agent_queue.insert(0, current_agent_id)
-        return True, retries
-
-    agent_queue.append(current_agent_id)
+    agent_queue.insert(0, current_agent_id)
     return True, retries
 
 
@@ -858,8 +854,10 @@ async def run_agent_fallback_chain(
         ordered_agents = active_agents
 
     _TRANSIENT_ERROR_KEYWORDS = ("disconnected", "connection", "timeout", "reset by peer", "broken pipe", "eof occurred",
-                                 "cannot connect", "server disconnected", "ssl", "clientconnector", "serverdisconnected")
-    _MAX_TRANSIENT_RETRIES = 3
+                                 "cannot connect", "server disconnected", "ssl", "clientconnector", "serverdisconnected",
+                                 "无法连接", "连接失败", "网络错误", "请检查网络", "连接超时", "服务器断开",
+                                 "服务不可用", "请稍后再试", "ai 服务")
+    _MAX_TRANSIENT_RETRIES = 2
     transient_retry_counts: dict[str, int] = {}
     primary_external_agent = ordered_agents[0] if ordered_agents else None
 
@@ -979,24 +977,16 @@ async def run_agent_fallback_chain(
                         transient_retry_counts=transient_retry_counts,
                         max_retries=_MAX_TRANSIENT_RETRIES,
                     )
-                    if retried_now and current_agent_id == primary_external_agent and retries == 1:
+                    if retried_now:
                         LOGGER.info(
-                            "Primary agent %s hit a transient upstream response error; retrying once immediately before fallback",
-                            current_agent_id,
+                            "Agent %s hit transient error; retry %d/%d",
+                            current_agent_id, retries, _MAX_TRANSIENT_RETRIES,
                         )
-                        await async_record_agent_failure(
-                            hass,
-                            current_agent_id,
-                            error=failure_reason,
-                            conversation_id=conversation_id,
-                            stage="response_error_retry",
+                    else:
+                        LOGGER.info(
+                            "Agent %s exhausted %d retries; moving to next agent",
+                            current_agent_id, _MAX_TRANSIENT_RETRIES,
                         )
-                        agent_errors.append(f"{current_agent_id}: {failure_reason[:160]}")
-                        continue
-                    LOGGER.info(
-                        "Agent %s hit a transient upstream response error after partial tool success; handing off to the next agent",
-                        current_agent_id,
-                    )
                     await async_record_agent_failure(
                         hass,
                         current_agent_id,
@@ -1279,6 +1269,12 @@ async def run_agent_fallback_chain(
     resolved_lang = language or hass.config.language or "en"
     if agent_errors:
         error_detail = "; ".join(agent_errors)
+    elif not fallback_agents:
+        error_detail = t("agents_none_configured", resolved_lang)
+    elif getattr(hass.state, "value", str(hass.state)) != "RUNNING":
+        error_detail = t("agents_starting", resolved_lang)
+    elif not ordered_agents:
+        error_detail = t("agents_all_failed", resolved_lang)
     else:
         error_detail = t("agents_unavailable", resolved_lang)
     LOGGER.warning("Agent fallback chain exhausted: %s", error_detail)

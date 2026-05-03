@@ -345,10 +345,154 @@ def _strip_memory_context(text: str) -> str:
     return text
 
 
+_FENCE_RE = re.compile(r"^\s*```")
+_HEADING_RE = re.compile(r"^#{1,6}\s")
+_HR_RE = re.compile(r"^\s*([-*_])\s*\1\s*\1[\s\-*_]*$")
+_TABLE_PIPE_RE = re.compile(r"^\s*\|")
+_TABLE_SEP_RE = re.compile(r"^\|?[\s:]*-[-|:\s]*\|")
+_BLOCKQUOTE_RE = re.compile(r"^>\s")
+
+_INLINE_HEADING_RE = re.compile(r"(?<=[^\s#])(#{1,6}\s+)")
+_INLINE_LIST_RE = re.compile(r"(?<=\S)(- (?:\[.\] )?\S)")
+_INLINE_ORDERED_LIST_RE = re.compile(r"(?<=[^\s\d])(\d+\.\s+\S)")
+_INLINE_BLOCKQUOTE_RE = re.compile(r"(?<=\S)(> )")
+_INLINE_CODE_RE = re.compile(r"`[^`]+`")
+_INLINE_LINK_RE = re.compile(r"\[[^\]]*\]\([^)]*\)")
+_INLINE_HTML_A_RE = re.compile(r"<a\s[^>]*>.*?</a>", re.DOTALL)
+
+
+def _presplit_inline_markdown(text: str) -> str:
+    lines = text.splitlines()
+    result: list[str] = []
+    in_fence = False
+    for raw in lines:
+        line = raw.rstrip()
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            result.append(line)
+            continue
+        if in_fence:
+            result.append(line)
+            continue
+
+        guards: list[str] = []
+
+        def _guard(m: re.Match) -> str:
+            guards.append(m.group(0))
+            return f"\x00G{len(guards) - 1}\x00"
+
+        protected = _INLINE_HTML_A_RE.sub(_guard, line)
+        protected = _INLINE_LINK_RE.sub(_guard, protected)
+        protected = _INLINE_CODE_RE.sub(_guard, protected)
+
+        if _INLINE_HEADING_RE.search(protected):
+            protected = _INLINE_HEADING_RE.sub(r"\n\1", protected)
+        if _INLINE_LIST_RE.search(protected):
+            protected = _INLINE_LIST_RE.sub(r"\n\1", protected)
+        if _INLINE_ORDERED_LIST_RE.search(protected):
+            protected = _INLINE_ORDERED_LIST_RE.sub(r"\n\1", protected)
+        if _INLINE_BLOCKQUOTE_RE.search(protected):
+            protected = _INLINE_BLOCKQUOTE_RE.sub(r"\n\1", protected)
+
+        for i, g in enumerate(guards):
+            protected = protected.replace(f"\x00G{i}\x00", g)
+
+        for part in protected.split("\n"):
+            result.append(part)
+    return "\n".join(result)
+
+
+def _normalize_markdown(text: str) -> str:
+    text = _presplit_inline_markdown(text)
+    lines = text.splitlines()
+    out: list[str] = []
+    in_fence = False
+    prev_blank = False
+    prev_was_fence_close = False
+
+    for raw in lines:
+        line = raw.rstrip()
+
+        if _FENCE_RE.match(line):
+            if not in_fence:
+                if out and out[-1].strip():
+                    out.append("")
+                out.append(line)
+                in_fence = True
+            else:
+                out.append(line)
+                in_fence = False
+                prev_was_fence_close = True
+            prev_blank = False
+            continue
+
+        if in_fence:
+            out.append(raw.rstrip())
+            prev_blank = False
+            continue
+
+        if prev_was_fence_close:
+            prev_was_fence_close = False
+            if line.strip():
+                out.append("")
+
+        if not line.strip():
+            if not prev_blank and out:
+                out.append("")
+            prev_blank = True
+            continue
+        prev_blank = False
+
+        if _HEADING_RE.match(line):
+            title = re.sub(r"^#{1,6}\s+", "", line).strip()
+            if title:
+                title = re.sub(r"\*\*(.+?)\*\*", r"\1", title)
+                line = f"**{title}**"
+            if out and out[-1].strip():
+                out.append("")
+            out.append(line)
+            continue
+
+        if _HR_RE.match(line):
+            if out and out[-1].strip():
+                out.append("")
+            out.append(line)
+            continue
+
+        if _TABLE_PIPE_RE.match(line):
+            if out and out[-1].strip() and not _TABLE_PIPE_RE.match(out[-1]):
+                out.append("")
+            out.append(line)
+            continue
+
+        if _BLOCKQUOTE_RE.match(line):
+            if out and out[-1].strip() and not _BLOCKQUOTE_RE.match(out[-1]):
+                out.append("")
+            out.append(line)
+            continue
+
+        if out and _TABLE_PIPE_RE.match(out[-1]):
+            out.append("")
+
+        if out and _HR_RE.match(out[-1]):
+            out.append("")
+
+        out.append(line)
+
+    while out and not out[-1].strip():
+        out.pop()
+    while out and not out[0].strip():
+        out.pop(0)
+
+    return "\n".join(out)
+
+
 _AGENT_ERROR_PREFIX_RE = re.compile(
     r"(?:"
     r"Error\s+getting\s+response"
     r"|获取响应[时出]*[错误]*"
+    r"|The\s+AI\s+service\s+returned\s+an\s+error"
+    r"|AI\s*服务返回错误"
     r"|RuntimeError\s*:"
     r"|Exception\s*:"
     r"|APIError\s*:"
@@ -392,6 +536,15 @@ _ERROR_SIGNAL_PATTERNS = (
     "temporarily unavailable",
     "服务暂时不可用",
     "获取响应",
+    "无法连接",
+    "连接失败",
+    "网络错误",
+    "请检查网络",
+    "ai 服务",
+    "服务不可用",
+    "请稍后再试",
+    "连接超时",
+    "服务器断开",
 )
 
 
@@ -528,7 +681,12 @@ def prettify_agent_error(text: str, *, language: str | None = None) -> str | Non
     if not _looks_like_error(candidate):
         return None
 
-    body = _AGENT_ERROR_PREFIX_RE.sub("", candidate, count=1).strip()
+    body = candidate
+    while True:
+        stripped = _AGENT_ERROR_PREFIX_RE.sub("", body, count=1).strip()
+        if stripped == body:
+            break
+        body = stripped
 
     json_match = _API_ERROR_JSON_RE.search(body)
     if json_match:
@@ -602,20 +760,20 @@ def sanitize_response_text(text: str, *, language: str | None = None) -> str:
 
     rewritten = _rewrite_chained_agent_errors(stripped, language=language)
     if rewritten is not stripped and rewritten != stripped:
-        return _normalize_response_links(rewritten)
+        return _normalize_markdown(_normalize_response_links(rewritten))
 
     payload = _extract_json_payload(stripped)
     if not payload:
-        return _normalize_response_links(stripped)
+        return _normalize_markdown(_normalize_response_links(stripped))
 
     mode = str(payload.get("mode", "")).lower()
     if mode in {"tool_calls", "toolcalls"}:
         return ""
 
     if mode == "answer" and isinstance(payload.get("content"), str):
-        return _normalize_response_links(payload["content"].strip())
+        return _normalize_markdown(_normalize_response_links(payload["content"].strip()))
 
-    return _normalize_response_links(stripped)
+    return _normalize_markdown(_normalize_response_links(stripped))
 
 
 def get_response_text(result: Any, *, language: str | None = None) -> str:
