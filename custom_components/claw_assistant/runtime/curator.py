@@ -301,7 +301,7 @@ async def async_run_curator(
 ) -> dict[str, Any]:
     start = datetime.now(UTC)
 
-    before_report = skill_usage.agent_created_report()
+    before_report = await hass.async_add_executor_job(skill_usage.agent_created_report)
     before_count = len(before_report)
 
     if dry_run:
@@ -319,11 +319,11 @@ async def async_run_curator(
     auto_summary = ", ".join(auto_parts) if auto_parts else "no changes"
 
     if not dry_run:
-        state = load_state()
+        state = await hass.async_add_executor_job(load_state)
         state["last_run_at"] = start.isoformat()
         state["run_count"] = int(state.get("run_count", 0)) + 1
         state["last_run_summary"] = f"auto: {auto_summary}"
-        save_state(state)
+        await hass.async_add_executor_job(save_state, state)
 
     llm_summary = ""
     llm_error = None
@@ -359,7 +359,7 @@ async def async_run_curator(
                 llm_error = str(err)
                 LOGGER.debug("Curator LLM review failed: %s", err, exc_info=True)
 
-    after_report = skill_usage.agent_created_report()
+    after_report = await hass.async_add_executor_job(skill_usage.agent_created_report)
     after_count = len(after_report)
     elapsed = (datetime.now(UTC) - start).total_seconds()
 
@@ -377,12 +377,12 @@ async def async_run_curator(
         )
     )
 
-    state2 = load_state()
+    state2 = await hass.async_add_executor_job(load_state)
     state2["last_run_duration_seconds"] = elapsed
     state2["last_run_summary"] = final_summary
     if report_path is not None:
         state2["last_report_path"] = str(report_path)
-    save_state(state2)
+    await hass.async_add_executor_job(save_state, state2)
 
     return {
         "started_at": start.isoformat(),
@@ -394,7 +394,7 @@ async def async_run_curator(
 
 async def _curator_tick(hass: HomeAssistant, _now: Any = None) -> None:
     try:
-        if not should_run_now():
+        if not await hass.async_add_executor_job(should_run_now):
             return
         LOGGER.info("Curator: starting scheduled review pass")
         result = await async_run_curator(hass)

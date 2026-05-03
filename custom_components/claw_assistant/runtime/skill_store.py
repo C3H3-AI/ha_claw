@@ -803,9 +803,9 @@ async def async_install_skill(
         from . import skill_usage
         slug = _slugify(name)
         if is_update:
-            skill_usage.bump_patch(slug)
+            await hass.async_add_executor_job(skill_usage.bump_patch, slug)
         else:
-            skill_usage.bump_use(slug)
+            await hass.async_add_executor_job(skill_usage.bump_use, slug)
     except Exception:
         pass
     return path
