@@ -53,6 +53,21 @@ from .tool_result_summary import extract_failed_tool_response
 LOGGER = logging.getLogger(__name__)
 
 
+def _get_chat_log_content(hass: HomeAssistant, conversation_id: str) -> list:
+    from homeassistant.util.hass_dict import HassKey
+    DATA_CHAT_LOGS: HassKey = HassKey("conversation_chat_log")
+    all_chat_logs = hass.data.get(DATA_CHAT_LOGS)
+    if not all_chat_logs:
+        return []
+    chat_log = all_chat_logs.get(conversation_id)
+    return chat_log.content if chat_log else []
+
+
+async def _trim_chat_log_for_context_overflow(hass: HomeAssistant, conversation_id: str, *, summary_agent_id: str = "", force: bool = False) -> None:
+    from .context_compressor import compress_chat_log
+    await compress_chat_log(hass, conversation_id, summary_agent_id=summary_agent_id, force=force)
+
+
 def _snapshot_tool_results(tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     return copy.deepcopy(tool_results)
@@ -878,6 +893,15 @@ async def run_agent_fallback_chain(
         )
 
         try:
+            from .context_compressor import get_compressor
+            _cc = get_compressor()
+            if _cc.preflight_check(_get_chat_log_content(hass, conversation_id)):
+                LOGGER.info("Preflight compression: context exceeds threshold, compressing before API call")
+                await _trim_chat_log_for_context_overflow(hass, conversation_id)
+        except Exception as _pf_err:
+            LOGGER.debug("Preflight compression check failed: %s", _pf_err)
+
+        try:
             tool_mode_token = set_runtime_tool_mode("minimal")
             try:
                 result = await original_async_converse(
@@ -904,6 +928,27 @@ async def run_agent_fallback_chain(
                 error_probe = raw_agent_response_text or agent_response_text
                 _is_error_text = bool(error_probe) and _looks_like_error(error_probe)
                 failure_reason = _extract_response_error_reason(result)
+
+                _CTX_TOO_LONG_HINTS = ("context_length_exceeded", "context length", "token_limit", "input too long", "context too long", "message too long", "max_tokens", "token limit")
+                _is_ctx_too_long = any(h in failure_reason.lower() for h in _CTX_TOO_LONG_HINTS) or any(
+                    h in error_probe.lower() for h in _CTX_TOO_LONG_HINTS
+                )
+                _ctx_attempts = transient_retry_counts.get("__ctx_compress_attempts", 0)
+                if _is_ctx_too_long and _ctx_attempts < 3:
+                    transient_retry_counts["__ctx_compress_attempts"] = _ctx_attempts + 1
+                    from .context_compressor import get_compressor
+                    _cc = get_compressor()
+                    _error_text = failure_reason or error_probe
+                    _cc.step_down_context(_error_text)
+                    await _trim_chat_log_for_context_overflow(hass, conversation_id, force=True)
+                    LOGGER.info(
+                        "Agent %s hit context_length_exceeded (attempt %d/3); "
+                        "context stepped to %d, compressed and retrying",
+                        current_agent_id, _ctx_attempts + 1, _cc.context_length,
+                    )
+                    agent_queue.insert(0, current_agent_id)
+                    continue
+
                 transient_response_error = any(
                     kw in failure_reason.lower() for kw in _TRANSIENT_ERROR_KEYWORDS
                 ) or bool(_is_error_text)
@@ -1192,6 +1237,27 @@ async def run_agent_fallback_chain(
                     current_agent_id, type(err).__name__, err_msg[:120],
                 )
                 continue
+
+            _CTX_EXC_HINTS = ("context_length_exceeded", "context length", "token_limit", "input too long", "context too long", "message too long", "max_tokens", "token limit", "too large")
+            _is_ctx_exc = any(h in err_lower for h in _CTX_EXC_HINTS)
+            _ctx_exc_attempts = transient_retry_counts.get("__ctx_compress_exc_attempts", 0)
+            if _is_ctx_exc and _ctx_exc_attempts < 2:
+                transient_retry_counts["__ctx_compress_exc_attempts"] = _ctx_exc_attempts + 1
+                try:
+                    from .context_compressor import get_compressor
+                    _cc = get_compressor()
+                    _cc.step_down_context(err_msg)
+                    await _trim_chat_log_for_context_overflow(hass, conversation_id, force=True)
+                    LOGGER.info(
+                        "Agent %s raised context-too-long exception (attempt %d/2); "
+                        "context stepped to %d, compressed and retrying same agent",
+                        current_agent_id, _ctx_exc_attempts + 1, _cc.context_length,
+                    )
+                except Exception as _comp_err:
+                    LOGGER.debug("Exception-path compression failed: %s", _comp_err)
+                agent_queue.insert(0, current_agent_id)
+                continue
+
             successful_tool_response = extract_successful_tool_response(
                 get_tool_results_state(hass)
             )
