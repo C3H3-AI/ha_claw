@@ -16,6 +16,7 @@ from .command_registry import (
 )
 from .conversation_utils import get_conversation_history
 from .runtime.state import get_channel_type
+from .runtime.i18n import t
 from .runtime.skill_store import (
     filter_visible_installed_skills,
     get_installed_skill,
@@ -211,25 +212,40 @@ def _conflicting_skill_commands() -> list[dict[str, Any]]:
     return conflicts
 
 
-def _build_command_catalog_message() -> str:
+def _spec_desc(spec: CommandSpec, lang: str | None) -> str:
+    if lang and lang.startswith("zh") and spec.description_zh:
+        return spec.description_zh
+    return spec.description
+
+
+_CATEGORY_KEYS = {
+    "Session": "cmd_category_session",
+    "Skills": "cmd_category_skills",
+    "Config": "cmd_category_config",
+    "Info": "cmd_category_info",
+}
+
+
+def _build_command_catalog_message(language: str | None = None) -> str:
     grouped: dict[str, list[CommandSpec]] = {}
     for spec in core_command_specs():
         grouped.setdefault(spec.category, []).append(spec)
 
     lines: list[str] = []
-    for category in ("Session", "Skills", "Info"):
+    for category in ("Session", "Skills", "Config", "Info"):
         specs = grouped.get(category, [])
         if not specs:
             continue
         if lines:
             lines.append("")
-        lines.append(f"{category} commands:")
+        cat_label = t(_CATEGORY_KEYS.get(category, category), language)
+        lines.append(f"{cat_label}{t('cmd_commands_suffix', language)}:")
         for spec in specs:
-            lines.append(f"- {spec.usage} - {spec.description}")
+            lines.append(f"- {spec.usage} - {_spec_desc(spec, language)}")
 
     skill_registry = _skill_command_registry()
     if skill_registry:
-        lines.extend(["", "Skill commands:"])
+        lines.extend(["", f"{t('cmd_skill_commands', language)}:"])
         for command_name, skill in sorted(skill_registry.items()):
             description = str(skill.get("description", "") or "").strip()
             suffix = f" - {description}" if description else ""
@@ -237,7 +253,7 @@ def _build_command_catalog_message() -> str:
 
     conflicts = _conflicting_skill_commands()
     if conflicts:
-        lines.extend(["", "Hidden conflicting skill commands:"])
+        lines.extend(["", f"{t('cmd_skill_conflicts', language)}:"])
         for entry in conflicts[:8]:
             skill = entry["skill"]
             skill_name = str(skill.get("name", "") or skill.get("slug", ""))
@@ -249,22 +265,22 @@ def _build_command_catalog_message() -> str:
     return "\n".join(lines)
 
 
-def _build_help_message(command_name: str = "") -> str:
+def _build_help_message(command_name: str = "", language: str | None = None) -> str:
     lookup = command_name.strip()
     if not lookup:
         return (
-            "Available commands:\n"
-            f"{_build_command_catalog_message()}\n\n"
-            "Use /help <command> for details."
+            f"{t('cmd_help_header', language)}\n"
+            f"{_build_command_catalog_message(language)}\n\n"
+            f"{t('cmd_help_footer', language)}"
         )
 
     spec = _find_core_command_spec(lookup)
     if spec is not None:
         return (
             f"/{spec.name}\n"
-            f"Usage: {spec.usage}\n"
-            f"Category: {spec.category}\n"
-            f"{spec.description}"
+            f"{t('cmd_help_usage', language)}: {spec.usage}\n"
+            f"{t('cmd_help_category', language)}: {t(_CATEGORY_KEYS.get(spec.category, spec.category), language)}\n"
+            f"{_spec_desc(spec, language)}"
         )
 
     normalized = lookup.lower().lstrip("/")
@@ -274,18 +290,15 @@ def _build_help_message(command_name: str = "") -> str:
         skill_name = str(skill_meta.get("name", "") or normalized)
         lines = [
             f"/{normalized}",
-            f"Usage: /{normalized} [input]",
-            "Category: Skills",
+            f"{t('cmd_help_usage', language)}: /{normalized} [input]",
+            f"{t('cmd_help_category', language)}: {t('cmd_category_skills', language)}",
             f"Invoke the installed skill '{skill_name}'.",
         ]
         if description:
             lines.append(description)
         return "\n".join(lines)
 
-    return (
-        f"Unknown command: {lookup}\n\n"
-        "Use /commands to list all available commands."
-    )
+    return t("cmd_help_not_found", language).replace("{name}", lookup)
 
 
 def _skill_identifier_variants(skill: dict[str, Any]) -> list[str]:
@@ -409,25 +422,24 @@ def _resolve_skill_invocation(argument_text: str) -> tuple[dict[str, str], str] 
 
 
 def _build_skill_invocation_message(skill: dict[str, str], user_instruction: str) -> str:
+    from .runtime.skill_store import _resolve_skill_path
     name = skill["name"]
     slug = skill["slug"]
     description = skill.get("description", "").strip()
-    markdown = skill["markdown"].strip()
+    skill_path = _resolve_skill_path(slug)
+    skill_dir = skill_path.parent
     lines = [
-        f"[Skill activated: {name} ({slug})]",
+        f"[Skill execution: {name} ({slug})]",
+        f"Skill file: {skill_path}",
+        f"Skill directory: {skill_dir}",
     ]
     if description:
-        lines.extend(["", f"Description: {description}"])
-    lines.extend(
-        [
-            "",
-            markdown,
-            "",
-            "Follow this skill before answering normally.",
-        ]
-    )
+        lines.append(f"Purpose: {description}")
+    lines.append("")
+    lines.append("This skill is already installed. Read the skill file above and execute its workflow.")
+    lines.append("Do NOT install, search for, or recommend this skill.")
     if user_instruction.strip():
-        lines.extend(["", f"User instruction: {user_instruction.strip()}"])
+        lines.extend(["", f"User input: {user_instruction.strip()}"])
     return "\n".join(lines).strip()
 
 
@@ -580,7 +592,7 @@ def _handle_skill_query_command(
         )
 
     if subcommand in {"help", "commands"}:
-        return ChatCommandOutcome(result=_build_result(user_input, _build_command_catalog_message()))
+        return ChatCommandOutcome(result=_build_result(user_input, _build_command_catalog_message(user_input.language)))
 
     resolved = _resolve_skill_invocation(normalized)
     if resolved is None:
@@ -810,16 +822,18 @@ async def async_handle_chat_command(
 
     conversation_id = user_input.conversation_id
 
+    lang = user_input.language
+
     if command.name == "help":
         return ChatCommandOutcome(
             result=_build_result(
                 user_input,
-                _build_help_message(command.args),
+                _build_help_message(command.args, language=lang),
             )
         )
 
     if command.name == "commands":
-        return ChatCommandOutcome(result=_build_result(user_input, _build_command_catalog_message()))
+        return ChatCommandOutcome(result=_build_result(user_input, _build_command_catalog_message(lang)))
 
     if command.name == "new":
         if continuous_conversation_enabled(hass):
@@ -835,17 +849,17 @@ async def async_handle_chat_command(
                 extra_system_prompt=getattr(user_input, "extra_system_prompt", None),
             )
         _clear_conversation_runtime(hass, conversation_id)
-        return ChatCommandOutcome(result=_build_result(user_input, "Started a new conversation."))
+        return ChatCommandOutcome(result=_build_result(user_input, t("cmd_new_done", lang)))
 
     if command.name == "reset":
         _clear_conversation_runtime(hass, conversation_id)
-        return ChatCommandOutcome(result=_build_result(user_input, "Reset the current conversation."))
+        return ChatCommandOutcome(result=_build_result(user_input, t("cmd_reset_done", lang)))
 
     if command.name == "stop":
         stopped = _stop_conversation_runtime(hass, conversation_id)
         if stopped:
-            return ChatCommandOutcome(result=_build_result(user_input, "Stopped the current run."))
-        return ChatCommandOutcome(result=_build_result(user_input, "No active run to stop."))
+            return ChatCommandOutcome(result=_build_result(user_input, t("cmd_stop_done", lang)))
+        return ChatCommandOutcome(result=_build_result(user_input, t("cmd_stop_none", lang)))
 
     if command.name == "history":
         return _handle_history_command(hass, user_input, command.args)
@@ -875,4 +889,111 @@ async def async_handle_chat_command(
             rewritten_text=_build_skill_invocation_message(skill, command.args)
         )
 
+    if command.name == "model":
+        return await _handle_model_command(hass, user_input, command.args)
+
     return None
+
+
+def _list_available_agents(hass) -> list[dict[str, str]]:
+    from homeassistant.helpers import entity_registry as er
+    from .const import DOMAIN
+    ent_reg = er.async_get(hass)
+    own_entry_ids = {
+        e.entry_id for e in hass.config_entries.async_entries(DOMAIN)
+    }
+    agents: list[dict[str, str]] = []
+    for entity_id in sorted(hass.states.async_entity_ids("conversation")):
+        if entity_id == "conversation.home_assistant":
+            continue
+        reg = ent_reg.async_get(entity_id)
+        if reg and (reg.platform == DOMAIN or reg.config_entry_id in own_entry_ids):
+            continue
+        state = hass.states.get(entity_id)
+        if state and state.attributes.get("entity") == "claw_assistant.ai":
+            continue
+        label = (state.attributes.get("friendly_name") if state else None) or entity_id.split(".")[-1]
+        agents.append({"value": entity_id, "label": str(label)})
+    return agents
+
+
+def _get_claw_entry(hass):
+    from .const import DOMAIN
+    entries = hass.config_entries.async_entries(DOMAIN)
+    return entries[0] if entries else None
+
+
+async def _handle_model_command(hass, user_input, args: str) -> ChatCommandOutcome:
+    from .const import CONF_PRIMARY_AGENT, CONF_FALLBACK_AGENT, CONF_SECONDARY_FALLBACK_AGENT
+
+    lang = user_input.language
+    entry = _get_claw_entry(hass)
+    if not entry:
+        return ChatCommandOutcome(result=_build_result(user_input, t("cmd_model_no_config", lang)))
+
+    agents = _list_available_agents(hass)
+    current_primary = str(entry.options.get(CONF_PRIMARY_AGENT, "") or "")
+    current_fallback = str(entry.options.get(CONF_FALLBACK_AGENT, "") or "")
+    current_third = str(entry.options.get(CONF_SECONDARY_FALLBACK_AGENT, "") or "")
+
+    args = args.strip()
+
+    if not args:
+        if not agents:
+            return ChatCommandOutcome(result=_build_result(user_input, t("cmd_model_no_agents", lang)))
+        lines: list[str] = [f"{t('cmd_model_header', lang)}\n"]
+        for i, ag in enumerate(agents, 1):
+            tags: list[str] = []
+            if ag["value"] == current_primary:
+                tags.append(t("cmd_model_tag_primary", lang))
+            if ag["value"] == current_fallback:
+                tags.append(t("cmd_model_tag_fallback", lang))
+            if ag["value"] == current_third:
+                tags.append(t("cmd_model_tag_third", lang))
+            tag_str = f" \u2190 {' + '.join(tags)}" if tags else ""
+            lines.append(f"  {i}. {ag['label']}{tag_str}")
+        lines.append("")
+        lines.append(t("cmd_model_switch_hint", lang))
+        return ChatCommandOutcome(result=_build_result(user_input, "\n".join(lines)))
+
+    parts = args.split(None, 1)
+    first = parts[0].lower()
+    if first in ("third", "第三", "3") and len(parts) > 1 and parts[1].strip().lower() in ("none", "无", "clear", "清除", "off"):
+        new_options = dict(entry.options)
+        new_options.pop(CONF_SECONDARY_FALLBACK_AGENT, None)
+        hass.config_entries.async_update_entry(entry, options=new_options)
+        return ChatCommandOutcome(result=_build_result(user_input, t("cmd_model_third_cleared", lang)))
+
+    try:
+        idx = int(parts[0])
+    except ValueError:
+        return ChatCommandOutcome(result=_build_result(
+            user_input, t("cmd_model_invalid_idx", lang).replace("{idx}", parts[0])
+        ))
+
+    if idx < 1 or idx > len(agents):
+        return ChatCommandOutcome(result=_build_result(
+            user_input, t("cmd_model_out_of_range", lang).replace("{max}", str(len(agents)))
+        ))
+
+    target = agents[idx - 1]
+    role_arg = parts[1].strip().lower() if len(parts) > 1 else ""
+    is_fallback = role_arg in ("fallback", "备用", "次要", "secondary", "2")
+    is_third = role_arg in ("third", "第三", "3", "tertiary")
+
+    new_options = dict(entry.options)
+    if is_third:
+        new_options[CONF_SECONDARY_FALLBACK_AGENT] = target["value"]
+        role_label = t("cmd_model_tag_third", lang)
+    elif is_fallback:
+        new_options[CONF_FALLBACK_AGENT] = target["value"]
+        role_label = t("cmd_model_tag_fallback", lang)
+    else:
+        new_options[CONF_PRIMARY_AGENT] = target["value"]
+        role_label = t("cmd_model_tag_primary", lang)
+
+    hass.config_entries.async_update_entry(entry, options=new_options)
+
+    return ChatCommandOutcome(result=_build_result(
+        user_input, t("cmd_model_switched", lang).replace("{name}", target["label"]).replace("{role}", role_label)
+    ))
