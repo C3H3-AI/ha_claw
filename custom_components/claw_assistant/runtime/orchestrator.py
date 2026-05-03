@@ -19,7 +19,6 @@ from .agent_fallback import (
     _finalize_synthesized_success,
     _snapshot_tool_results,
     get_agent_name,
-    is_error_response,
     run_agent_fallback_chain,
 )
 from .config import DEFAULT_FALLBACK_AGENT_ID, DEFAULT_THRESHOLDS

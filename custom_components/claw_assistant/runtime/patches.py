@@ -1071,3 +1071,114 @@ def unpatch_aihub_markdown_filter() -> None:
         LOGGER.debug("Restored ai_hub markdown_filter")
     except Exception as exc:
         LOGGER.debug("ai_hub markdown_filter unpatch skipped: %s", exc)
+
+
+_AIHUB_MAXTOKENS_PATCHED = "_claw_aihub_maxtokens_patched"
+_DEFAULT_CONTEXT_WINDOW = 196_608
+
+
+def _estimate_input_tokens(messages: list) -> int:
+    total = sum(len(str(m)) for m in messages)
+    return (total + 3) // 4
+
+
+def _clamp_max_tokens(request: dict, context_window: int = _DEFAULT_CONTEXT_WINDOW) -> dict:
+    max_tok = request.get("max_tokens")
+    if not max_tok or max_tok <= 4096:
+        return request
+    messages = request.get("messages") or []
+    input_est = _estimate_input_tokens(messages)
+    tools = request.get("tools")
+    if tools:
+        input_est += (len(str(tools)) + 3) // 4
+    system = request.get("system")
+    if system:
+        input_est += (len(str(system)) + 3) // 4
+    headroom = context_window - input_est
+    if headroom < max_tok:
+        new_max = max(1024, headroom - 512)
+        LOGGER.debug(
+            "Dynamic max_tokens clamp: %d -> %d (input ~%d, ctx %d)",
+            max_tok, new_max, input_est, context_window,
+        )
+        request["max_tokens"] = new_max
+    return request
+
+
+def patch_aihub_dynamic_max_tokens(hass: HomeAssistant) -> None:
+    patched_classes = []
+    try:
+        from custom_components.ai_hub.providers.openai_compatible import OpenAICompatibleProvider
+        if not getattr(OpenAICompatibleProvider, _AIHUB_MAXTOKENS_PATCHED, False):
+            orig = OpenAICompatibleProvider._build_request
+
+            def _patched_openai(self, messages, stream=False, tools=None, **kwargs):
+                request = orig(self, messages, stream=stream, tools=tools, **kwargs)
+                ctx = getattr(self.config, "context_length", 0) or _DEFAULT_CONTEXT_WINDOW
+                return _clamp_max_tokens(request, ctx)
+
+            OpenAICompatibleProvider._build_request = _patched_openai
+            OpenAICompatibleProvider._claw_original_build_request = orig
+            setattr(OpenAICompatibleProvider, _AIHUB_MAXTOKENS_PATCHED, True)
+            patched_classes.append("OpenAI")
+    except Exception as exc:
+        LOGGER.debug("OpenAI max_tokens patch skipped: %s", exc)
+
+    try:
+        from custom_components.ai_hub.providers.anthropic_compatible import AnthropicCompatibleProvider
+        if not getattr(AnthropicCompatibleProvider, _AIHUB_MAXTOKENS_PATCHED, False):
+            orig_a = AnthropicCompatibleProvider._build_request
+
+            def _patched_anthropic(self, messages, stream=False, tools=None, **kwargs):
+                request = orig_a(self, messages, stream=stream, tools=tools, **kwargs)
+                ctx = getattr(self.config, "context_length", 0) or _DEFAULT_CONTEXT_WINDOW
+                return _clamp_max_tokens(request, ctx)
+
+            AnthropicCompatibleProvider._build_request = _patched_anthropic
+            AnthropicCompatibleProvider._claw_original_build_request = orig_a
+            setattr(AnthropicCompatibleProvider, _AIHUB_MAXTOKENS_PATCHED, True)
+            patched_classes.append("Anthropic")
+    except Exception as exc:
+        LOGGER.debug("Anthropic max_tokens patch skipped: %s", exc)
+
+    try:
+        from custom_components.ai_hub.providers.ollama_compatible import OllamaCompatibleProvider
+        if not getattr(OllamaCompatibleProvider, _AIHUB_MAXTOKENS_PATCHED, False):
+            orig_o = OllamaCompatibleProvider._build_request
+
+            def _patched_ollama(self, messages, stream=False, tools=None, **kwargs):
+                request = orig_o(self, messages, stream=stream, tools=tools, **kwargs)
+                ctx = getattr(self.config, "context_length", 0) or _DEFAULT_CONTEXT_WINDOW
+                return _clamp_max_tokens(request, ctx)
+
+            OllamaCompatibleProvider._build_request = _patched_ollama
+            OllamaCompatibleProvider._claw_original_build_request = orig_o
+            setattr(OllamaCompatibleProvider, _AIHUB_MAXTOKENS_PATCHED, True)
+            patched_classes.append("Ollama")
+    except Exception as exc:
+        LOGGER.debug("Ollama max_tokens patch skipped: %s", exc)
+
+    if patched_classes:
+        LOGGER.debug("Patched ai_hub dynamic max_tokens: %s", ", ".join(patched_classes))
+
+
+def unpatch_aihub_dynamic_max_tokens() -> None:
+    for cls_path in (
+        "custom_components.ai_hub.providers.openai_compatible.OpenAICompatibleProvider",
+        "custom_components.ai_hub.providers.anthropic_compatible.AnthropicCompatibleProvider",
+        "custom_components.ai_hub.providers.ollama_compatible.OllamaCompatibleProvider",
+    ):
+        try:
+            parts = cls_path.rsplit(".", 1)
+            mod = __import__(parts[0], fromlist=[parts[1]])
+            cls = getattr(mod, parts[1])
+            if not getattr(cls, _AIHUB_MAXTOKENS_PATCHED, False):
+                continue
+            orig = getattr(cls, "_claw_original_build_request", None)
+            if orig:
+                cls._build_request = orig
+                delattr(cls, "_claw_original_build_request")
+            delattr(cls, _AIHUB_MAXTOKENS_PATCHED)
+        except Exception:
+            pass
+    LOGGER.debug("Restored ai_hub _build_request")

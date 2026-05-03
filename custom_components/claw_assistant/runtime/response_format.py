@@ -23,10 +23,10 @@ _IMAGE_MARKDOWN_RE = re.compile(
 )
 
 _LINK_REWRITE_RE = re.compile(
-    r"(<a\s[^>]*>.*?</a>)"
-    r"|(?<!\!)\[([^\]\n]+)\]\((https?://[^\s)]+)\)"
-    r"|(?<![\"'>=<])(https?://[^\s<>\[\]()\"']+)",
-    re.DOTALL | re.IGNORECASE,
+    r"(<a\s[^>]*>[\s\S]{0,5000}?</a>)"
+    r"|(?<!\!)\[([^\]\n]{0,500})\]\((https?://[^\s)]{0,2000})\)"
+    r"|(?<![\"'>=<])(https?://[^\s<>\[\]()\"']{1,2000})",
+    re.IGNORECASE,
 )
 _HA_RICH_MEDIA_TAG_RE = re.compile(r"\[(IMAGE|GIF|VIDEO|FILE):(.+?)\]")
 # Bare claw_assistant media paths the AI may embed verbatim. Both the backend
@@ -73,7 +73,11 @@ def _rewrite_external_links(match: "re.Match[str]") -> str:
     return f'<a href="{url}" target="_blank" rel="noopener noreferrer">{url}</a>'
 
 
+_LARGE_TEXT_THRESHOLD = 2_000_000
+
 def _normalize_response_links(text: str) -> str:
+    if len(text) > _LARGE_TEXT_THRESHOLD:
+        return text
     if "://" not in text and "/local/claw_assistant/" not in text and "/config/www/claw_assistant/" not in text:
         return text
     image_tokens: list[str] = []
@@ -160,12 +164,12 @@ def _normalize_ha_frontend_html_media(text: str) -> str:
 
 
 _EXISTING_HTML_MEDIA_RE = re.compile(
-    r"<video\b[^>]*>.*?</video>"
-    r"|<audio\b[^>]*>.*?</audio>"
-    r"|<a\b[^>]*>.*?</a>"
+    r"<video\b[^>]*>[\s\S]{0,10000}?</video>"
+    r"|<audio\b[^>]*>[\s\S]{0,10000}?</audio>"
+    r"|<a\b[^>]*>[\s\S]{0,5000}?</a>"
     r"|<img\b[^>]*>"
     r"|<source\b[^>]*/?>",
-    re.DOTALL | re.IGNORECASE,
+    re.IGNORECASE,
 )
 
 
@@ -188,6 +192,9 @@ def _stash_existing_html_media(
     """
 
     tokens: list[str] = []
+
+    if len(text) > _LARGE_TEXT_THRESHOLD:
+        return text, tokens, prefix
 
     def _stash(match: "re.Match[str]") -> str:
         tokens.append(match.group(0))
@@ -328,7 +335,7 @@ def is_marshaled_tool_payload(text: str) -> bool:
 
 
 _MEMORY_CONTEXT_BLOCK_RE = re.compile(
-    r"<\s*memory-context\s*>[\s\S]*?</\s*memory-context\s*>",
+    r"<\s*memory-context\s*>[\s\S]{0,50000}?</\s*memory-context\s*>",
     flags=re.IGNORECASE,
 )
 _MEMORY_CONTEXT_NOTE_RE = re.compile(
@@ -357,11 +364,13 @@ _INLINE_LIST_RE = re.compile(r"(?<=\S)(- (?:\[.\] )?\S)")
 _INLINE_ORDERED_LIST_RE = re.compile(r"(?<=[^\s\d])(\d+\.\s+\S)")
 _INLINE_BLOCKQUOTE_RE = re.compile(r"(?<=\S)(> )")
 _INLINE_CODE_RE = re.compile(r"`[^`]+`")
-_INLINE_LINK_RE = re.compile(r"\[[^\]]*\]\([^)]*\)")
-_INLINE_HTML_A_RE = re.compile(r"<a\s[^>]*>.*?</a>", re.DOTALL)
+_INLINE_LINK_RE = re.compile(r"\[[^\]]{0,500}\]\([^)]{0,2000}\)")
+_INLINE_HTML_A_RE = re.compile(r"<a\s[^>]{0,500}>[\s\S]{0,5000}?</a>")
 
 
 def _presplit_inline_markdown(text: str) -> str:
+    if len(text) > _LARGE_TEXT_THRESHOLD:
+        return text
     lines = text.splitlines()
     result: list[str] = []
     in_fence = False
@@ -403,6 +412,8 @@ def _presplit_inline_markdown(text: str) -> str:
 
 
 def _normalize_markdown(text: str) -> str:
+    if len(text) > _LARGE_TEXT_THRESHOLD:
+        return text
     text = _presplit_inline_markdown(text)
     lines = text.splitlines()
     out: list[str] = []
@@ -502,11 +513,11 @@ _AGENT_ERROR_PREFIX_RE = re.compile(
     re.IGNORECASE,
 )
 _API_ERROR_JSON_RE = re.compile(
-    r"(?:API\s*error|RuntimeError|Error)\s*[:：]\s*(\{.*)",
-    re.IGNORECASE | re.DOTALL,
+    r"(?:API\s*error|RuntimeError|Error)\s*[:：]\s*(\{[^\n]{0,5000})",
+    re.IGNORECASE,
 )
 _AGENT_REPLY_PREFIX_RE = re.compile(
-    r"^(?:conversation\.[\w_]+\s*:\s*)?(\(.+?\)\s*(?:回复|Reply)\s*[:：]\s*)(.*)$",
+    r"^(?:conversation\.[\w_]+\s*:\s*)?(\(.{1,200}?\)\s*(?:回复|Reply)\s*[:：]\s*)(.{0,50000})$",
     re.DOTALL,
 )
 _ERROR_SIGNAL_PATTERNS = (
@@ -757,6 +768,8 @@ def _rewrite_chained_agent_errors(text: str, *, language: str | None = None) -> 
 
 def sanitize_response_text(text: str, *, language: str | None = None) -> str:
 
+    if len(text) > _LARGE_TEXT_THRESHOLD:
+        return text.strip()
     stripped = _strip_memory_context(text).strip()
     if not stripped:
         return ""
