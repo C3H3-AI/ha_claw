@@ -45,7 +45,7 @@ def build_conversation_runtime_config(
     secondary_agent = str(options.get(CONF_SECONDARY_FALLBACK_AGENT, "") or "")
 
     fallback_agents = [
-        agent_id for agent_id in (primary_agent, fallback_agent) if agent_id
+        agent_id for agent_id in (primary_agent, fallback_agent, secondary_agent) if agent_id
     ]
 
     summary_requested = conversation_mode == CONVERSATION_MODE_DETAILED
