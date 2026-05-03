@@ -5,11 +5,45 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.helpers import llm
+from homeassistant.helpers.json import json_dumps
 
 from .tool_result_summary import (
     extract_failed_tool_response,
     extract_successful_tool_response,
 )
+
+def _sanitize_tool_payload(value: Any) -> Any:
+
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, bytes):
+        return f"<bytes:{len(value)}>"
+    if isinstance(value, dict):
+        return {str(k): _sanitize_tool_payload(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_sanitize_tool_payload(v) for v in value]
+    if hasattr(value, "model_dump"):
+        try:
+            return _sanitize_tool_payload(value.model_dump())
+        except Exception:
+            pass
+    if hasattr(value, "dict"):
+        try:
+            return _sanitize_tool_payload(value.dict())
+        except Exception:
+            pass
+    if hasattr(value, "__dict__"):
+        try:
+            data = vars(value)
+            if data:
+                return _sanitize_tool_payload(data)
+        except Exception:
+            pass
+    try:
+        return json.loads(json_dumps(value))
+    except Exception:
+        return str(value)
+
 
 _KERNEL_BLOCKED_TOOLS = frozenset(
     {
@@ -93,7 +127,7 @@ async def execute_kernel_tool(
     except Exception as err:
         tool_result = {
             "tool_name": tool_name,
-            "tool_args": tool_args,
+            "tool_args": _sanitize_tool_payload(tool_args),
             "success": False,
             "error": str(err),
             "result": None,
@@ -101,6 +135,7 @@ async def execute_kernel_tool(
         tool_result["summary"] = extract_failed_tool_response([tool_result]) or str(err)
         return tool_result
 
+    result = _sanitize_tool_payload(result)
     success = True
     error = None
     if isinstance(result, dict):
@@ -112,7 +147,7 @@ async def execute_kernel_tool(
 
     tool_result = {
         "tool_name": tool_name,
-        "tool_args": tool_args,
+        "tool_args": _sanitize_tool_payload(tool_args),
         "success": success,
         "error": error,
         "result": result,
