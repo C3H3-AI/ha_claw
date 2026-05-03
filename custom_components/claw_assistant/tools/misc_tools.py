@@ -1750,7 +1750,7 @@ Parameters:
 
 class ParallelToolCallTool(llm.Tool):
     name = "ParallelToolCall"
-    description = "Call multiple independent tools in parallel. Best for querying multiple entities or information sources at once. Params: tools=[{name,args}]. Tool name must be the registered tool name, for example {\"name\":\"SystemControl\",\"args\":{\"action\":\"set_output_mode\",\"value\":\"brief\"}}, not SystemControl.set_output_mode. Prefer using it with EntityQuery, HistoryQuery, ListServices, SmartDiscovery, and WebSearch. Do not replace name/args with natural language."
+    description = "Call up to 8 independent tools in parallel. Best for querying multiple entities or information sources at once. Batch as many independent calls as possible (up to 8) to reduce round trips. Params: tools=[{name,args}]. Tool name must be the registered tool name, for example {\"name\":\"SystemControl\",\"args\":{\"action\":\"set_output_mode\",\"value\":\"brief\"}}, not SystemControl.set_output_mode. Prefer using it with EntityQuery, HistoryQuery, ListServices, SmartDiscovery, and WebSearch. Do not replace name/args with natural language."
     parameters = vol.Schema({
         vol.Required("tools"): list,
     })
@@ -1792,12 +1792,23 @@ class ParallelToolCallTool(llm.Tool):
             seen_specs.add(dedupe_key)
             deduped_specs.append((tool_name, tool_args))
 
-        results = await asyncio.gather(
+        _MAX_PARALLEL = 8
+        if len(deduped_specs) > _MAX_PARALLEL:
+            deduped_specs = deduped_specs[:_MAX_PARALLEL]
+
+        raw_results = await asyncio.gather(
             *[
                 _execute_tool_spec(hass, llm_context, tool_name, tool_args)
                 for tool_name, tool_args in deduped_specs
-            ]
+            ],
+            return_exceptions=True,
         )
+        results = []
+        for i, r in enumerate(raw_results):
+            if isinstance(r, BaseException):
+                results.append({"tool": deduped_specs[i][0], "success": False, "error": str(r)})
+            else:
+                results.append(r)
         success_count = sum(1 for item in results if item.get("success"))
 
         return {

@@ -788,16 +788,26 @@ async def async_install_skill(
         partial(_write_skill, name, markdown, overwrite=overwrite)
     )
     await async_refresh_prompt_store(hass)
+    is_update = previous is not None
     await async_record_change(
         hass,
         target_type="skill",
         target_id=path.stem,
-        action="update" if previous else "create",
+        action="update" if is_update else "create",
         before=previous,
         after=markdown,
         actor=actor,
         reason=reason,
     )
+    try:
+        from . import skill_usage
+        slug = _slugify(name)
+        if is_update:
+            skill_usage.bump_patch(slug)
+        else:
+            skill_usage.bump_use(slug)
+    except Exception:
+        pass
     return path
 
 
@@ -1191,6 +1201,14 @@ def match_installed_skills(
         scored.append((score, skill))
 
     scored.sort(key=lambda item: (-item[0], item[1].title.lower()))
+    results = scored[: max(limit, 0)]
+    if results:
+        try:
+            from . import skill_usage
+            for _score, _skill in results:
+                skill_usage.bump_use(_skill.slug)
+        except Exception:
+            pass
     return [
         {
             "name": skill.title,
@@ -1199,7 +1217,7 @@ def match_installed_skills(
             "description": skill.description,
             "score": score,
         }
-        for score, skill in scored[: max(limit, 0)]
+        for score, skill in results
     ]
 
 
@@ -1287,6 +1305,13 @@ def get_installed_skill(identifier: str) -> dict[str, str]:
     if not lookup:
         raise ValueError("Skill identifier is required")
 
+    def _track_view(slug: str) -> None:
+        try:
+            from . import skill_usage
+            skill_usage.bump_view(slug)
+        except Exception:
+            pass
+
     for skill in _ensure_prompt_store_fresh().skills:
         candidates = {
             skill.slug.lower(),
@@ -1294,6 +1319,7 @@ def get_installed_skill(identifier: str) -> dict[str, str]:
             skill.title.lower(),
         }
         if lookup in candidates:
+            _track_view(skill.slug)
             return {
                 "name": skill.title,
                 "slug": skill.slug,
@@ -1312,6 +1338,7 @@ def get_installed_skill(identifier: str) -> dict[str, str]:
     for skill in _ensure_prompt_store_fresh().skills:
         haystacks = (skill.slug.lower(), skill.file_name.lower(), skill.title.lower())
         if any(lookup in hay for hay in haystacks):
+            _track_view(skill.slug)
             return {
                 "name": skill.title,
                 "slug": skill.slug,
