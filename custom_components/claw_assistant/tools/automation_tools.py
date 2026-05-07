@@ -18,7 +18,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import category_registry as cr, entity_registry as er, llm
 from homeassistant.util.file import write_utf8_file_atomic
 from homeassistant.util.json import JsonObjectType
-from homeassistant.util.yaml import dump, load_yaml
+from homeassistant.util.yaml import dump, load_yaml, parse_yaml
+
+from ..runtime.text_patch import PatchError, apply_patches
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -29,7 +31,13 @@ class AutomationTool(llm.Tool):
     name = "Automation"
     description = (
         "Manage Home Assistant automations via official APIs. "
-        "Actions: list, get, create, update, delete, trigger, enable, disable, confirm_draft. "
+        "Actions: list, get, create, update, patch, delete, trigger, enable, disable, confirm_draft. "
+        "PATCH-FIRST RULE: For any surgical change (tweaking one trigger, swapping one service, fixing a template), "
+        "YOU MUST use action=patch with anchor-based ops instead of re-emitting the whole config. "
+        "patch params: patches=[{op, anchor, new_text, occurrence?, regex?, count?}, ...], dry_run=true/false. "
+        "Ops: replace | insert_before | insert_after | delete | prepend | append | create. "
+        "Anchors match against the YAML text of the current config (get the config first to know the exact text). "
+        "Limitation: patch cannot remove a top-level key (use action=update for that). "
         "TWO update paths: "
         "1) Metadata only (icon/area/labels/name/category_id): pass empty config + metadata params → applies directly to entity registry, instant. "
         "2) Config change (alias/description/trigger/condition/action): pass config dict → validate → atomic write → reload → post-verify. "
@@ -60,7 +68,7 @@ class AutomationTool(llm.Tool):
     parameters = vol.Schema(
         {
             vol.Required("action"): vol.In(
-                ["list", "get", "trigger", "enable", "disable", "create", "update", "confirm_draft", "delete"]
+                ["list", "get", "trigger", "enable", "disable", "create", "update", "patch", "confirm_draft", "delete"]
             ),
             vol.Optional("entity_id", default=""): str,
             vol.Optional("config", default={}): vol.Any(dict, str),
@@ -72,6 +80,8 @@ class AutomationTool(llm.Tool):
             vol.Optional("labels"): vol.Any(list, None),
             vol.Optional("name"): vol.Any(str, None),
             vol.Optional("category_id"): vol.Any(str, None),
+            vol.Optional("patches", default=[]): list,
+            vol.Optional("dry_run", default=False): bool,
         }
     )
 
@@ -130,6 +140,15 @@ class AutomationTool(llm.Tool):
                     hass, config, automation_id, entity_id,
                     icon=icon, area_id=area_id,
                     labels=labels, name=name, category_id=category_id, sentinel=_SENTINEL,
+                )
+
+            if action == "patch":
+                return await self._patch_automation(
+                    hass, automation_id, entity_id,
+                    patches=tool_input.tool_args.get("patches", []),
+                    dry_run=bool(tool_input.tool_args.get("dry_run", False)),
+                    icon=icon, area_id=area_id, labels=labels, name=name,
+                    category_id=category_id, sentinel=_SENTINEL,
                 )
 
             if action == "confirm_draft":
@@ -553,6 +572,86 @@ class AutomationTool(llm.Tool):
             result["current_config"] = verified
         if applied:
             result["applied_registry"] = applied
+        return result
+
+    async def _patch_automation(
+        self,
+        hass: HomeAssistant,
+        automation_id: str,
+        entity_id: str,
+        *,
+        patches: list,
+        dry_run: bool,
+        icon=None,
+        area_id=None,
+        labels=None,
+        name=None,
+        category_id=None,
+        sentinel=None,
+    ) -> JsonObjectType:
+        """Apply surgical anchor patches to an automation's YAML config.
+
+        Workflow:
+        1. Load current config.
+        2. Dump to YAML text.
+        3. Apply text patches atomically.
+        4. Parse patched YAML back to a dict.
+        5. Feed the full dict into ``_inplace_update`` (full replacement).
+        """
+        if not isinstance(patches, list) or not patches:
+            return {"success": False, "error": "'patches' must be a non-empty list"}
+
+        if not automation_id and entity_id:
+            automation_id = entity_id.removeprefix("automation.")
+        if not automation_id:
+            return {"success": False, "error": "automation_id or entity_id is required"}
+
+        target_entity_id = entity_id or f"automation.{automation_id}"
+        target_entity_id, automation_id = self._resolve_config_id(hass, target_entity_id, automation_id)
+
+        original = await self._load_existing_config(hass, automation_id)
+        if original is None:
+            return {"success": False, "error": f"Automation '{automation_id}' not found"}
+
+        original_yaml = dump(original)
+        label = f"automation/{automation_id}.yaml"
+
+        try:
+            report = apply_patches(original_yaml, patches, label=label)
+        except PatchError as err:
+            return {"success": False, "error": str(err), **err.to_dict()}
+
+        try:
+            patched = parse_yaml(report.after)
+        except Exception as err:  # noqa: BLE001
+            return {
+                "success": False,
+                "error": f"patched YAML did not parse: {err}",
+                "preview_after": report.after[:2000],
+                "diff": report.diff,
+            }
+        if not isinstance(patched, dict):
+            return {
+                "success": False,
+                "error": "patched YAML must be a mapping",
+                "preview_after": report.after[:2000],
+            }
+
+        if dry_run:
+            return {
+                "success": True,
+                "dry_run": True,
+                "report": report.to_dict(),
+                "preview_config": patched,
+            }
+
+        result = await self._inplace_update(
+            hass, patched, automation_id, target_entity_id,
+            icon=icon, area_id=area_id, labels=labels, name=name,
+            category_id=category_id, sentinel=sentinel,
+        )
+        if isinstance(result, dict):
+            result["patch_report"] = report.to_dict()
         return result
 
     async def _confirm_draft(

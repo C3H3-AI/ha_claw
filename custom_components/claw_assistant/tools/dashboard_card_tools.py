@@ -11,6 +11,8 @@ from homeassistant.helpers import llm
 from homeassistant.util.json import JsonObjectType
 from homeassistant.util.yaml import dump as yaml_dump, parse_yaml
 
+from ..runtime.text_patch import PatchError, apply_patches
+
 _LOGGER = logging.getLogger(__name__)
 
 HTML_CARD_PRO_PATH = "www/community/html-card-pro/html-card-pro.js"
@@ -60,14 +62,23 @@ STEP2_VISUAL = (
     "rgba(var(--rgb-primary-text-color), 0.6), rgba(var(--rgb-card-background-color), 0.8), "
     "rgba(var(--rgb-primary-color), 0.15). "
     "--- LAYOUT --- "
-    "border-radius: 16px (FORCED, no exceptions). padding: 16px. gap: 8px/16px. "
+    "border-radius: 10px (FORCED, no exceptions — whenever a border-radius is needed, it MUST be 10px). padding: 16px. gap: 8px/16px. "
     "Use %/flex/grid for responsive layout. font: inherit ONLY. "
     "--- CARD BACKGROUND/SHADOW RULES (MANDATORY) --- "
     "NEVER set background, background-color, or box-shadow on ANY element (card or inner). "
     "ha-card wrapper provides background and shadow from theme. "
     "NEVER add background overlay on child divs/sections — causes broken layering in light+dark modes. "
+    "--- ICON / EMOJI RULES (MANDATORY, ZERO TOLERANCE) --- "
+    "ABSOLUTELY NO EMOJI anywhere — not in text, not in labels, not in icons, not in fallbacks. "
+    "This includes all Unicode emoji (U+1F300–U+1FAFF, U+2600–U+27BF, etc.), symbol glyphs, "
+    "pictographs, dingbats, flags, and any character that renders as a colored/graphical emoji. "
+    "If you catch yourself typing an emoji — STOP, delete it, use an icon instead. "
+    "ICONS MUST use one of ONLY TWO methods: "
+    "(1) native Material Design Icons via <ha-icon icon=\"mdi:xxx\"></ha-icon>, OR "
+    "(2) inline <svg> drawn with paths (stroke/fill using CSS vars). "
+    "NO emoji, NO icon fonts other than mdi, NO image URLs for icons. "
     "FORBIDDEN: any background property, any box-shadow, backdrop-filter, glassmorphism, "
-    "custom font-family, fixed px widths."
+    "custom font-family, fixed px widths, emoji characters."
 )
 
 API_CARD_CONFIG = (
@@ -126,7 +137,7 @@ API_PITFALLS = (
     "[CORRECT EXAMPLE 1 — simple toggle (same element shortcut)]\n"
     "<style>"
     ".lc{padding:32px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:16px;cursor:pointer}"
-    ".lc-icon{width:56px;height:56px;border-radius:16px;display:flex;align-items:center;justify-content:center;"
+    ".lc-icon{width:56px;height:56px;border-radius:10px;display:flex;align-items:center;justify-content:center;"
     "color:var(--secondary-text-color);transition:all .3s ease}"
     "[data-state='on'] .lc-icon{color:var(--state-active-color)}"
     ".lc-name{font-size:16px;font-weight:500;color:var(--primary-text-color)}"
@@ -192,7 +203,15 @@ class DashboardCardTool(llm.Tool):
     name = "DashboardCard"
     description = (
         "Create and manage Lovelace dashboard views and cards powered by html-card-pro (custom:html-pro-card). "
-        "Actions: check_dependency, list_dashboards, get_dashboard, get_card, add_view, add_card, update_card, remove_card, remove_view. "
+        "Actions: check_dependency, list_dashboards, get_dashboard, get_card, add_view, add_card, update_card, patch_card, remove_card, remove_view. "
+        "PATCH-FIRST RULE (MANDATORY for any modification): "
+        "When modifying an existing card, YOU MUST use action=patch_card with surgical anchor ops — "
+        "NEVER re-emit the full content string. Only fall back to update_card when the change covers >50% of the card. "
+        "patch_card params: patches=[{op, anchor, new_text, occurrence?, regex?, count?}, ...], "
+        "target='content'(default, patches the HTML/CSS/JS string) or 'card_yaml'(patches the whole card YAML), dry_run=true/false. "
+        "Ops: replace | insert_before | insert_after | delete | prepend | append | create. "
+        "Each anchor must match uniquely (or set occurrence). Batch multiple patches in ONE call — they apply atomically. "
+        "Use dry_run=true to preview the unified diff before committing. "
         "PREREQUISITE: check_dependency first; if not installed, auto-install via HACS tool. "
         "Workflow: check_dependency → list_dashboards → get_dashboard (inspect view types) → add_view or add_card. "
         "Params: action, dashboard_url (url_path, default 'lovelace'), view_index (0-based), card_index (0-based), "
@@ -213,6 +232,7 @@ class DashboardCardTool(llm.Tool):
                 "add_view",
                 "add_card",
                 "update_card",
+                "patch_card",
                 "remove_card",
                 "remove_view",
             ]),
@@ -225,6 +245,9 @@ class DashboardCardTool(llm.Tool):
             vol.Optional("content", default=""): str,
             vol.Optional("card_config", default={}): dict,
             vol.Optional("card_yaml", default=""): str,
+            vol.Optional("patches", default=[]): list,
+            vol.Optional("target", default="content"): vol.In(["content", "card_yaml"]),
+            vol.Optional("dry_run", default=False): bool,
         }
     )
 
@@ -257,6 +280,13 @@ class DashboardCardTool(llm.Tool):
                 return await self._add_card(hass, dashboard_url, view_index, section_index, content, card_config, card_yaml)
             if action == "update_card":
                 return await self._update_card(hass, dashboard_url, view_index, section_index, card_index, content, card_config, card_yaml)
+            if action == "patch_card":
+                return await self._patch_card(
+                    hass, dashboard_url, view_index, section_index, card_index,
+                    patches=tool_input.tool_args.get("patches", []),
+                    target=tool_input.tool_args.get("target", "content"),
+                    dry_run=bool(tool_input.tool_args.get("dry_run", False)),
+                )
             if action == "remove_card":
                 return await self._remove_card(hass, dashboard_url, view_index, section_index, card_index)
             if action == "remove_view":
@@ -668,6 +698,91 @@ class DashboardCardTool(llm.Tool):
             "message": f"Card updated at view {view_index}, card {card_index}",
             "current_card": cards[card_index],
             "card_yaml": yaml_dump(cards[card_index]),
+            "_action_required": STEP_VERIFY,
+        }
+
+    async def _patch_card(
+        self,
+        hass: HomeAssistant,
+        dashboard_url: str | None,
+        view_index: int,
+        section_index: int,
+        card_index: int,
+        *,
+        patches: list,
+        target: str,
+        dry_run: bool,
+    ) -> JsonObjectType:
+        """Surgical anchor-based edit of an existing card.
+
+        target="content" (default): patch only the ``content`` string (HTML/CSS/JS).
+        target="card_yaml": patch the whole card's YAML text — useful for edits
+        that touch both structure and content.
+        """
+        if not isinstance(patches, list) or not patches:
+            return {
+                "success": False,
+                "error": "'patches' must be a non-empty list. See text_patch schema.",
+            }
+
+        config_obj, ll_config = await self._get_lovelace_config(hass, dashboard_url)
+        if config_obj is None:
+            return {"success": False, "error": ll_config}
+
+        views = ll_config.get("views", [])
+        if view_index < 0 or view_index >= len(views):
+            return {"success": False, "error": f"view_index {view_index} out of range"}
+
+        cards, err = self._resolve_cards(views[view_index], section_index)
+        if cards is None:
+            return {"success": False, "error": err}
+        if card_index < 0 or card_index >= len(cards):
+            return {"success": False, "error": f"card_index {card_index} out of range (0..{len(cards) - 1})"}
+
+        card = cards[card_index]
+
+        if target == "content":
+            original = card.get("content", "") or ""
+            label = f"card[{view_index}.{section_index}.{card_index}].content"
+        else:
+            original = yaml_dump(card)
+            label = f"card[{view_index}.{section_index}.{card_index}].yaml"
+
+        try:
+            report = apply_patches(original, patches, label=label)
+        except PatchError as err:
+            return {"success": False, "error": str(err), **err.to_dict()}
+
+        if dry_run:
+            return {
+                "success": True,
+                "dry_run": True,
+                "target": target,
+                "report": report.to_dict(),
+                "preview_after": report.after[:2000],
+            }
+
+        if target == "content":
+            card["content"] = report.after
+        else:
+            parsed = parse_yaml(report.after)
+            if not isinstance(parsed, dict):
+                return {
+                    "success": False,
+                    "error": "patched YAML did not parse to a mapping",
+                    "preview_after": report.after[:2000],
+                }
+            cards[card_index] = parsed
+            card = parsed
+
+        await self._save_config(config_obj, ll_config)
+
+        return {
+            "success": True,
+            "message": f"Patched card at view {view_index}, card {card_index} ({len(report.applied)} ops)",
+            "target": target,
+            "report": report.to_dict(),
+            "current_card": card,
             "_action_required": STEP_VERIFY,
         }
 

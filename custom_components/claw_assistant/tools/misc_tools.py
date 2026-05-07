@@ -971,9 +971,11 @@ class ConversationMemoryTool(llm.Tool):
         "procedural knowledge. The most valuable memory prevents the user "
         "from having to repeat themselves.\n\n"
         "DO NOT SAVE: task progress, completed-work logs, current TODO state, "
+        "session-specific notes, 'what I just did' summaries, tool call results, "
         "trivial / obvious info, raw data dumps, anything already in HA's "
         "entity registry, hypotheticals ('if I were to'), conversational "
-        "filler. Use HeartbeatManager for reminders/follow-ups, "
+        "filler, image/media descriptions from this session. "
+        "Use HeartbeatManager for reminders/follow-ups, "
         "GetConversationHistory for current task state, and skills for "
         "discovered procedures.\n\n"
         "TWO TARGETS (pick the correct one):\n"
@@ -2050,6 +2052,7 @@ class CameraCaptureTool(llm.Tool):
 
 
 _VIDEO_EXTENSIONS = frozenset({"mp4", "avi", "mov", "mkv", "webm", "flv", "m4v", "ts", "3gp"})
+_IMAGE_EXTENSIONS = frozenset({"jpg", "jpeg", "png", "bmp", "webp", "tiff", "tif", "heic", "heif", "avif", "ico", "svg"})
 _GIF_EXTENSION = "gif"
 _MIN_VIDEO_FRAMES = 3
 _MAX_VIDEO_FRAMES = 10
@@ -2298,7 +2301,10 @@ def _ffmpeg_diagnose(ffmpeg_bin: str, file_path: str) -> str:
 class MediaAnalyzeTool(llm.Tool):
     name = "MediaAnalyze"
     description = (
-        "Analyze uploaded media files (images, GIFs, videos).\n"
+        "Analyze uploaded media files (images, GIFs, videos) ONLY.\n"
+        "Supported: .jpg .jpeg .png .webp .bmp .gif .mp4 .mov .mkv .webm .avi\n"
+        "NOT supported: documents (.docx .pdf .txt .csv .xlsx etc). "
+        "Never call this tool for non-media files.\n"
         "Use this when the user sends a picture, photo, GIF, or video "
         "via IM or references a local file path.\n"
         "For images: returns a single base64 JPEG.\n"
@@ -2345,6 +2351,16 @@ class MediaAnalyzeTool(llm.Tool):
 
         if ext in _VIDEO_EXTENSIONS:
             return await self._analyze_video(hass, file_path, p, ext, max_dim, target_kb, timestamps)
+
+        if ext not in _IMAGE_EXTENSIONS:
+            return {
+                "success": False,
+                "error": (
+                    f"Unsupported file type '.{ext}' for MediaAnalyze. "
+                    f"This tool only handles images ({', '.join(sorted(_IMAGE_EXTENSIONS))}), "
+                    f"GIFs, and videos. For documents, use a different approach."
+                ),
+            }
 
         return await self._analyze_image(hass, file_path, p, max_dim, target_kb)
 

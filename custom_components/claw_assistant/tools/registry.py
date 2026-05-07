@@ -55,7 +55,7 @@ from .misc_tools import (
     SystemControlTool,
     ThinkContinueTool,
 )
-from .search_tools import StockQueryTool, UrlFetchTool, WebSearchTool
+from .search_tools import StockQueryTool, UrlFetchTool, WebReadChunkTool, WebSearchTool
 from .self_edit_tools import (
     ApplyProposalTool,
     DeleteGuideDocTool,
@@ -77,14 +77,15 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
     "MediaAnalyze": {"category": "device", "desc": "Analyze uploaded media (images/GIFs/videos). Images→single JPEG. Videos→key frames. First call auto-extracts overview frames with timestamp_sec per frame. For deeper analysis, call again with timestamps=[1.5,3.0,...] to extract at exact seconds. Describe what you see and respond to intent/mood. Params: file_path(required), max_dim(default 640), target_kb(default 40), timestamps(optional list of seconds)", "priority": 1},
     "ThinkContinue": {"category": "core", "desc": "Record internal reasoning steps (optional). Params: thought, next_action", "priority": 0},
     "StockQuery": {"category": "search", "desc": "Query stock or fund quotes. Params: codes (for example 'TSLA,AAPL')", "priority": 1},
-    "WebSearch": {"category": "search", "desc": "General-purpose web search for ALL real-time info (news, finance, weather, entertainment, tech). Queries both Baidu and Bing and merges the results. Params: query, num_results (default 3), engine (optional: baidu/bing)", "priority": 2},
+    "WebSearch": {"category": "search", "desc": "Web search returning titles+snippets. Use UrlFetch to read a result page. Params: query, num_results, engine (google/bing/baidu/bing_cn)", "priority": 2},
     "BatchControl": {"category": "device", "desc": "Control multiple devices in one request. Params: entity_ids (list), action (turn_on/turn_off/toggle), data", "priority": 2},
     "AreaDevices": {"category": "query", "desc": "Get all devices in a specific area. Params: area", "priority": 2},
     "HistoryQuery": {"category": "query", "desc": "Query entity history. Params: entity_id, hours (default 24)", "priority": 2},
     "Automation": {"category": "system", "desc": "Manage automations via official APIs (NOT shell/ConfigFile!). Params: action (list/get/create/update/delete/trigger/enable/disable), entity_id, automation_id, config, icon, area_id. Workflow: get→modify→update. Always use this tool for automation CRUD.", "priority": 2},
     "Script": {"category": "system", "desc": "Manage scripts via official APIs (NOT shell/ConfigFile!). Params: action (list/get/create/update/delete/run), entity_id, script_id, config, variables, icon, area_id. update merges partial config; run executes with optional variables dict.", "priority": 2},
     "ExecutePython": {"category": "system", "desc": "Execute Python only when native HA tools cannot do the job cleanly. Tool description contains the full routing checklist. Inline(default): HA runtime tasks needing hass/files/frontend artefacts. Sandbox=true: isolated package/heavy/risky code without hass. Inline has OUTPUT_DIR/TMP_DIR, output_url(name), list_outputs(), list_tmp(). Destructive ops need consent. Params: code, sandbox, requirements, timeout", "priority": 2},
-    "UrlFetch": {"category": "search", "desc": "Fetch readable content from a URL. Params: url, max_length (default 2000)", "priority": 3},
+    "UrlFetch": {"category": "search", "desc": "Fetch a URL and return chunk 0. Use WebReadChunk to read more. Params: url", "priority": 3},
+    "WebReadChunk": {"category": "search", "desc": "Read a specific chunk of a previously fetched page. Params: doc_id, position", "priority": 3},
     "ListServices": {"category": "query", "desc": "List available services for a domain. Params: domain (for example light/switch/climate)", "priority": 2},
     "ScriptExecute": {"category": "system", "desc": "Execute a Home Assistant script. Params: script_id, variables (optional dict)", "priority": 2},
     "Notify": {"category": "device", "desc": "Send a notification. Params: message, title (default 'AI Assistant'), target (default persistent_notification or notify.xxx)", "priority": 2},
@@ -115,7 +116,7 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
     "ValidateService": {"category": "query", "desc": "Validate service call parameters. Params: domain, service, data. Returns validity, errors, and suggestions.", "priority": 2},
     "ServiceHelp": {"category": "query", "desc": "Get help for a domain or service. Params: domain (required), service (optional)", "priority": 2},
     "SmartDiscovery": {"category": "query", "desc": "Smart entity discovery. Params: area/domain/state/name_contains/name_pattern/device_class/inferred_type/person_name/pet_name/limit", "priority": 2},
-    "IntentCall": {"category": "query", "desc": "List or call third-party intent handlers (e.g. Holidays, Almanac, TuneFreePlayMusic). action=list to discover; action=call with intent_type and optional slots dict.", "priority": 2},
+    "IntentCall": {"category": "query", "desc": "List or call third-party intent handlers. action=list to discover available intents and their REQUIRED/optional slots; action=call with intent_type and slots dict containing all REQUIRED values.", "priority": 2},
     "ConfigFile": {"category": "system", "desc": "Access the Home Assistant config directory. Params: action(list/read/stage_write/stage_append/stage_mkdir/stage_delete/apply/cancel/list_pending), path/content/approval_id, user_consent(bool, only required for delete apply), consent_quote(str, audit). write/append/mkdir auto-apply on `apply` (reversible). delete is destructive — describe in chat what/why, judge the user's reply yourself (no keyword list), then `apply` with user_consent=true and consent_quote=\"<their words>\". For automations.yaml/configuration.yaml/sensors.yaml, prefer the Automation tool.", "priority": 3},
     "DeleteSkill": {"category": "core", "desc": "Delete an installed Markdown skill (audited in changelog). Params: name, reason", "priority": 2},
     "UpsertGuideDoc": {"category": "core", "desc": "Create or overwrite a runtime Home Assistant guide Markdown. Params: relative_path, markdown, reason", "priority": 2},
@@ -157,6 +158,7 @@ def build_tool_map() -> dict[str, type]:
         "Script": ScriptTool,
         "ExecutePython": ExecutePythonTool,
         "UrlFetch": UrlFetchTool,
+        "WebReadChunk": WebReadChunkTool,
         "ListServices": ListServicesTool,
         "ScriptExecute": ScriptExecuteTool,
         "Notify": NotifyTool,

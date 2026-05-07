@@ -1083,7 +1083,13 @@ DISCIPLINE: 1) Follow the exact workflow steps above — no exploratory calls. 2
                 resp = {
                     "success": True,
                     "message": f"Loaded config entry {entry.title or entry.domain}",
-                    "config_entry": entry.as_json_fragment,
+                    "config_entry": {
+                        "entry_id": entry.entry_id,
+                        "domain": entry.domain,
+                        "title": entry.title,
+                        "state": str(entry.state),
+                        "disabled_by": str(entry.disabled_by) if entry.disabled_by else None,
+                    },
                     **cm,
                 }
                 return resp
