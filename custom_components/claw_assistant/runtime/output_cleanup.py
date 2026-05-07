@@ -17,8 +17,8 @@ from homeassistant.helpers.event import async_track_time_interval
 
 from .data_path import (
     OUTPUT_MEDIA_RETENTION_HOURS,
-    get_output_dir,
     is_output_media_file,
+    output_dir_path,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -63,7 +63,10 @@ async def async_setup_output_cleanup(hass: HomeAssistant) -> None:
     if _DATA_KEY in hass.data:
         return
 
-    output_dir = get_output_dir(hass)
+    output_dir = output_dir_path(hass)
+    await hass.async_add_executor_job(
+        lambda: output_dir.mkdir(parents=True, exist_ok=True)
+    )
     retention_seconds = float(OUTPUT_MEDIA_RETENTION_HOURS) * 3600.0
 
     async def _tick(_now) -> None:

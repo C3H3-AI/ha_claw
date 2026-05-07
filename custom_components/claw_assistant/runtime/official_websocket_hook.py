@@ -433,7 +433,11 @@ class ClawUploadView(HomeAssistantView):
         if mime.startswith("video/"):
             await hass.async_add_executor_job(_trim_video_if_needed, file_path)
 
-        final_size = Path(file_path).stat().st_size if Path(file_path).is_file() else len(raw)
+        def _file_size() -> int:
+            path = Path(file_path)
+            return path.stat().st_size if path.is_file() else len(raw)
+
+        final_size = await hass.async_add_executor_job(_file_size)
         return web.json_response({
             "path": file_path, "mime_type": mime,
             "size": final_size, "filename": filename,

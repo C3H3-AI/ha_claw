@@ -17,20 +17,20 @@ from ..runtime import (
     set_conversation_state,
 )
 from ..runtime.config_file_store import (
-    apply_staged_operation_sync,
+    async_apply_staged_operation,
+    async_list_config_entries,
+    async_read_config_file,
     cancel_staged_operation,
-    list_config_entries_sync,
     list_pending_operations,
-    read_config_file_sync,
     stage_config_operation,
 )
-from ..runtime.data_path import get_output_dir
+from ..runtime.data_path import output_dir_path
 from ..runtime.im_transport import async_send_im_payload
 
 _LOGGER = logging.getLogger(__name__)
 
 
-def _normalize_camera_service_paths(hass: HomeAssistant, domain: str, service: str, data: dict[str, object]) -> dict[str, object]:
+async def _async_normalize_camera_service_paths(hass: HomeAssistant, domain: str, service: str, data: dict[str, object]) -> dict[str, object]:
     if domain != "camera" or service not in {"record", "snapshot"}:
         return data
 
@@ -40,22 +40,25 @@ def _normalize_camera_service_paths(hass: HomeAssistant, domain: str, service: s
 
     candidate = filename.strip()
     resolved: str | None = None
-    output_dir = get_output_dir(hass)
+    output_dir = output_dir_path(hass)
     output_target = output_dir / (Path(candidate).name or ("camera.mp4" if service == "record" else "camera.jpg"))
 
-    try:
-        output_dir_resolved = output_dir.resolve(strict=False)
-        candidate_path = Path(candidate)
-        if candidate_path.is_absolute():
-            candidate_resolved = candidate_path.resolve(strict=False)
-            try:
-                candidate_resolved.relative_to(output_dir_resolved)
-            except ValueError:
-                pass
-            else:
-                resolved = str(candidate_resolved)
-    except OSError:
-        pass
+    def _resolve_candidate() -> str | None:
+        try:
+            output_dir_resolved = output_dir.resolve(strict=False)
+            candidate_path = Path(candidate)
+            if candidate_path.is_absolute():
+                candidate_resolved = candidate_path.resolve(strict=False)
+                try:
+                    candidate_resolved.relative_to(output_dir_resolved)
+                except ValueError:
+                    return None
+                return str(candidate_resolved)
+        except OSError:
+            return None
+        return None
+
+    resolved = await hass.async_add_executor_job(_resolve_candidate)
 
     if resolved is None and candidate.startswith(
         ("/config/local/", "/config/www/", "/config/media/", "/local/", "/media/local/", "/media/")
@@ -609,22 +612,19 @@ automation edits. Reading these files is always fine."""
 
         try:
             if action == "list":
-                result = await hass.async_add_executor_job(
-                    list_config_entries_sync, hass, path, include_hidden
-                )
+                result = await async_list_config_entries(hass, path, include_hidden)
                 return {"success": True, **result}
 
             if action == "read":
-                result = await hass.async_add_executor_job(
-                    read_config_file_sync, hass, path
-                )
+                result = await async_read_config_file(hass, path)
                 return {"success": True, **result}
 
             if action == "list_pending":
+                pending = list_pending_operations(hass)
                 return {
                     "success": True,
-                    "count": len(list_pending_operations(hass)),
-                    "pending": list_pending_operations(hass),
+                    "count": len(pending),
+                    "pending": pending,
                 }
 
             if action in {"stage_write", "stage_append", "stage_mkdir", "stage_delete"}:
@@ -656,15 +656,12 @@ automation edits. Reading these files is always fine."""
                 }
 
             if action == "apply":
-                def _apply():
-                    return apply_staged_operation_sync(
-                        hass,
-                        approval_id,
-                        user_consent=user_consent,
-                        consent_quote=consent_quote,
-                    )
-
-                result = await hass.async_add_executor_job(_apply)
+                result = await async_apply_staged_operation(
+                    hass,
+                    approval_id,
+                    user_consent=user_consent,
+                    consent_quote=consent_quote,
+                )
                 return {"success": True, **result}
 
             if action == "cancel":
@@ -884,7 +881,7 @@ CAMERA RECORD: ServiceCall(domain="camera", service="record", data={"entity_id":
             if isinstance(k, str):
                 sanitized[k] = v
         data = sanitized
-        data = _normalize_camera_service_paths(hass, domain, service, data)
+        data = await _async_normalize_camera_service_paths(hass, domain, service, data)
 
         if domain == "camera" and service in {"turn_on", "turn_off"}:
             return {
@@ -908,7 +905,7 @@ CAMERA RECORD: ServiceCall(domain="camera", service="record", data={"entity_id":
                     "discovery_hint": "Use CameraCapture with camera_entity='list' to discover available cameras before calling this service.",
                     "example": {
                         "entity_id": "camera.your_camera_entity",
-                        "filename": str(get_output_dir(hass) / ("camera.mp4" if service == "record" else "camera.jpg")),
+                        "filename": str(output_dir_path(hass) / ("camera.mp4" if service == "record" else "camera.jpg")),
                     },
                 },
             }

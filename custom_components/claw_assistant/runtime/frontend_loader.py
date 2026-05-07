@@ -19,7 +19,7 @@ async def async_setup_frontend_loader(hass: HomeAssistant) -> None:
     if domain_data.get(_DATA_KEY):
         return
 
-    js_path = Path(__file__).resolve().parents[1] / "www" / "ha_crack.js"
+    js_path = Path(__file__).parents[1] / "www" / "ha_crack.js"
     await hass.http.async_register_static_paths(
         [StaticPathConfig(_URL_PATH, str(js_path), cache_headers=False)]
     )

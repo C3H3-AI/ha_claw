@@ -22,7 +22,7 @@ from .agent_fallback import (
     run_agent_fallback_chain,
 )
 from .config import DEFAULT_FALLBACK_AGENT_ID, DEFAULT_THRESHOLDS
-from .data_path import get_tmp_dir
+from .data_path import tmp_dir_path
 from .i18n import t
 from .internal_llm import _MAX_SYSTEM_PROMPT_CHARS, _fit_head_section_to_required_suffix
 from .loop_controller import (
@@ -232,19 +232,11 @@ def _install_attachment_hook(hass: HomeAssistant) -> None:
             att_list = []
             for mime, fpath in pending:
                 p = Path(fpath)
-                if p.is_file():
-                    size = p.stat().st_size
-                    att_list.append(Attachment(
-                        media_content_id="",
-                        mime_type=mime,
-                        path=p,
-                    ))
-                    LOGGER.info(
-                        "Prepared attachment for ChatLog: mime=%s path=%s size=%d",
-                        mime,
-                        p,
-                        size,
-                    )
+                att_list.append(Attachment(
+                    media_content_id="",
+                    mime_type=mime,
+                    path=p,
+                ))
             if att_list:
                 content = UserContent(
                     content=content.content,
@@ -360,7 +352,7 @@ async def _execute_conversation_turn_inner(
         sanitized: list[tuple[str, str]] = []
         for mime, fpath in pending_attachments:
             try:
-                _tmp_dir = get_tmp_dir(hass)
+                _tmp_dir = tmp_dir_path(hass)
                 result = await hass.async_add_executor_job(
                     _sanitize_attachment, mime, fpath, _tmp_dir
                 )

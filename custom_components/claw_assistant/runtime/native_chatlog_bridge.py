@@ -63,6 +63,19 @@ def _turn_has_final_assistant_content(turn_contents: list[Any]) -> bool:
     )
 
 
+def _turn_has_assistant_text(turn_contents: list[Any], text: str) -> bool:
+    target = text.strip()
+    if not target:
+        return False
+    for content in turn_contents:
+        if (
+            isinstance(content, AssistantContent)
+            and (content.content or "").strip() == target
+        ):
+            return True
+    return False
+
+
 def _build_external_tool_inputs(tool_results: list[dict[str, Any]]) -> list[llm.ToolInput]:
     tool_inputs: list[llm.ToolInput] = []
     for index, item in enumerate(tool_results):
@@ -145,6 +158,8 @@ async def async_bridge_native_chatlog_turn(
         return False
 
     turn_contents = _latest_turn_contents(chat_log)
+    if _turn_has_assistant_text(turn_contents, response_text):
+        return False
     if _turn_has_native_steps(turn_contents):
         if not response_text or _turn_has_final_assistant_content(turn_contents):
             return False

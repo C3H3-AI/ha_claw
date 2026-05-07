@@ -19,7 +19,7 @@ from pathlib import Path
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_track_time_interval
 
-from .data_path import TMP_RETENTION_HOURS, get_tmp_dir
+from .data_path import TMP_RETENTION_HOURS, tmp_dir_path
 
 LOGGER = logging.getLogger(__name__)
 
@@ -63,7 +63,10 @@ async def async_setup_tmp_cleanup(hass: HomeAssistant) -> None:
     if _DATA_KEY in hass.data:
         return
 
-    tmp_dir = get_tmp_dir(hass)
+    tmp_dir = tmp_dir_path(hass)
+    await hass.async_add_executor_job(
+        lambda: tmp_dir.mkdir(parents=True, exist_ok=True)
+    )
     retention_seconds = float(TMP_RETENTION_HOURS) * 3600.0
 
     async def _tick(_now) -> None:

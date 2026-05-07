@@ -796,9 +796,9 @@ async def async_install_skill(
         from . import skill_usage
         slug = _slugify(name)
         if is_update:
-            await hass.async_add_executor_job(skill_usage.bump_patch, slug)
+            await skill_usage.async_bump_patch(hass, slug)
         else:
-            await hass.async_add_executor_job(skill_usage.bump_use, slug)
+            await skill_usage.async_bump_use(hass, slug)
     except Exception:
         pass
     return path
@@ -1177,6 +1177,7 @@ def match_installed_skills(
     *,
     limit: int = MAX_RELEVANT_SKILL_MATCHES,
     exclude_homeassistant_priority: bool = False,
+    track_usage: bool = True,
 ) -> list[dict[str, str | int]]:
 
     normalized_query = query.strip().lower()
@@ -1199,7 +1200,7 @@ def match_installed_skills(
 
     scored.sort(key=lambda item: (-item[0], item[1].title.lower()))
     results = scored[: max(limit, 0)]
-    if results:
+    if track_usage and results:
         try:
             from . import skill_usage
             for _score, _skill in results:
@@ -1218,6 +1219,25 @@ def match_installed_skills(
     ]
 
 
+async def async_match_installed_skills(
+    hass: HomeAssistant,
+    query: str,
+    *,
+    limit: int = MAX_RELEVANT_SKILL_MATCHES,
+    exclude_homeassistant_priority: bool = False,
+    track_usage: bool = True,
+) -> list[dict[str, str | int]]:
+    return await hass.async_add_executor_job(
+        partial(
+            match_installed_skills,
+            query,
+            limit=limit,
+            exclude_homeassistant_priority=exclude_homeassistant_priority,
+            track_usage=track_usage,
+        )
+    )
+
+
 def load_relevant_skill_prompt_blocks(
     query: str,
     *,
@@ -1232,6 +1252,7 @@ def load_relevant_skill_prompt_blocks(
         query,
         limit=limit,
         exclude_homeassistant_priority=exclude_homeassistant_priority,
+        track_usage=False,
     )
     if not matches:
         return ""
@@ -1370,3 +1391,10 @@ def get_installed_skill(identifier: str) -> dict[str, str]:
             }
 
     raise ValueError(f"Skill not found: {identifier}")
+
+
+async def async_get_installed_skill(
+    hass: HomeAssistant,
+    identifier: str,
+) -> dict[str, str]:
+    return await hass.async_add_executor_job(get_installed_skill, identifier)

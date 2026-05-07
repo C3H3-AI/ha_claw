@@ -93,6 +93,10 @@ def set_paused(paused: bool) -> None:
     save_state(state)
 
 
+async def async_set_paused(hass: HomeAssistant, paused: bool) -> None:
+    await hass.async_add_executor_job(set_paused, paused)
+
+
 def _parse_iso(ts: str | None) -> datetime | None:
     if not ts:
         return None
@@ -301,7 +305,7 @@ async def async_run_curator(
 ) -> dict[str, Any]:
     start = datetime.now(UTC)
 
-    before_report = await hass.async_add_executor_job(skill_usage.agent_created_report)
+    before_report = await skill_usage.async_agent_created_report(hass)
     before_count = len(before_report)
 
     if dry_run:
@@ -359,7 +363,7 @@ async def async_run_curator(
                 llm_error = str(err)
                 LOGGER.debug("Curator LLM review failed: %s", err, exc_info=True)
 
-    after_report = await hass.async_add_executor_job(skill_usage.agent_created_report)
+    after_report = await skill_usage.async_agent_created_report(hass)
     after_count = len(after_report)
     elapsed = (datetime.now(UTC) - start).total_seconds()
 
@@ -443,3 +447,7 @@ def curator_status() -> dict[str, Any]:
             for r in by_use[-10:]
         ] if len(by_use) > 10 else [],
     }
+
+
+async def async_curator_status(hass: HomeAssistant) -> dict[str, Any]:
+    return await hass.async_add_executor_job(curator_status)

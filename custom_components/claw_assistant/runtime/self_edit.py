@@ -268,7 +268,7 @@ async def async_stage_proposal(
     raw_slug = slug_hint or f"{target_type}-{target_id}-{action}-{_now_iso()}"
     slug = _slugify(raw_slug)[:80] or "proposal"
     existing = _proposal_path(slug)
-    if existing.exists():
+    if await hass.async_add_executor_job(existing.exists):
         slug = _slugify(f"{slug}-{_now_iso()}")
 
     frontmatter = {
