@@ -678,7 +678,7 @@ def _handle_history_command(
         return ChatCommandOutcome(result=_build_result(user_input, "\n".join(lines)))
 
     if subcommand == "recent":
-        entries = history.get_recent_across_conversations(minutes=30, max_turns_per_conv=3)
+        entries = history.get_recent_across_conversations(minutes=60, max_turns_per_conv=3)
         if not entries:
             return ChatCommandOutcome(
                 result=_build_result(user_input, "No recent conversations found.")
