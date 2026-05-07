@@ -18,7 +18,7 @@ from homeassistant.util import ulid
 
 from .chat_commands import ChatCommandOutcome, async_handle_chat_command
 from .chat_commands import consume_stop_request, register_running_task, unregister_running_task
-from .const import DOMAIN
+from .const import DOMAIN, VERSION
 from .runtime import (
     get_default_agent,
     get_runtime_store,
@@ -62,7 +62,7 @@ class FallbackConversationAgent(
             identifiers={(DOMAIN, entry.entry_id)},
             name=entry.title or DOMAIN,
             manufacturer="Claw Assistant",
-            model="AI Agent",
+            model=f"AI Agent v{VERSION}",
         )
         self._last_active = datetime.now(UTC)
 
