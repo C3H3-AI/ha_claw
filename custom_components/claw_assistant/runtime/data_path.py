@@ -45,9 +45,13 @@ _OUTPUT_MEDIA_EXTENSIONS = frozenset(
 def get_output_dir(hass: HomeAssistant) -> Path:
     """Return ``<config>/www/claw_assistant/`` (created if missing)."""
 
-    out = Path(hass.config.config_dir) / "www" / _OUTPUT_SUBDIR
+    out = output_dir_path(hass)
     out.mkdir(parents=True, exist_ok=True)
     return out
+
+
+def output_dir_path(hass: HomeAssistant) -> Path:
+    return Path(hass.config.config_dir) / "www" / _OUTPUT_SUBDIR
 
 
 def is_output_media_file(path: Path) -> bool:
@@ -57,9 +61,13 @@ def is_output_media_file(path: Path) -> bool:
 def get_tmp_dir(hass: HomeAssistant) -> Path:
     """Return ``<config>/.storage/claw_assistant/tmp/`` (created if missing)."""
 
-    tmp = Path(hass.config.config_dir) / ".storage" / _STORAGE_SUBDIR / "tmp"
+    tmp = tmp_dir_path(hass)
     tmp.mkdir(parents=True, exist_ok=True)
     return tmp
+
+
+def tmp_dir_path(hass: HomeAssistant) -> Path:
+    return Path(hass.config.config_dir) / ".storage" / _STORAGE_SUBDIR / "tmp"
 
 
 def output_url_for(filename: str) -> str:

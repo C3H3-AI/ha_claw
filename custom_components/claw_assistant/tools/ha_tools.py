@@ -86,9 +86,12 @@ async def _run_shell(hass: HomeAssistant, params: dict) -> JsonObjectType:
     try:
         if "\n" in command or "<<" in command:
             import uuid as _uuid
-            from ..runtime.data_path import get_tmp_dir
-            _sh_tmp = get_tmp_dir(hass)
+            from ..runtime.data_path import tmp_dir_path
+            _sh_tmp = tmp_dir_path(hass)
             _sh_file = _sh_tmp / f"shell_{_uuid.uuid4().hex[:12]}.sh"
+            await hass.async_add_executor_job(
+                lambda: _sh_tmp.mkdir(parents=True, exist_ok=True)
+            )
             await hass.async_add_executor_job(_sh_file.write_text, command, "utf-8")
             tmp_script = _sh_file
             exec_cmd = f"/bin/sh {tmp_script}"

@@ -401,9 +401,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_skill_edit(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         from .runtime.skill_store import (
             async_delete_skill,
+            async_get_installed_skill,
             async_install_skill,
             async_read_skill_markdown,
-            get_installed_skill,
         )
 
         slug = getattr(self, "_skill_editor_target", "") or ""
@@ -440,7 +440,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             return await self.async_step_skill_editor()
 
         try:
-            meta = await self.hass.async_add_executor_job(get_installed_skill, slug)
+            meta = await async_get_installed_skill(self.hass, slug)
         except ValueError:
             meta = {"name": slug, "slug": slug}
         raw_content = await async_read_skill_markdown(self.hass, slug)

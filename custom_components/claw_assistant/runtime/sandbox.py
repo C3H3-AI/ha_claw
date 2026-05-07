@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 import json
 import logging
 import os
@@ -27,6 +28,13 @@ def _sandbox_root(hass: HomeAssistant) -> Path:
 
 def _venv_path(hass: HomeAssistant) -> Path:
     return _sandbox_root(hass) / _VENV_SUBDIR
+
+
+def _unlink_silent(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 def _venv_python(hass: HomeAssistant) -> Path:
@@ -261,12 +269,17 @@ async def run_in_sandbox(
 
     script = _build_runner_script(code)
 
-    from .data_path import get_tmp_dir
     import uuid as _uuid
-    _sandbox_tmp = get_tmp_dir(hass)
-    _script_file = _sandbox_tmp / f"sandbox_{_uuid.uuid4().hex[:12]}.py"
-    _script_file.write_text(script, encoding="utf-8")
-    tmp_path = str(_script_file)
+
+    def _write_script() -> str:
+        from .data_path import get_tmp_dir
+
+        sandbox_tmp = get_tmp_dir(hass)
+        script_file = sandbox_tmp / f"sandbox_{_uuid.uuid4().hex[:12]}.py"
+        script_file.write_text(script, encoding="utf-8")
+        return str(script_file)
+
+    tmp_path = await hass.async_add_executor_job(_write_script)
 
     try:
         rc, stdout, stderr = await _run_subprocess(
@@ -277,10 +290,7 @@ async def run_in_sandbox(
             stdin=stdin,
         )
     finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+        await hass.async_add_executor_job(partial(_unlink_silent, tmp_path))
 
     duration_ms = int((_time.perf_counter() - started) * 1000)
 

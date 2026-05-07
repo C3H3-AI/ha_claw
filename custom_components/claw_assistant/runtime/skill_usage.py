@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from homeassistant.core import HomeAssistant
+
 from .data_path import get_data_dir
 
 LOGGER = logging.getLogger(__name__)
@@ -92,6 +94,10 @@ def bump_use(slug: str) -> None:
     _save_usage(data)
 
 
+async def async_bump_use(hass: HomeAssistant, slug: str) -> None:
+    await hass.async_add_executor_job(bump_use, slug)
+
+
 def bump_view(slug: str) -> None:
     data = _load_usage()
     entry = _ensure_entry(data, slug)
@@ -100,12 +106,20 @@ def bump_view(slug: str) -> None:
     _save_usage(data)
 
 
+async def async_bump_view(hass: HomeAssistant, slug: str) -> None:
+    await hass.async_add_executor_job(bump_view, slug)
+
+
 def bump_patch(slug: str) -> None:
     data = _load_usage()
     entry = _ensure_entry(data, slug)
     entry["patch_count"] = int(entry.get("patch_count", 0)) + 1
     entry["last_activity_at"] = _now_iso()
     _save_usage(data)
+
+
+async def async_bump_patch(hass: HomeAssistant, slug: str) -> None:
+    await hass.async_add_executor_job(bump_patch, slug)
 
 
 def set_state(slug: str, state: str) -> None:
@@ -122,6 +136,10 @@ def set_pinned(slug: str, pinned: bool) -> None:
     entry = _ensure_entry(data, slug)
     entry["pinned"] = bool(pinned)
     _save_usage(data)
+
+
+async def async_set_pinned(hass: HomeAssistant, slug: str, pinned: bool) -> None:
+    await hass.async_add_executor_job(set_pinned, slug, pinned)
 
 
 def get_usage(slug: str) -> dict[str, Any]:
@@ -205,3 +223,7 @@ def agent_created_report() -> list[dict[str, Any]]:
             "created_at": entry.get("created_at"),
         })
     return rows
+
+
+async def async_agent_created_report(hass: HomeAssistant) -> list[dict[str, Any]]:
+    return await hass.async_add_executor_job(agent_created_report)

@@ -9,7 +9,7 @@ from homeassistant.core import HomeAssistant
 
 from .adaptive_memory import async_setup_adaptive_memory
 from .coordinator import setup_ai_coordinator
-from .data_path import get_output_dir, init_storage
+from .data_path import init_storage, output_dir_path
 from .frontend_loader import (
     async_setup_frontend_loader,
     async_unload_frontend_loader,
@@ -48,7 +48,7 @@ from .patches import (
     unpatch_aihub_markdown_filter,
     patch_aihub_dynamic_max_tokens,
     unpatch_aihub_dynamic_max_tokens,
-    patch_openai_allow_empty_key,
+    async_patch_openai_allow_empty_key,
     unpatch_openai_allow_empty_key,
 )
 from .skill_store import async_setup_prompt_store
@@ -64,7 +64,7 @@ async def async_setup_runtime(hass: HomeAssistant, entry: ConfigEntry) -> None:
     from .hook import install_conversation_hook
 
     await hass.async_add_executor_job(init_storage, hass)
-    hass.config.allowlist_external_dirs.add(str(get_output_dir(hass).resolve(strict=False)))
+    hass.config.allowlist_external_dirs.add(str(output_dir_path(hass)))
     await async_setup_workspace_store(hass)
     await async_setup_graph_store(hass)
     await async_setup_adaptive_memory(hass)
@@ -87,7 +87,7 @@ async def async_setup_runtime(hass: HomeAssistant, entry: ConfigEntry) -> None:
     patch_aihub_provider_timeout(hass)
     patch_aihub_markdown_filter(hass)
     patch_aihub_dynamic_max_tokens(hass)
-    patch_openai_allow_empty_key(hass)
+    await async_patch_openai_allow_empty_key(hass)
     install_official_websocket_process_hook(hass)
     setup_ai_coordinator(hass, entry)
     install_conversation_hook(hass, entry)

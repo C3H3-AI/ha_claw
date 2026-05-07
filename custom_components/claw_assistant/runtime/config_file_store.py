@@ -100,6 +100,19 @@ def list_config_entries_sync(
     }
 
 
+async def async_list_config_entries(
+    hass: HomeAssistant,
+    relative_path: str = "",
+    include_hidden: bool = False,
+) -> dict[str, Any]:
+    return await hass.async_add_executor_job(
+        list_config_entries_sync,
+        hass,
+        relative_path,
+        include_hidden,
+    )
+
+
 def read_config_file_sync(hass: HomeAssistant, relative_path: str) -> dict[str, Any]:
     target = _resolve_config_path(hass, relative_path)
     root = _config_root(hass)
@@ -120,6 +133,17 @@ def read_config_file_sync(hass: HomeAssistant, relative_path: str) -> dict[str, 
         "truncated": truncated,
         "size": target.stat().st_size,
     }
+
+
+async def async_read_config_file(
+    hass: HomeAssistant,
+    relative_path: str,
+) -> dict[str, Any]:
+    return await hass.async_add_executor_job(
+        read_config_file_sync,
+        hass,
+        relative_path,
+    )
 
 
 def _apply_operation(target: Path, action: str, content: str = "", *, create_dirs: bool = False) -> None:
@@ -233,6 +257,24 @@ def apply_staged_operation_sync(
         resolution["consent_quote"] = consent_quote.strip()
     state["last_resolution"] = resolution
     return dict(resolution)
+
+
+async def async_apply_staged_operation(
+    hass: HomeAssistant,
+    approval_id: str,
+    *,
+    user_consent: bool = False,
+    consent_quote: str = "",
+) -> dict[str, Any]:
+    def _apply() -> dict[str, Any]:
+        return apply_staged_operation_sync(
+            hass,
+            approval_id,
+            user_consent=user_consent,
+            consent_quote=consent_quote,
+        )
+
+    return await hass.async_add_executor_job(_apply)
 
 
 def cancel_staged_operation(hass: HomeAssistant, approval_id: str) -> dict[str, Any]:

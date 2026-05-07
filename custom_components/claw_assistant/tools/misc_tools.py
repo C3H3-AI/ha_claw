@@ -40,9 +40,9 @@ from ..runtime.memory_store import (
 from ..runtime.events import fire_live_progress
 from ..runtime.route_hints import build_next_action, build_route_envelope, build_route_hint
 from ..runtime.skill_store import (
+    async_get_installed_skill,
     async_install_skill,
     async_save_master_prompt,
-    get_installed_skill,
     infer_skill_name,
     infer_skill_name_from_url,
     list_installed_skills,
@@ -410,10 +410,10 @@ async def _inline_install_requirements(
 
     if installed:
         import importlib
-        importlib.invalidate_caches()
+        await hass.async_add_executor_job(importlib.invalidate_caches)
 
         config_deps = Path(hass.config.config_dir) / "deps"
-        if config_deps.is_dir():
+        if await hass.async_add_executor_job(config_deps.is_dir):
             deps_str = str(config_deps)
             if deps_str not in sys.path:
                 sys.path.insert(0, deps_str)
@@ -601,12 +601,20 @@ class ExecutePythonTool(llm.Tool):
 
         from ..runtime.data_path import (
             absolute_output_url as _absolute_output_url,
-            get_output_dir as _get_output_dir,
-            get_tmp_dir as _get_tmp_dir,
+            output_dir_path as _output_dir_path,
+            tmp_dir_path as _tmp_dir_path,
         )
 
-        output_dir = _get_output_dir(hass)
-        tmp_dir = _get_tmp_dir(hass)
+        output_dir = _output_dir_path(hass)
+        tmp_dir = _tmp_dir_path(hass)
+        await asyncio.gather(
+            hass.async_add_executor_job(
+                lambda: output_dir.mkdir(parents=True, exist_ok=True)
+            ),
+            hass.async_add_executor_job(
+                lambda: tmp_dir.mkdir(parents=True, exist_ok=True)
+            ),
+        )
 
         def _output_url_for(name: str) -> str:
             """Public URL helper injected as ``output_url`` in AI globals.
@@ -623,26 +631,32 @@ class ExecutePythonTool(llm.Tool):
             "/tmp", "/var/tmp", "/private/tmp", "/private/var/tmp",
             _tempfile.gettempdir(),
         ]
-        _system_tmp_roots: list[Path] = []
-        _resolved_tmp = tmp_dir.resolve()
-        _resolved_output = output_dir.resolve()
-        for _raw in _system_tmp_candidates:
-            try:
-                resolved_root = Path(_raw).resolve(strict=False)
-            except OSError:
-                continue
-            too_broad = False
-            for managed in (_resolved_tmp, _resolved_output):
+        def _resolve_tmp_roots() -> tuple[list[Path], Path]:
+            system_tmp_roots: list[Path] = []
+            resolved_tmp = tmp_dir.resolve()
+            resolved_output = output_dir.resolve()
+            for raw in _system_tmp_candidates:
                 try:
-                    managed.relative_to(resolved_root)
-                    too_broad = True
-                    break
-                except ValueError:
+                    resolved_root = Path(raw).resolve(strict=False)
+                except OSError:
                     continue
-            if too_broad:
-                continue
-            if resolved_root not in _system_tmp_roots:
-                _system_tmp_roots.append(resolved_root)
+                too_broad = False
+                for managed in (resolved_tmp, resolved_output):
+                    try:
+                        managed.relative_to(resolved_root)
+                        too_broad = True
+                        break
+                    except ValueError:
+                        continue
+                if too_broad:
+                    continue
+                if resolved_root not in system_tmp_roots:
+                    system_tmp_roots.append(resolved_root)
+            return system_tmp_roots, resolved_output
+
+        _system_tmp_roots, _resolved_output_dir = await hass.async_add_executor_job(
+            _resolve_tmp_roots
+        )
 
         redirects: list[dict[str, str]] = []
 
@@ -687,7 +701,6 @@ class ExecutePythonTool(llm.Tool):
 
         _real_open = _builtins.open
         _write_mode_chars = frozenset("waxWAX+")
-        _resolved_output_dir = output_dir.resolve()
 
         def _safe_open(file, mode="r", *args, **kwargs):  # type: ignore[no-untyped-def]
             mode_str = mode if isinstance(mode, str) else "r"
@@ -1181,8 +1194,9 @@ class GetInstalledSkillTool(llm.Tool):
         self, hass: HomeAssistant, tool_input: llm.ToolInput, llm_context: llm.LLMContext
     ) -> JsonObjectType:
         try:
-            result = await hass.async_add_executor_job(
-                get_installed_skill, tool_input.tool_args.get("name", "")
+            result = await async_get_installed_skill(
+                hass,
+                tool_input.tool_args.get("name", ""),
             )
             return {"success": True, **result}
         except ValueError as err:
@@ -2341,7 +2355,7 @@ class MediaAnalyzeTool(llm.Tool):
             return {"success": False, "error": "file_path is required"}
 
         p = Path(file_path)
-        if not p.is_file():
+        if not await hass.async_add_executor_job(p.is_file):
             return {"success": False, "error": f"File not found: {file_path}"}
 
         ext = p.suffix.lstrip(".").lower()
@@ -2436,20 +2450,21 @@ class MediaAnalyzeTool(llm.Tool):
         import shutil
         from pathlib import Path
 
-        ffmpeg_bin = shutil.which("ffmpeg")
-        ffprobe_bin = shutil.which("ffprobe")
+        ffmpeg_bin, ffprobe_bin = await hass.async_add_executor_job(
+            lambda: (shutil.which("ffmpeg"), shutil.which("ffprobe"))
+        )
         if not ffmpeg_bin:
             return {"success": False, "error": "ffmpeg not found — cannot extract video frames"}
 
-        if not p.is_file():
+        if not await hass.async_add_executor_job(p.is_file):
             return {"success": False, "error": f"Video file not found: {file_path}"}
-        file_size = p.stat().st_size
+        file_size = await hass.async_add_executor_job(lambda: p.stat().st_size)
         if file_size == 0:
             return {"success": False, "error": f"Video file is empty: {file_path}"}
 
-        from ..runtime.data_path import get_tmp_dir
+        from ..runtime.data_path import tmp_dir_path
         import uuid
-        work_dir = get_tmp_dir(hass) / f"vframes_{uuid.uuid4().hex[:8]}"
+        work_dir = tmp_dir_path(hass) / f"vframes_{uuid.uuid4().hex[:8]}"
         await hass.async_add_executor_job(lambda: work_dir.mkdir(parents=True, exist_ok=True))
         frame_dir = work_dir
 
@@ -2461,9 +2476,12 @@ class MediaAnalyzeTool(llm.Tool):
             )
             if ok:
                 effective_path = compressed_path
+                compressed_size = await hass.async_add_executor_job(
+                    lambda: Path(compressed_path).stat().st_size
+                )
                 _LOGGER.debug(
                     "MediaAnalyze compressed video: %d -> %d bytes",
-                    file_size, Path(compressed_path).stat().st_size,
+                    file_size, compressed_size,
                 )
 
         duration = 0.0
@@ -2571,14 +2589,14 @@ class GetConversationHistoryTool(llm.Tool):
         "use this to recall what was just discussed even after the user closed the window / got a new conversation_id. "
         "action=clear: delete history for current conversation, a specific conversation_id, or all (scope=all). "
         "action=stats: counts and oldest/newest timestamps. "
-        "Params: action, max_turns(default 5), include_tools(bool), recent_minutes(default 20), "
+        "Params: action, max_turns(default 5), include_tools(bool), recent_minutes(default 60), "
         "conversation_id(optional, override target), scope(current|all for clear)."
     )
     parameters = vol.Schema({
         vol.Optional("action", default="get"): vol.In(["get", "recent", "clear", "stats"]),
         vol.Optional("max_turns", default=5): int,
         vol.Optional("include_tools", default=False): bool,
-        vol.Optional("recent_minutes", default=20): vol.Any(int, float),
+        vol.Optional("recent_minutes", default=60): vol.Any(int, float),
         vol.Optional("conversation_id", default=""): str,
         vol.Optional("scope", default="current"): vol.In(["current", "all"]),
     })
@@ -2591,7 +2609,7 @@ class GetConversationHistoryTool(llm.Tool):
         action = args.get("action", "get")
         max_turns = int(args.get("max_turns", 5) or 5)
         include_tools = bool(args.get("include_tools", False))
-        recent_minutes = float(args.get("recent_minutes", 20) or 20)
+        recent_minutes = float(args.get("recent_minutes", 60) or 60)
         explicit_conv_id = (args.get("conversation_id") or "").strip()
         scope = args.get("scope", "current")
 
