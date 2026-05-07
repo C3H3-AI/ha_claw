@@ -25,7 +25,9 @@ from homeassistant.helpers import category_registry as cr, entity_registry as er
 from homeassistant.helpers.entity_component import EntityComponent
 from homeassistant.util.file import write_utf8_file_atomic
 from homeassistant.util.json import JsonObjectType
-from homeassistant.util.yaml import dump, load_yaml
+from homeassistant.util.yaml import dump, load_yaml, parse_yaml
+
+from ..runtime.text_patch import PatchError, apply_patches
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,7 +38,14 @@ class ScriptTool(llm.Tool):
     name = "Script"
     description = (
         "Manage Home Assistant scripts via official APIs. "
-        "Actions: list, get, create, update, delete, run. "
+        "Actions: list, get, create, update, patch, delete, run. "
+        "PATCH-FIRST RULE: For any surgical change (add one step, tweak one service call, fix a template), "
+        "YOU MUST use action=patch with anchor-based ops instead of re-emitting the whole config. "
+        "patch params: patches=[{op, anchor, new_text, occurrence?, regex?, count?}, ...], dry_run=true/false. "
+        "Ops: replace | insert_before | insert_after | delete | prepend | append | create. "
+        "Anchors match against the YAML text of the current config. "
+        "Limitation: patch cannot remove a top-level key (use action=update for that). "
+
         "TWO update paths: "
         "1) Metadata only (icon/area/labels/name): pass empty config + metadata params → applies directly to entity registry, instant. "
         "2) Config change (alias/description/sequence): pass config dict → validate → atomic write → reload → post-verify. "
@@ -67,7 +76,7 @@ class ScriptTool(llm.Tool):
     parameters = vol.Schema(
         {
             vol.Required("action"): vol.In(
-                ["list", "get", "create", "update", "delete", "run"]
+                ["list", "get", "create", "update", "patch", "delete", "run"]
             ),
             vol.Optional("entity_id", default=""): str,
             vol.Optional("script_id", default=""): str,
@@ -80,6 +89,8 @@ class ScriptTool(llm.Tool):
             vol.Optional("labels"): vol.Any(list, None),
             vol.Optional("name"): vol.Any(str, None),
             vol.Optional("category_id"): vol.Any(str, None),
+            vol.Optional("patches", default=[]): list,
+            vol.Optional("dry_run", default=False): bool,
         }
     )
 
@@ -123,6 +134,15 @@ class ScriptTool(llm.Tool):
                     hass, config, script_id,
                     is_update=True, icon=icon, area_id=area_id,
                     labels=labels, name=name, category_id=category_id, sentinel=_SENTINEL,
+                )
+
+            if action == "patch":
+                return await self._patch_script(
+                    hass, script_id, entity_id,
+                    patches=tool_input.tool_args.get("patches", []),
+                    dry_run=bool(tool_input.tool_args.get("dry_run", False)),
+                    icon=icon, area_id=area_id, labels=labels, name=name,
+                    category_id=category_id, sentinel=_SENTINEL,
                 )
 
             if action == "delete":
@@ -479,6 +499,74 @@ class ScriptTool(llm.Tool):
             result["current_config"] = verified_config
         if applied:
             result["applied_registry"] = applied
+        return result
+
+    async def _patch_script(
+        self,
+        hass: HomeAssistant,
+        script_id: str,
+        entity_id: str,
+        *,
+        patches: list,
+        dry_run: bool,
+        icon=None,
+        area_id=None,
+        labels=None,
+        name=None,
+        category_id=None,
+        sentinel=None,
+    ) -> JsonObjectType:
+        """Apply surgical anchor patches to a script's YAML config."""
+        if not isinstance(patches, list) or not patches:
+            return {"success": False, "error": "'patches' must be a non-empty list"}
+
+        object_id = self._resolve_script_id(entity_id, script_id)
+        if not object_id:
+            return {"success": False, "error": "entity_id or script_id is required"}
+
+        original = await self._load_existing_config(hass, object_id)
+        if original is None:
+            return {"success": False, "error": f"Script '{object_id}' not found"}
+
+        original_yaml = dump(original)
+        label = f"script/{object_id}.yaml"
+
+        try:
+            report = apply_patches(original_yaml, patches, label=label)
+        except PatchError as err:
+            return {"success": False, "error": str(err), **err.to_dict()}
+
+        try:
+            patched = parse_yaml(report.after)
+        except Exception as err:  # noqa: BLE001
+            return {
+                "success": False,
+                "error": f"patched YAML did not parse: {err}",
+                "preview_after": report.after[:2000],
+                "diff": report.diff,
+            }
+        if not isinstance(patched, dict):
+            return {
+                "success": False,
+                "error": "patched YAML must be a mapping",
+                "preview_after": report.after[:2000],
+            }
+
+        if dry_run:
+            return {
+                "success": True,
+                "dry_run": True,
+                "report": report.to_dict(),
+                "preview_config": patched,
+            }
+
+        result = await self._create_or_update(
+            hass, patched, object_id,
+            is_update=True, icon=icon, area_id=area_id,
+            labels=labels, name=name, category_id=category_id, sentinel=sentinel,
+        )
+        if isinstance(result, dict):
+            result["patch_report"] = report.to_dict()
         return result
 
     async def _delete_script(

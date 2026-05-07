@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 from aiohttp import ClientSession, ClientTimeout, TCPConnector
 from bs4 import BeautifulSoup
+from urllib.parse import unquote
 
 from .web_fetcher import WebPageFetcher
 from .web_formatter import format_search_results_text
@@ -25,11 +26,28 @@ class SearchResult:
     content: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+_CN_TIMEZONES = {"Asia/Shanghai", "Asia/Chongqing", "Asia/Urumqi", "Asia/Harbin", "PRC"}
+
 ENGINES = {
+    "bing": {"url": "https://www.bing.com/search", "param": "q", "sel": ".b_algo", "title": "h2 a", "link": "h2 a", "desc": ".b_caption p"},
     "baidu": {"url": "https://www.baidu.com/s", "param": "wd", "sel": ".result.c-container, .c-container", "title": "h3 a, .t a", "link": "h3 a, .t a", "desc": ".c-abstract, .c-span-last"},
-    "bing": {"url": "https://cn.bing.com/search", "param": "q", "sel": ".b_algo", "title": "h2 a", "link": "h2 a", "desc": ".b_caption p"},
+    "bing_cn": {"url": "https://cn.bing.com/search", "param": "q", "sel": ".b_algo", "title": "h2 a", "link": "h2 a", "desc": ".b_caption p"},
 }
-SEARCH_ENGINES = list(ENGINES.keys())
+_ALL_ENGINES = {"google", *ENGINES}
+SEARCH_ENGINES = list(_ALL_ENGINES)
+
+
+def _is_cn(hass=None) -> bool:
+    if hass is None:
+        return False
+    tz = str(getattr(hass.config, "time_zone", "") or "")
+    return tz in _CN_TIMEZONES
+
+
+def _default_engines(hass=None) -> list[str]:
+    if _is_cn(hass):
+        return ["baidu", "bing_cn"]
+    return ["google", "bing"]
 
 BLOCKED_DOMAINS = {"zhihu.com", "zhihu.cn"}
 UA_LIST = [
@@ -86,8 +104,9 @@ class RateLimiter:
             await asyncio.sleep(wait_seconds)
 
 class WebSearch:
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, hass=None):
         self.api_key = api_key
+        self._hass = hass
         self.timeout = ClientTimeout(total=30, connect=10, sock_read=10)
         self.connector: TCPConnector | None = None
         self.session = None
@@ -136,10 +155,11 @@ class WebSearch:
         self.connector = None
 
     def _get_headers(self) -> Dict[str, str]:
+        lang = "zh-CN,zh;q=0.9,en;q=0.8" if _is_cn(self._hass) else "en-US,en;q=0.9"
         return {
             "User-Agent": self._get_random_ua(),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Accept-Language": lang,
             "Accept-Encoding": "gzip, deflate",
             "Connection": "keep-alive"
         }
@@ -164,7 +184,61 @@ class WebSearch:
     def _cache_results(self, query: str, engine: str, results: List[SearchResult]):
         self.cache[self._get_cache_key(query, engine)] = (datetime.now(), results)
 
+    async def _search_google(self, query: str, num: int = 5) -> List[SearchResult]:
+        await self.rate_limiters.get("google", RateLimiter()).acquire()
+        cached = self._get_cached_results(query, "google")
+        if cached:
+            return cached
+        results = []
+        required_domains = _extract_required_domains(query)
+        try:
+            from requests import get as sync_get
+            lang = "zh-CN,zh;q=0.9,en;q=0.8" if _is_cn(self._hass) else "en-US,en;q=0.9"
+            resp = await asyncio.to_thread(
+                lambda: sync_get(
+                    url="https://html.duckduckgo.com/html/",
+                    params={"q": query},
+                    headers={
+                        "User-Agent": self._get_random_ua(),
+                        "Accept": "text/html",
+                        "Accept-Language": lang,
+                    },
+                    timeout=30,
+                )
+            )
+            soup = BeautifulSoup(resp.text, "html.parser")
+            for item in soup.select(".result"):
+                title_el = item.select_one(".result__a")
+                desc_el = item.select_one(".result__snippet")
+                if not title_el:
+                    continue
+                href = title_el.get("href", "")
+                if href.startswith("//duckduckgo.com/l/?uddg="):
+                    href = unquote(href.split("uddg=")[1].split("&")[0])
+                if not href or href.startswith("/"):
+                    continue
+                if self.page_fetcher and self.page_fetcher.is_domain_blocked(href):
+                    continue
+                if not _matches_required_domains(href, required_domains):
+                    continue
+                title = title_el.get_text(strip=True)
+                desc = desc_el.get_text(strip=True) if desc_el else ""
+                results.append(SearchResult(
+                    title=title, url=href, snippet=desc,
+                    metadata={"engine": "google", "timestamp": datetime.now().isoformat()},
+                ))
+                if len(results) >= num:
+                    break
+            if results:
+                self._cache_results(query, "google", results)
+                _LOGGER.debug("Google(startpage): %d results", len(results))
+        except Exception as e:
+            _LOGGER.error("Google search error: %s", e, exc_info=True)
+        return results
+
     async def _search_engine(self, query: str, engine: str, num: int = 5) -> List[SearchResult]:
+        if engine == "google":
+            return await self._search_google(query, num)
         cfg = ENGINES.get(engine)
         if not cfg: return []
         await self.rate_limiters.get(engine, RateLimiter()).acquire()
@@ -256,6 +330,7 @@ class WebSearch:
         query: str,
         num_results: int,
         engine: str,
+        fetch_content: bool = True,
     ) -> List[SearchResult]:
         try:
             direct_url_results = await self.process_direct_urls(query)
@@ -265,7 +340,10 @@ class WebSearch:
         except Exception as e:
             _LOGGER.error("Failed to process direct URLs: %s", e)
 
-        engines_to_try = [engine] if engine and engine in SEARCH_ENGINES else list(SEARCH_ENGINES)
+        if engine and engine in _ALL_ENGINES:
+            engines_to_try = [engine]
+        else:
+            engines_to_try = _default_engines(self._hass)
         _LOGGER.debug("Search: %s (engines: %s)", query, engines_to_try)
         engine_tasks = [
             self._search_engine(query, eng, num_results) for eng in engines_to_try
@@ -275,7 +353,7 @@ class WebSearch:
         all_results: List[SearchResult] = []
         for eng, output in zip(engines_to_try, engine_outputs):
             if isinstance(output, Exception):
-                _LOGGER.error(f"{eng} search error: {output}")
+                _LOGGER.error("%s search error: %s", eng, output)
                 continue
             for result in output or []:
                 key = result.url or result.title
@@ -284,7 +362,23 @@ class WebSearch:
                 seen_urls.add(key)
                 all_results.append(result)
 
-        if all_results:
+        if not all_results and engine and engine in _ALL_ENGINES:
+            fallback = [e for e in _default_engines(self._hass) if e != engine]
+            if fallback:
+                _LOGGER.debug("Fallback from %s to %s", engine, fallback)
+                fb_tasks = [self._search_engine(query, e, num_results) for e in fallback]
+                fb_outputs = await asyncio.gather(*fb_tasks, return_exceptions=True)
+                for eng, output in zip(fallback, fb_outputs):
+                    if isinstance(output, Exception):
+                        continue
+                    for result in output or []:
+                        key = result.url or result.title
+                        if not key or key in seen_urls:
+                            continue
+                        seen_urls.add(key)
+                        all_results.append(result)
+
+        if fetch_content and all_results:
             content_tasks = []
             valid_results = []
             for result in all_results:
@@ -313,12 +407,12 @@ class WebSearch:
 
         return all_results
 
-    async def search(self, query: str, num_results: int = 5, engine: str = "", **_legacy: Any) -> List[SearchResult]:
+    async def search(self, query: str, num_results: int = 5, engine: str = "", fetch_content: bool = True, **_legacy: Any) -> List[SearchResult]:
         if self.session is not None and not self.session.closed and self.page_fetcher is not None:
-            return await self._search_with_open_session(query, num_results, engine)
+            return await self._search_with_open_session(query, num_results, engine, fetch_content=fetch_content)
 
         async with self:
-            return await self._search_with_open_session(query, num_results, engine)
+            return await self._search_with_open_session(query, num_results, engine, fetch_content=fetch_content)
 
     async def get_search_results_text(self, query: str, num_results: int = 10, **_legacy: Any) -> str:
         results = await self.search(query, num_results)

@@ -18,7 +18,7 @@ _LOGGER = logging.getLogger(__name__)
 
 class WebSearchTool(llm.Tool):
     name = "WebSearch"
-    description = "General-purpose web search for real-time information: news, finance flashes, weather, entertainment, tech, sports, etc. Queries both Baidu and Bing and merges the results. Use this for ALL news and current-event lookups."
+    description = "General-purpose web search for real-time information: news, weather, tech, sports, etc. Auto-selects search engines based on locale. Supported engines: google, bing, baidu, bing_cn. Set engine when the user explicitly requests one (e.g. 'google it' -> engine='google'). Leave engine empty for auto-select. Always write the query in the same language the user used."
     parameters = vol.Schema({
         vol.Required("query"): str,
         vol.Optional("num_results", default=3): int,
@@ -31,61 +31,114 @@ class WebSearchTool(llm.Tool):
         engine = tool_input.tool_args.get("engine", "")
         mark_tool_called(hass, "WebSearch")
         try:
-            async with WebSearch() as ws:
-                results = await ws.search(query, num, engine=engine)
+            async with WebSearch(hass=hass) as ws:
+                results = await ws.search(query, num, engine=engine, fetch_content=False)
                 if not results:
                     return {"success": False, "error": "No search results found"}
 
+                items = []
+                for i, r in enumerate(results[:num], 1):
+                    items.append({
+                        "index": i,
+                        "title": r.title,
+                        "url": r.url,
+                        "snippet": r.snippet or "",
+                    })
+
                 return {
                     "success": True,
-                    "count": len(results),
-                    "results": format_search_results_text(
-                        query,
-                        results[:num],
-                        engine_label=engine or "merged",
-                        max_total_chars=3200,
-                        max_chars_per_result=900,
-                    ),
+                    "count": len(items),
+                    "results": items,
+                    "hint": "Use UrlFetch to read any result page. Content is returned in chunks; use WebReadChunk to read more.",
                 }
         except Exception as e:
-            _LOGGER.error(f"WebSearchTool error: {e}")
+            _LOGGER.error("WebSearchTool error: %s", e)
             return {"success": False, "error": str(e)}
+
+
+_CHUNK_SIZE = 1500
+_CHUNK_CACHE_KEY = "claw_web_chunks"
+
+
+def _get_chunk_cache(hass: HomeAssistant) -> dict:
+    if _CHUNK_CACHE_KEY not in hass.data:
+        hass.data[_CHUNK_CACHE_KEY] = {}
+    return hass.data[_CHUNK_CACHE_KEY]
+
+
+def _store_chunks(hass: HomeAssistant, url: str, title: str, full_text: str) -> tuple[str, list[str]]:
+    import hashlib
+    doc_id = hashlib.md5(url.encode()).hexdigest()[:10]
+    chunks = []
+    cleaned = prepare_web_text_for_ai(full_text, max_chars=len(full_text) + 1)
+    for i in range(0, len(cleaned), _CHUNK_SIZE):
+        chunks.append(cleaned[i:i + _CHUNK_SIZE])
+    if not chunks:
+        chunks = [""]
+    cache = _get_chunk_cache(hass)
+    cache[doc_id] = {"url": url, "title": title, "chunks": chunks}
+    if len(cache) > 50:
+        oldest = list(cache.keys())[0]
+        del cache[oldest]
+    return doc_id, chunks
 
 
 class UrlFetchTool(llm.Tool):
     name = "UrlFetch"
-    description = "Fetch URL content. Use this to read web pages, APIs, and similar resources."
+    description = "Fetch a URL and return its content as chunk 0. If the page has more content, use WebReadChunk with the returned doc_id and position to read subsequent chunks."
     parameters = vol.Schema({
         vol.Required("url"): str,
-        vol.Optional("max_length", default=2000): int,
     })
 
     async def async_call(self, hass: HomeAssistant, tool_input: llm.ToolInput, llm_context: llm.LLMContext) -> JsonObjectType:
         url = tool_input.tool_args.get("url", "")
-        max_len = tool_input.tool_args.get("max_length", 2000)
         mark_tool_called(hass, "UrlFetch")
         try:
-            async with WebSearch() as ws:
+            async with WebSearch(hass=hass) as ws:
                 result = await ws.fetch_url_content(url)
                 if result and result.content:
-                    processed = prepare_web_text_for_ai(
-                        result.content,
-                        max_chars=max_len,
-                    )
+                    doc_id, chunks = _store_chunks(hass, url, result.title, result.content)
                     return {
                         "success": True,
+                        "doc_id": doc_id,
                         "title": result.title,
-                        "content": processed,
-                        "compressed": len(processed) < len(result.content),
-                        "ratio": (
-                            f"{len(processed) / len(result.content):.1%}"
-                            if result.content
-                            else "100.0%"
-                        ),
+                        "chunk": 0,
+                        "total_chunks": len(chunks),
+                        "content": chunks[0],
+                        "has_more": len(chunks) > 1,
                     }
                 return {"success": False, "error": "Failed to fetch URL"}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+
+class WebReadChunkTool(llm.Tool):
+    name = "WebReadChunk"
+    description = "Read a specific chunk of a previously fetched web page. Use the doc_id and position returned by UrlFetch."
+    parameters = vol.Schema({
+        vol.Required("doc_id"): str,
+        vol.Required("position"): int,
+    })
+
+    async def async_call(self, hass: HomeAssistant, tool_input: llm.ToolInput, llm_context: llm.LLMContext) -> JsonObjectType:
+        doc_id = tool_input.tool_args.get("doc_id", "")
+        position = tool_input.tool_args.get("position", 0)
+        cache = _get_chunk_cache(hass)
+        doc = cache.get(doc_id)
+        if not doc:
+            return {"success": False, "error": f"Document {doc_id} not found. Use UrlFetch first."}
+        chunks = doc["chunks"]
+        if position < 0 or position >= len(chunks):
+            return {"success": False, "error": f"Position {position} out of range (0-{len(chunks) - 1})"}
+        return {
+            "success": True,
+            "doc_id": doc_id,
+            "title": doc["title"],
+            "chunk": position,
+            "total_chunks": len(chunks),
+            "content": chunks[position],
+            "has_more": position < len(chunks) - 1,
+        }
 
 
 class StockQueryTool(llm.Tool):

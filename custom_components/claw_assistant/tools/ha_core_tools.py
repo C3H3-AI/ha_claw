@@ -1910,11 +1910,20 @@ class NotifyTool(llm.Tool):
 
 class IntentCallTool(llm.Tool):
     name = "IntentCall"
-    description = "List or call third-party intent handlers registered in HA (e.g. Holidays, Almanac, TuneFreePlayMusic). action=list to discover available intents; action=call to execute one by intent_type with optional slots dict."
+    description = (
+        "Execute third-party intent handlers registered in Home Assistant. "
+        "These are NOT built-in HA intents and NOT separate tools - "
+        "they can ONLY be invoked through this tool.\n"
+        "action=list: Discover all available intents, their descriptions, and slot definitions (REQUIRED/optional). "
+        "Call this first when you encounter a user request that no other tool can handle.\n"
+        "action=call: Execute an intent. You MUST pass all REQUIRED slot values in the 'slots' dict.\n"
+        "RULES: Do NOT omit REQUIRED slots. Do NOT invent intent names - use action=list first. "
+        "Show the result 'speech' to user as-is if it contains markdown or images."
+    )
     parameters = vol.Schema({
-        vol.Required("action"): vol.In(["list", "call"]),
-        vol.Optional("intent_type"): str,
-        vol.Optional("slots"): dict,
+        vol.Required("action", description="'list' to discover available intents, 'call' to execute one"): vol.In(["list", "call"]),
+        vol.Optional("intent_type", description="The intent_type string returned by action=list"): str,
+        vol.Optional("slots", description="Flat dict of slot name-value pairs. Must include all REQUIRED slots returned by action=list."): dict,
     })
 
     async def async_call(self, hass: HomeAssistant, tool_input: llm.ToolInput, llm_context: llm.LLMContext) -> JsonObjectType:
@@ -1928,17 +1937,38 @@ class IntentCallTool(llm.Tool):
             for h in handlers:
                 if h.intent_type.startswith("Hass"):
                     continue
-                slot_info = {}
+                slot_list = []
                 if h.slot_schema:
                     for k, v in h.slot_schema.items():
                         key_name = k.schema if hasattr(k, "schema") else str(k)
-                        slot_info[key_name] = getattr(k, "description", "") or ""
+                        required = isinstance(k, vol.Required)
+                        desc = getattr(k, "description", "") or ""
+                        default = getattr(k, "default", None)
+                        type_name = "string"
+                        if v is bool:
+                            type_name = "boolean"
+                        elif v is int or v == vol.Coerce(int):
+                            type_name = "integer"
+                        slot_entry = {
+                            "name": key_name,
+                            "required": required,
+                            "type": type_name,
+                            "description": desc,
+                        }
+                        if default is not None and default is not vol.UNDEFINED:
+                            slot_entry["default"] = str(default)
+                        slot_list.append(slot_entry)
                 items.append({
                     "intent_type": h.intent_type,
                     "description": h.description or "",
-                    "slots": slot_info,
+                    "slots": slot_list,
                 })
-            return {"success": True, "count": len(items), "intents": items}
+            return {
+                "success": True,
+                "count": len(items),
+                "intents": items,
+                "usage": "To call an intent: action='call', intent_type='<intent_type>', slots={<slot_name>: <value>, ...}",
+            }
 
         if action == "call":
             intent_type = tool_input.tool_args.get("intent_type", "")
@@ -1960,7 +1990,10 @@ class IntentCallTool(llm.Tool):
                         if isinstance(result.speech, dict)
                         else str(result.speech)
                     )
-                return {"success": True, "speech": speech}
+                ret: dict[str, Any] = {"success": True, "speech": speech}
+                if "![" in speech and "](" in speech:
+                    ret["display_hint"] = "Response contains markdown images. Show the speech content to user as-is, do NOT rewrite image URLs."
+                return ret
             except Exception as err:
                 return {"success": False, "error": str(err)}
 
