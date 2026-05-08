@@ -21,6 +21,8 @@ from .agent_fallback import (
     get_agent_name,
     run_agent_fallback_chain,
 )
+from .reply_formatter import stamp_plain
+from ..const import CONVERSATION_MODE_NO_NAME
 from .config import DEFAULT_FALLBACK_AGENT_ID, DEFAULT_THRESHOLDS
 from .data_path import tmp_dir_path
 from .i18n import t
@@ -548,20 +550,29 @@ async def _execute_conversation_turn_inner(
                 plain.get("original_speech", plain.get("speech", ""))
             )
             if final_text:
-                plain["speech"] = final_text
-                plain["original_speech"] = final_text
-                await _finalize_completed_response(
+                effective_agent_id = agent_id or DEFAULT_FALLBACK_AGENT_ID
+                stamp_plain(
+                    plain,
+                    agent_name=get_agent_name(hass, effective_agent_id),
+                    agent_id=effective_agent_id,
+                    text=final_text,
+                    language=language,
+                    add_prefix=conversation_mode != CONVERSATION_MODE_NO_NAME,
+                )
+                _, _goal_cont, _cont_prompt = await _finalize_completed_response(
                     hass,
                     response=response,
                     task_loop=task_loop,
                     original_text=original_text,
                     conversation_id=conversation_id,
-                    agent_id=agent_id or DEFAULT_FALLBACK_AGENT_ID,
+                    agent_id=effective_agent_id,
                     conv_history=get_conversation_history(),
                     tool_results=direct_tool_results,
                     language=language,
                     original_async_converse=original_async_converse,
                 )
+                if _goal_cont and hasattr(direct_result, 'continue_conversation'):
+                    direct_result.continue_conversation = True
         if attachment_token is not None:
             _PENDING_ATTACHMENTS.reset(attachment_token)
             attachment_token = None
@@ -595,18 +606,21 @@ async def _execute_conversation_turn_inner(
                 if final_text:
                     plain["speech"] = final_text
                     plain["original_speech"] = final_text
-                    await _finalize_completed_response(
+                    _sum_aid = str(plain.get("agent_id") or summary_agents[-1])
+                    _, _goal_cont, _cont_prompt = await _finalize_completed_response(
                         hass,
                         response=summary_response,
                         task_loop=task_loop,
                         original_text=original_text,
                         conversation_id=conversation_id,
-                        agent_id=str(plain.get("agent_id") or summary_agents[-1]),
+                        agent_id=_sum_aid,
                         conv_history=get_conversation_history(),
                         tool_results=list(get_tool_results_state(hass)),
                         language=language,
                         original_async_converse=original_async_converse,
                     )
+                    if _goal_cont and hasattr(summary_result, 'continue_conversation'):
+                        summary_result.continue_conversation = True
             if attachment_token is not None:
                 _PENDING_ATTACHMENTS.reset(attachment_token)
                 attachment_token = None
