@@ -558,11 +558,14 @@ Available actions:
 - action=cancel: cancel a staged operation
 - action=list_pending: list pending operations
 
-PATCH-FIRST RULE: When modifying an existing file, YOU MUST use action=stage_patch
-with anchor-based ops instead of re-reading + stage_write the whole file.
+PATCH-FIRST RULE (MANDATORY):
+1. ALWAYS call action=read FIRST to see the current file content and locate exact anchors.
+2. For ANY modification, YOU MUST use action=stage_patch with surgical anchor ops.
+3. Only fall back to action=stage_write when the change covers >50% of the file content.
+4. NEVER stage_write a file you haven't read first — you WILL corrupt it.
 stage_patch params: patches=[{op, anchor, new_text, occurrence?, regex?, count?}, ...], dry_run=true/false.
 Ops: replace | insert_before | insert_after | delete | prepend | append | create.
-Anchors match against the current file text. Use action=read first to find exact anchors.
+Anchors match against the current file text. Copy exact strings from the read result as anchors.
 
 Policy (text-driven, NO UI buttons exist; YOU judge the user's intent):
 - write/append/mkdir auto-apply on `apply` (reversible; no consent needed).
