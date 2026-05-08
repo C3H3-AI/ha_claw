@@ -8,12 +8,15 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 
+from .goals import is_continuation_prompt
 from .state import get_runtime_store
 
 LOGGER = logging.getLogger(__name__)
 
 _TASKS_KEY = "evolution_review_tasks"
 _RECENT_REVIEWS_KEY = "evolution_review_recent"
+_LOADED_SKILLS_KEY = "evolution_review_loaded_skills"
+_LOADED_SKILLS_PER_CONV_LIMIT = 32
 _REVIEW_TTL = timedelta(hours=2)
 _MAX_TRACKED_REVIEWS = 100
 _REVIEW_MARKER = "[EVOLUTION-REVIEW]"
@@ -62,6 +65,51 @@ def _task_bucket(hass: HomeAssistant) -> set[asyncio.Task]:
         bucket = set()
         runtime_store[_TASKS_KEY] = bucket
     return bucket
+
+
+def _loaded_skills_bucket(hass: HomeAssistant) -> dict[str, list[str]]:
+    runtime_store = get_runtime_store(hass)
+    bucket = runtime_store.get(_LOADED_SKILLS_KEY)
+    if not isinstance(bucket, dict):
+        bucket = {}
+        runtime_store[_LOADED_SKILLS_KEY] = bucket
+    return bucket
+
+
+def record_loaded_skill(
+    hass: HomeAssistant, slug: str, *, conversation_id: str | None = None
+) -> None:
+    """Record a skill slug as loaded by the active conversation.
+
+    Used to feed the active-update bias section of the evolution review prompt.
+    """
+    if not slug:
+        return
+    if conversation_id is None:
+        try:
+            from .state import _active_conversation_id
+
+            conversation_id = _active_conversation_id.get()
+        except Exception:
+            conversation_id = "default"
+    key = conversation_id or "default"
+    bucket = _loaded_skills_bucket(hass)
+    skills = bucket.setdefault(key, [])
+    if slug in skills:
+        skills.remove(slug)
+    skills.append(slug)
+    if len(skills) > _LOADED_SKILLS_PER_CONV_LIMIT:
+        del skills[: len(skills) - _LOADED_SKILLS_PER_CONV_LIMIT]
+
+
+def consume_loaded_skills(
+    hass: HomeAssistant, conversation_id: str | None
+) -> list[str]:
+    """Return and clear the loaded skill slugs for the given conversation."""
+    bucket = _loaded_skills_bucket(hass)
+    key = conversation_id or "default"
+    skills = bucket.pop(key, [])
+    return list(skills)
 
 
 def _recent_bucket(hass: HomeAssistant) -> dict[str, str]:
@@ -128,6 +176,10 @@ def _should_review(
     if original_text.strip().startswith("/"):
         return False
     if conversation_id and conversation_id.startswith("evolution:"):
+        return False
+    # Skip self-fed goal continuation turns — the judge already decided to
+    # keep going; we don't need a learning review on every Ralph-loop step.
+    if is_continuation_prompt(original_text):
         return False
     return True
 

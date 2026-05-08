@@ -791,6 +791,39 @@ class ExecutePythonTool(llm.Tool):
         started = time.perf_counter()
         err_info: dict[str, Any] | None = None
 
+        # Force UTF-8 default for ``Path.write_text`` / ``Path.read_text`` while
+        # user code runs. The patched ``open()`` only intercepts
+        # ``builtins.open``; ``Path.write_text`` goes through ``io.open`` (C
+        # layer) which honours the *process locale* default — on a server
+        # whose locale is C/zh_CN.GBK that produces mojibake when the AI
+        # writes Chinese text without an explicit ``encoding=``. Restored in
+        # the matching ``finally`` block below so the override never leaks
+        # past one ExecutePython invocation.
+        import pathlib as _pathlib
+        _orig_path_write_text = _pathlib.Path.write_text
+        _orig_path_read_text = _pathlib.Path.read_text
+
+        def _utf8_write_text(self, data, encoding=None, errors=None, newline=None):  # type: ignore[no-untyped-def]
+            if encoding is None:
+                encoding = "utf-8"
+            return _orig_path_write_text(
+                self, data, encoding=encoding, errors=errors, newline=newline
+            )
+
+        def _utf8_read_text(self, encoding=None, errors=None, newline=None):  # type: ignore[no-untyped-def]
+            if encoding is None:
+                encoding = "utf-8"
+            try:
+                return _orig_path_read_text(
+                    self, encoding=encoding, errors=errors, newline=newline
+                )
+            except TypeError:
+                # Python < 3.13 signature: read_text(encoding=None, errors=None)
+                return _orig_path_read_text(self, encoding=encoding, errors=errors)
+
+        _pathlib.Path.write_text = _utf8_write_text  # type: ignore[assignment]
+        _pathlib.Path.read_text = _utf8_read_text  # type: ignore[assignment]
+
         try:
             import inspect as _inspect
 
@@ -866,6 +899,12 @@ class ExecutePythonTool(llm.Tool):
                 "error": traceback.format_exception_only(*sys.exc_info()[:2])[-1].strip(),
                 "traceback": traceback.format_exc(),
             }
+        finally:
+            # Restore the original ``Path.write_text`` / ``read_text`` so the
+            # UTF-8 default does not leak to the rest of the HA process once
+            # this ExecutePython invocation returns.
+            _pathlib.Path.write_text = _orig_path_write_text  # type: ignore[assignment]
+            _pathlib.Path.read_text = _orig_path_read_text  # type: ignore[assignment]
 
         duration_ms = int((time.perf_counter() - started) * 1000)
         stdout_text = _trim_stream(stdout_buf.getvalue())
@@ -1198,6 +1237,12 @@ class GetInstalledSkillTool(llm.Tool):
                 hass,
                 tool_input.tool_args.get("name", ""),
             )
+            try:
+                from ..runtime.evolution_review import record_loaded_skill
+
+                record_loaded_skill(hass, result.get("slug", ""))
+            except Exception:
+                pass
             return {"success": True, **result}
         except ValueError as err:
             return {"success": False, "error": str(err)}
