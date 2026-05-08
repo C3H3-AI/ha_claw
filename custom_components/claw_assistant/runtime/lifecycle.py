@@ -24,6 +24,7 @@ from .official_websocket_hook import (
 )
 from .output_cleanup import async_setup_output_cleanup, async_unload_output_cleanup
 from .patches import (
+    async_downgrade_intents_package,
     patch_apiinstance_tool_fallback,
     patch_chat_log_result_extraction,
     patch_global_response_format,
@@ -75,6 +76,7 @@ async def async_setup_runtime(hass: HomeAssistant, entry: ConfigEntry) -> None:
     await async_setup_tmp_cleanup(hass)
     await async_setup_curator(hass)
     await async_setup_frontend_loader(hass)
+    await async_downgrade_intents_package(hass)
     patch_local_intents(hass)
     patch_websocket_binary_handler_noise(hass)
     patch_chat_log_result_extraction(hass)
