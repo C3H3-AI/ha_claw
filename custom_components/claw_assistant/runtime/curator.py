@@ -17,13 +17,18 @@ from . import skill_usage
 
 LOGGER = logging.getLogger(__name__)
 
-DEFAULT_INTERVAL_HOURS = 24 * 7
+DEFAULT_INTERVAL_HOURS = 24
 DEFAULT_STALE_AFTER_DAYS = 30
 DEFAULT_ARCHIVE_AFTER_DAYS = 90
 
 _UNSUB_KEY = "curator_unsub"
-_CHECK_INTERVAL = timedelta(hours=1)
+_CHECK_INTERVAL = timedelta(minutes=5)
 _REVIEW_MARKER = "[CURATOR-REVIEW]"
+
+# Idle-trigger thresholds: silently self-organize when the assistant has been
+# active recently but has now been quiet for a while. No keyword detection.
+_IDLE_MIN_TURNS = 3
+_IDLE_QUIET_AFTER = timedelta(minutes=20)
 
 
 def _state_path() -> Path:
@@ -42,6 +47,8 @@ def _default_state() -> dict[str, Any]:
         "last_report_path": None,
         "paused": False,
         "run_count": 0,
+        "last_turn_at": None,
+        "turns_since_last_run": 0,
     }
 
 
@@ -106,24 +113,63 @@ def _parse_iso(ts: str | None) -> datetime | None:
         return None
 
 
-def should_run_now(now: datetime | None = None) -> bool:
-    if is_paused():
-        return False
-    state = load_state()
+def _daily_window_elapsed(state: dict[str, Any], now: datetime) -> bool:
     last = _parse_iso(state.get("last_run_at"))
     if last is None:
-        if now is None:
-            now = datetime.now(UTC)
-        state["last_run_at"] = now.isoformat()
-        state["last_run_summary"] = "deferred first run — curator seeded"
-        save_state(state)
+        return True
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=UTC)
+    return (now - last) >= timedelta(hours=DEFAULT_INTERVAL_HOURS)
+
+
+def should_run_idle(now: datetime | None = None) -> bool:
+    """Decide whether the curator should run automatically right now.
+
+    Conditions (all required):
+      * curator is not paused
+      * at least ``_IDLE_MIN_TURNS`` conversation turns since last successful run
+      * the assistant has been quiet for at least ``_IDLE_QUIET_AFTER``
+      * the daily 24h window has elapsed since the last run
+    """
+    if is_paused():
         return False
     if now is None:
         now = datetime.now(UTC)
-    if last.tzinfo is None:
-        last = last.replace(tzinfo=UTC)
-    interval = timedelta(hours=DEFAULT_INTERVAL_HOURS)
-    return (now - last) >= interval
+    state = load_state()
+
+    if int(state.get("turns_since_last_run", 0) or 0) < _IDLE_MIN_TURNS:
+        return False
+
+    last_turn = _parse_iso(state.get("last_turn_at"))
+    if last_turn is None:
+        return False
+    if last_turn.tzinfo is None:
+        last_turn = last_turn.replace(tzinfo=UTC)
+    if (now - last_turn) < _IDLE_QUIET_AFTER:
+        return False
+
+    return _daily_window_elapsed(state, now)
+
+
+def record_turn_activity(hass: HomeAssistant) -> None:
+    """Record one finished conversation turn.
+
+    Bumps ``turns_since_last_run`` and refreshes ``last_turn_at``.
+    Called from agent finalizers — never from background tasks.
+    """
+
+    def _bump() -> None:
+        try:
+            state = load_state()
+            state["last_turn_at"] = datetime.now(UTC).isoformat()
+            state["turns_since_last_run"] = (
+                int(state.get("turns_since_last_run", 0) or 0) + 1
+            )
+            save_state(state)
+        except Exception as err:
+            LOGGER.debug("record_turn_activity failed: %s", err)
+
+    hass.async_add_executor_job(_bump)
 
 
 def apply_automatic_transitions(now: datetime | None = None) -> dict[str, int]:
@@ -327,12 +373,25 @@ async def async_run_curator(
         state["last_run_at"] = start.isoformat()
         state["run_count"] = int(state.get("run_count", 0)) + 1
         state["last_run_summary"] = f"auto: {auto_summary}"
+        # idle counters reset on every successful pass; next run requires
+        # fresh activity to satisfy ``should_run_idle``.
+        state["turns_since_last_run"] = 0
         await hass.async_add_executor_job(save_state, state)
 
     llm_summary = ""
     llm_error = None
+    # If the deterministic auto-transitions found nothing to change AND
+    # there are no agent-created skills, skip the LLM pass entirely
+    auto_changed = bool(
+        counts.get("marked_stale")
+        or counts.get("archived")
+        or counts.get("reactivated")
+    )
     candidate_list = await hass.async_add_executor_job(_render_candidate_list)
-    if "No agent-created skills" not in candidate_list:
+    has_candidates = "No agent-created skills" not in candidate_list
+    if not auto_changed and not has_candidates:
+        llm_summary = "skipped (nothing to organize)"
+    elif has_candidates and auto_changed:
         original_async_converse = get_runtime_store(hass).get("original_async_converse")
         if callable(original_async_converse):
             prompt = (
@@ -362,6 +421,8 @@ async def async_run_curator(
             except Exception as err:
                 llm_error = str(err)
                 LOGGER.debug("Curator LLM review failed: %s", err, exc_info=True)
+    elif has_candidates and not auto_changed:
+        llm_summary = "skipped LLM (no auto changes)"
 
     after_report = await skill_usage.async_agent_created_report(hass)
     after_count = len(after_report)
@@ -398,9 +459,9 @@ async def async_run_curator(
 
 async def _curator_tick(hass: HomeAssistant, _now: Any = None) -> None:
     try:
-        if not await hass.async_add_executor_job(should_run_now):
+        if not await hass.async_add_executor_job(should_run_idle):
             return
-        LOGGER.info("Curator: starting scheduled review pass")
+        LOGGER.info("Curator: idle threshold met — starting review pass")
         result = await async_run_curator(hass)
         LOGGER.info("Curator: %s", result.get("summary", "done"))
     except Exception as err:

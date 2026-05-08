@@ -10,6 +10,7 @@ from homeassistant.components.conversation.chat_log import (
 )
 
 from .native_chatlog_bridge import is_step_agent_id
+from .reply_formatter import format_reply_speech, strip_reply_prefix
 
 NON_USER_FACING_TOOLS = frozenset(
     {"ThinkContinue", "GetLiveContext", "SetConversationState"}
@@ -260,8 +261,44 @@ def _collect_trailing_tool_results(content: list[Any]) -> list[Any]:
     return [item for item in content[start:] if isinstance(item, ToolResultContent)]
 
 
+def _resolve_prefix_options(hass: Any) -> tuple[bool, str]:
+    if hass is None:
+        return True, "Home Assistant"
+    try:
+        from ..const import (
+            CONF_CONVERSATION_MODE,
+            CONVERSATION_MODE_ADD_NAME,
+            CONVERSATION_MODE_NO_NAME,
+            DOMAIN,
+        )
+        entries = hass.config_entries.async_entries(DOMAIN)
+        if not entries:
+            return True, "Home Assistant"
+        mode = entries[0].options.get(CONF_CONVERSATION_MODE, CONVERSATION_MODE_ADD_NAME)
+        return mode != CONVERSATION_MODE_NO_NAME, "Home Assistant"
+    except Exception:  
+        return True, "Home Assistant"
+
+
+def _stamp_tool_response_text(
+    text: str,
+    *,
+    hass: Any,
+    language: str | None,
+) -> str:
+    clean = strip_reply_prefix(text)
+    add_prefix, agent_name = _resolve_prefix_options(hass)
+    if not add_prefix:
+        return clean
+    return format_reply_speech(agent_name, clean, language)
+
+
 def _synthesize_from_tool_results(
-    content: list[Any], fallback_agent_id: str
+    content: list[Any],
+    fallback_agent_id: str,
+    *,
+    hass: Any = None,
+    language: str | None = None,
 ) -> AssistantContent | None:
     tool_results = _collect_trailing_tool_results(content)
     if not tool_results:
@@ -272,13 +309,19 @@ def _synthesize_from_tool_results(
         response_text = extract_failed_tool_response(normalized).strip()
     if not response_text:
         return None
+    stamped = _stamp_tool_response_text(response_text, hass=hass, language=language)
     return AssistantContent(
-        agent_id=tool_results[-1].agent_id or fallback_agent_id,
-        content=response_text,
+        agent_id="conversation.home_assistant",
+        content=stamped,
     )
 
 
-def build_synthesized_assistant_from_chat_log(chat_log: Any) -> AssistantContent | None:
+def build_synthesized_assistant_from_chat_log(
+    chat_log: Any,
+    *,
+    hass: Any = None,
+    language: str | None = None,
+) -> AssistantContent | None:
 
     content = getattr(chat_log, "content", None)
     if not content:
@@ -289,10 +332,10 @@ def build_synthesized_assistant_from_chat_log(chat_log: Any) -> AssistantContent
 
 
     if isinstance(last, ToolResultContent):
-        return _synthesize_from_tool_results(content, agent_id)
+        return _synthesize_from_tool_results(content, agent_id, hass=hass, language=language)
 
 
     if isinstance(last, AssistantContent) and not last.content:
-        return _synthesize_from_tool_results(content, agent_id)
+        return _synthesize_from_tool_results(content, agent_id, hass=hass, language=language)
 
     return None
