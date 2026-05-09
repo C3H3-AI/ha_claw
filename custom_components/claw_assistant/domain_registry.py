@@ -37,6 +37,8 @@ class ServiceDef:
     description: str
     params: List[ServiceParam] = field(default_factory=list)
     aliases: List[str] = field(default_factory=list)
+    expected_state: str | None = None
+    toggle_states: tuple[str, str] | None = None
 
 
 @dataclass
@@ -48,6 +50,7 @@ class DomainDef:
     description: str
     services: List[ServiceDef] = field(default_factory=list)
     device_classes: List[str] = field(default_factory=list)
+    action_services: Dict[str, str] = field(default_factory=dict)
 
 
 DOMAIN_REGISTRY: Dict[str, DomainDef] = {}
@@ -68,6 +71,7 @@ def _register_domains():
                 name="turn_on",
                 description="开灯",
                 aliases=["on"],
+                expected_state="on",
                 params=[
                     ServiceParam("brightness", "亮度 (0-255)", param_type="number", min_value=0, max_value=255),
                     ServiceParam("brightness_pct", "亮度百分比 (0-100)", param_type="number", min_value=0, max_value=100),
@@ -79,8 +83,8 @@ def _register_domains():
                     ServiceParam("effect", "灯光效果", param_type="string"),
                 ]
             ),
-            ServiceDef(name="turn_off", description="关灯", aliases=["off"]),
-            ServiceDef(name="toggle", description="切换开关状态"),
+            ServiceDef(name="turn_off", description="关灯", aliases=["off"], expected_state="off"),
+            ServiceDef(name="toggle", description="切换开关状态", toggle_states=("on", "off")),
         ],
         device_classes=["light"]
     )
@@ -91,9 +95,9 @@ def _register_domains():
         priority=PRIORITY_ESSENTIAL,
         description="开关控制",
         services=[
-            ServiceDef(name="turn_on", description="打开", aliases=["on"]),
-            ServiceDef(name="turn_off", description="关闭", aliases=["off"]),
-            ServiceDef(name="toggle", description="切换"),
+            ServiceDef(name="turn_on", description="打开", aliases=["on"], expected_state="on"),
+            ServiceDef(name="turn_off", description="关闭", aliases=["off"], expected_state="off"),
+            ServiceDef(name="toggle", description="切换", toggle_states=("on", "off")),
         ],
         device_classes=["outlet", "switch"]
     )
@@ -104,8 +108,8 @@ def _register_domains():
         priority=PRIORITY_ESSENTIAL,
         description="空调/温控",
         services=[
-            ServiceDef(name="turn_on", description="开启"),
-            ServiceDef(name="turn_off", description="关闭"),
+            ServiceDef(name="turn_on", description="开启", expected_state="on"),
+            ServiceDef(name="turn_off", description="关闭", expected_state="off"),
             ServiceDef(
                 name="set_temperature",
                 description="设置温度",
@@ -142,8 +146,8 @@ def _register_domains():
         priority=PRIORITY_ESSENTIAL,
         description="窗帘/卷帘",
         services=[
-            ServiceDef(name="open_cover", description="打开", aliases=["open"]),
-            ServiceDef(name="close_cover", description="关闭", aliases=["close"]),
+            ServiceDef(name="open_cover", description="打开", aliases=["open"], expected_state="open"),
+            ServiceDef(name="close_cover", description="关闭", aliases=["close"], expected_state="closed"),
             ServiceDef(name="stop_cover", description="停止", aliases=["stop"]),
             ServiceDef(name="toggle", description="切换"),
             ServiceDef(
@@ -160,8 +164,13 @@ def _register_domains():
                     ServiceParam("tilt_position", "倾斜 (0-100)", required=True, param_type="number", min_value=0, max_value=100),
                 ]
             ),
+            ServiceDef(name="open_cover_tilt", description="打开倾斜/天窗叶片", aliases=["open_tilt"]),
+            ServiceDef(name="close_cover_tilt", description="关闭倾斜/天窗叶片", aliases=["close_tilt"]),
+            ServiceDef(name="stop_cover_tilt", description="停止倾斜/天窗叶片", aliases=["stop_tilt"]),
+            ServiceDef(name="toggle_tilt", description="切换倾斜/天窗叶片"),
         ],
-        device_classes=["awning", "blind", "curtain", "damper", "door", "garage", "gate", "shade", "shutter", "window"]
+        device_classes=["awning", "blind", "curtain", "damper", "door", "garage", "gate", "shade", "shutter", "window"],
+        action_services={"turn_on": "open_cover", "turn_off": "close_cover"}
     )
 
 
@@ -171,9 +180,9 @@ def _register_domains():
         priority=PRIORITY_COMMON,
         description="风扇",
         services=[
-            ServiceDef(name="turn_on", description="开启"),
-            ServiceDef(name="turn_off", description="关闭"),
-            ServiceDef(name="toggle", description="切换"),
+            ServiceDef(name="turn_on", description="开启", expected_state="on"),
+            ServiceDef(name="turn_off", description="关闭", expected_state="off"),
+            ServiceDef(name="toggle", description="切换", toggle_states=("on", "off")),
             ServiceDef(
                 name="set_percentage",
                 description="设置风速百分比",
@@ -200,11 +209,11 @@ def _register_domains():
         priority=PRIORITY_COMMON,
         description="媒体播放器",
         services=[
-            ServiceDef(name="turn_on", description="开启"),
-            ServiceDef(name="turn_off", description="关闭"),
-            ServiceDef(name="toggle", description="切换"),
-            ServiceDef(name="media_play", description="播放", aliases=["play"]),
-            ServiceDef(name="media_pause", description="暂停", aliases=["pause"]),
+            ServiceDef(name="turn_on", description="开启", expected_state="on"),
+            ServiceDef(name="turn_off", description="关闭", expected_state="off"),
+            ServiceDef(name="toggle", description="切换", toggle_states=("on", "off")),
+            ServiceDef(name="media_play", description="播放", aliases=["play"], expected_state="playing"),
+            ServiceDef(name="media_pause", description="暂停", aliases=["pause"], expected_state="paused"),
             ServiceDef(name="media_stop", description="停止", aliases=["stop"]),
             ServiceDef(name="media_next_track", description="下一曲", aliases=["next"]),
             ServiceDef(name="media_previous_track", description="上一曲", aliases=["previous"]),
@@ -230,7 +239,8 @@ def _register_domains():
                 ]
             ),
         ],
-        device_classes=["tv", "speaker", "receiver"]
+        device_classes=["tv", "speaker", "receiver"],
+        action_services={"turn_on": "media_play", "turn_off": "media_stop"}
     )
 
     DOMAIN_REGISTRY["lock"] = DomainDef(
@@ -239,10 +249,11 @@ def _register_domains():
         priority=PRIORITY_COMMON,
         description="门锁",
         services=[
-            ServiceDef(name="lock", description="上锁"),
-            ServiceDef(name="unlock", description="解锁"),
+            ServiceDef(name="lock", description="上锁", expected_state="locked"),
+            ServiceDef(name="unlock", description="解锁", expected_state="unlocked"),
             ServiceDef(name="open", description="打开（支持的锁）"),
-        ]
+        ],
+        action_services={"turn_on": "unlock", "turn_off": "lock"}
     )
 
     DOMAIN_REGISTRY["vacuum"] = DomainDef(
@@ -251,10 +262,10 @@ def _register_domains():
         priority=PRIORITY_COMMON,
         description="扫地机器人",
         services=[
-            ServiceDef(name="start", description="开始清扫"),
-            ServiceDef(name="stop", description="停止"),
-            ServiceDef(name="pause", description="暂停"),
-            ServiceDef(name="return_to_base", description="返回充电座", aliases=["return_home", "dock"]),
+            ServiceDef(name="start", description="开始清扫", expected_state="cleaning"),
+            ServiceDef(name="stop", description="停止", expected_state="idle"),
+            ServiceDef(name="pause", description="暂停", expected_state="paused"),
+            ServiceDef(name="return_to_base", description="返回充电座", aliases=["return_home", "dock"], expected_state="returning"),
             ServiceDef(name="locate", description="定位（发出声音）"),
             ServiceDef(
                 name="set_fan_speed",
@@ -271,7 +282,8 @@ def _register_domains():
                     ServiceParam("params", "参数", param_type="object"),
                 ]
             ),
-        ]
+        ],
+        action_services={"turn_on": "start", "turn_off": "return_to_base"}
     )
 
 
@@ -327,9 +339,9 @@ def _register_domains():
         priority=PRIORITY_EXTENDED,
         description="自动化",
         services=[
-            ServiceDef(name="turn_on", description="启用自动化"),
-            ServiceDef(name="turn_off", description="禁用自动化"),
-            ServiceDef(name="toggle", description="切换"),
+            ServiceDef(name="turn_on", description="启用自动化", expected_state="on"),
+            ServiceDef(name="turn_off", description="禁用自动化", expected_state="off"),
+            ServiceDef(name="toggle", description="切换", toggle_states=("on", "off")),
             ServiceDef(name="trigger", description="触发自动化", params=[
                 ServiceParam("skip_condition", "跳过条件检查", param_type="boolean", default=False),
             ]),
@@ -391,9 +403,9 @@ def _register_domains():
         priority=PRIORITY_EXTENDED,
         description="输入布尔值",
         services=[
-            ServiceDef(name="turn_on", description="设为开"),
-            ServiceDef(name="turn_off", description="设为关"),
-            ServiceDef(name="toggle", description="切换"),
+            ServiceDef(name="turn_on", description="设为开", expected_state="on"),
+            ServiceDef(name="turn_off", description="设为关", expected_state="off"),
+            ServiceDef(name="toggle", description="切换", toggle_states=("on", "off")),
         ]
     )
 
@@ -604,6 +616,204 @@ def _register_domains():
         ]
     )
 
+    DOMAIN_REGISTRY["valve"] = DomainDef(
+        domain="valve",
+        domain_type=TYPE_CONTROLLABLE,
+        priority=PRIORITY_COMMON,
+        description="阀门",
+        services=[
+            ServiceDef(name="open_valve", description="打开阀门", expected_state="open"),
+            ServiceDef(name="close_valve", description="关闭阀门", expected_state="closed"),
+            ServiceDef(name="stop_valve", description="停止"),
+            ServiceDef(name="set_valve_position", description="设置阀门位置", params=[
+                ServiceParam("position", "位置 (0-100)", required=True, param_type="number", min_value=0, max_value=100),
+            ]),
+        ],
+        device_classes=["water", "gas"],
+        action_services={"turn_on": "open_valve", "turn_off": "close_valve"}
+    )
+
+    DOMAIN_REGISTRY["siren"] = DomainDef(
+        domain="siren",
+        domain_type=TYPE_CONTROLLABLE,
+        priority=PRIORITY_SPECIALIZED,
+        description="警报器",
+        services=[
+            ServiceDef(name="turn_on", description="开启警报", expected_state="on", params=[
+                ServiceParam("tone", "警报音调", param_type="string"),
+                ServiceParam("volume_level", "音量 (0-1)", param_type="number", min_value=0, max_value=1),
+                ServiceParam("duration", "持续时间(秒)", param_type="number"),
+            ]),
+            ServiceDef(name="turn_off", description="关闭警报", expected_state="off"),
+            ServiceDef(name="toggle", description="切换", toggle_states=("on", "off")),
+        ]
+    )
+
+    DOMAIN_REGISTRY["lawn_mower"] = DomainDef(
+        domain="lawn_mower",
+        domain_type=TYPE_CONTROLLABLE,
+        priority=PRIORITY_SPECIALIZED,
+        description="割草机",
+        services=[
+            ServiceDef(name="start_mowing", description="开始割草", expected_state="mowing"),
+            ServiceDef(name="pause", description="暂停", expected_state="paused"),
+            ServiceDef(name="dock", description="返回基座", expected_state="docked"),
+        ],
+        action_services={"turn_on": "start_mowing", "turn_off": "dock"}
+    )
+
+    DOMAIN_REGISTRY["remote"] = DomainDef(
+        domain="remote",
+        domain_type=TYPE_CONTROLLABLE,
+        priority=PRIORITY_COMMON,
+        description="遥控器",
+        services=[
+            ServiceDef(name="turn_on", description="开启", expected_state="on"),
+            ServiceDef(name="turn_off", description="关闭", expected_state="off"),
+            ServiceDef(name="toggle", description="切换", toggle_states=("on", "off")),
+            ServiceDef(name="send_command", description="发送命令", params=[
+                ServiceParam("command", "命令", required=True, param_type="string"),
+                ServiceParam("device", "目标设备", param_type="string"),
+                ServiceParam("num_repeats", "重复次数", param_type="number"),
+                ServiceParam("delay_secs", "延迟(秒)", param_type="number"),
+            ]),
+        ]
+    )
+
+    DOMAIN_REGISTRY["update"] = DomainDef(
+        domain="update",
+        domain_type=TYPE_CONTROLLABLE,
+        priority=PRIORITY_EXTENDED,
+        description="更新实体",
+        services=[
+            ServiceDef(name="install", description="安装更新", params=[
+                ServiceParam("version", "版本号", param_type="string"),
+                ServiceParam("backup", "安装前备份", param_type="boolean", default=True),
+            ]),
+            ServiceDef(name="skip", description="跳过此版本"),
+            ServiceDef(name="clear_skipped", description="清除已跳过"),
+        ]
+    )
+
+    DOMAIN_REGISTRY["weather"] = DomainDef(
+        domain="weather",
+        domain_type=TYPE_READ_ONLY,
+        priority=PRIORITY_STANDARD,
+        description="天气",
+        services=[],
+    )
+
+    DOMAIN_REGISTRY["todo"] = DomainDef(
+        domain="todo",
+        domain_type=TYPE_CONTROLLABLE,
+        priority=PRIORITY_EXTENDED,
+        description="待办事项",
+        services=[
+            ServiceDef(name="add_item", description="添加待办", params=[
+                ServiceParam("item", "待办内容", required=True, param_type="string"),
+                ServiceParam("due_date", "截止日期", param_type="string"),
+                ServiceParam("description", "描述", param_type="string"),
+            ]),
+            ServiceDef(name="update_item", description="更新待办", params=[
+                ServiceParam("item", "待办内容", required=True, param_type="string"),
+                ServiceParam("rename", "新名称", param_type="string"),
+                ServiceParam("status", "状态", param_type="string", enum=["needs_action", "completed"]),
+            ]),
+            ServiceDef(name="remove_item", description="删除待办", params=[
+                ServiceParam("item", "待办内容", required=True, param_type="string"),
+            ]),
+            ServiceDef(name="get_items", description="获取列表", params=[
+                ServiceParam("status", "筛选状态", param_type="string", enum=["needs_action", "completed"]),
+            ]),
+        ]
+    )
+
+    DOMAIN_REGISTRY["calendar"] = DomainDef(
+        domain="calendar",
+        domain_type=TYPE_CONTROLLABLE,
+        priority=PRIORITY_EXTENDED,
+        description="日历",
+        services=[
+            ServiceDef(name="create_event", description="创建事件", params=[
+                ServiceParam("summary", "事件标题", required=True, param_type="string"),
+                ServiceParam("start_date_time", "开始时间", param_type="string"),
+                ServiceParam("end_date_time", "结束时间", param_type="string"),
+                ServiceParam("start_date", "开始日期(全天)", param_type="string"),
+                ServiceParam("end_date", "结束日期(全天)", param_type="string"),
+                ServiceParam("description", "描述", param_type="string"),
+                ServiceParam("location", "地点", param_type="string"),
+            ]),
+            ServiceDef(name="get_events", description="获取事件", params=[
+                ServiceParam("start_date_time", "开始时间", param_type="string"),
+                ServiceParam("end_date_time", "结束时间", param_type="string"),
+            ]),
+        ]
+    )
+
+    DOMAIN_REGISTRY["text"] = DomainDef(
+        domain="text",
+        domain_type=TYPE_CONTROLLABLE,
+        priority=PRIORITY_EXTENDED,
+        description="文本实体",
+        services=[
+            ServiceDef(name="set_value", description="设置文本", params=[
+                ServiceParam("value", "文本", required=True, param_type="string"),
+            ]),
+        ]
+    )
+
+    DOMAIN_REGISTRY["datetime"] = DomainDef(
+        domain="datetime",
+        domain_type=TYPE_CONTROLLABLE,
+        priority=PRIORITY_EXTENDED,
+        description="日期时间实体",
+        services=[
+            ServiceDef(name="set_value", description="设置值", params=[
+                ServiceParam("datetime", "日期时间", required=True, param_type="string"),
+            ]),
+        ]
+    )
+
+    DOMAIN_REGISTRY["date"] = DomainDef(
+        domain="date",
+        domain_type=TYPE_CONTROLLABLE,
+        priority=PRIORITY_EXTENDED,
+        description="日期实体",
+        services=[
+            ServiceDef(name="set_value", description="设置日期", params=[
+                ServiceParam("date", "日期", required=True, param_type="string"),
+            ]),
+        ]
+    )
+
+    DOMAIN_REGISTRY["time"] = DomainDef(
+        domain="time",
+        domain_type=TYPE_CONTROLLABLE,
+        priority=PRIORITY_EXTENDED,
+        description="时间实体",
+        services=[
+            ServiceDef(name="set_value", description="设置时间", params=[
+                ServiceParam("time", "时间", required=True, param_type="string"),
+            ]),
+        ]
+    )
+
+    DOMAIN_REGISTRY["image"] = DomainDef(
+        domain="image",
+        domain_type=TYPE_READ_ONLY,
+        priority=PRIORITY_SPECIALIZED,
+        description="图像实体",
+        services=[],
+    )
+
+    DOMAIN_REGISTRY["event"] = DomainDef(
+        domain="event",
+        domain_type=TYPE_READ_ONLY,
+        priority=PRIORITY_EXTENDED,
+        description="事件实体",
+        services=[],
+    )
+
 
 _register_domains()
 
@@ -624,6 +834,451 @@ def get_service(domain: str, service: str) -> Optional[ServiceDef]:
         if svc.name == service or service in svc.aliases:
             return svc
     return None
+
+
+def get_expected_state(domain: str, service: str, before_state: str | None = None) -> str | None:
+    service_def = get_service(domain, service)
+    if service_def is None:
+        return None
+    if service_def.expected_state is not None:
+        return service_def.expected_state
+    if service_def.toggle_states is not None:
+        first, second = service_def.toggle_states
+        if before_state == first:
+            return second
+        if before_state == second:
+            return first
+    return None
+
+
+def get_action_service(domain: str, action: str) -> str:
+    domain_def = DOMAIN_REGISTRY.get(domain)
+    if domain_def is None:
+        return action
+    return domain_def.action_services.get(action, action)
+
+
+_COLOR_ZH_TO_EN: Dict[str, str] = {
+    "白": "white", "白色": "white", "暖白": "warm_white", "冷白": "cold_white",
+    "红": "red", "红色": "red", "绿": "green", "绿色": "green",
+    "蓝": "blue", "蓝色": "blue", "黄": "yellow", "黄色": "yellow",
+    "紫": "purple", "紫色": "purple", "粉": "pink", "粉色": "pink",
+    "橙": "orange", "橙色": "orange", "青": "cyan", "青色": "cyan",
+    "品红": "magenta", "洋红": "magenta",
+    "金": "gold", "金色": "gold", "银": "silver", "银色": "silver",
+    "棕": "brown", "棕色": "brown", "灰": "gray", "灰色": "gray",
+    "米": "wheat", "米色": "wheat", "米白": "linen",
+    "天蓝": "skyblue", "深蓝": "navy", "浅蓝": "lightblue",
+    "深红": "darkred", "浅红": "lightcoral", "玫红": "hotpink",
+    "深绿": "darkgreen", "浅绿": "lightgreen", "草绿": "lawngreen",
+    "淡黄": "lightyellow", "深黄": "goldenrod",
+    "珊瑚": "coral", "珊瑚色": "coral",
+    "象牙": "ivory", "象牙白": "ivory",
+    "薰衣草": "lavender", "薰衣草色": "lavender",
+    "桃": "peachpuff", "桃色": "peachpuff",
+    "酒红": "maroon", "酒红色": "maroon",
+    "翠绿": "springgreen", "荧光绿": "chartreuse",
+    "靛": "indigo", "靛色": "indigo", "靛蓝": "indigo",
+}
+
+_COLOR_NAME_TO_TEMP: Dict[str, int] = {
+    "white": 4000, "warm_white": 3000, "cold_white": 6000,
+    "daylight": 5500, "warm": 2700, "cool": 6500,
+    "natural": 4500, "neutral": 4000,
+    "candlelight": 2200, "candle": 2200,
+    "moonlight": 4100, "moon": 4100,
+    "sunrise": 2700, "sunset": 2500,
+    "reading": 5000,
+}
+
+_COLOR_NAME_TO_RGB: Dict[str, List[int]] = {
+    "gold": [255, 215, 0], "silver": [192, 192, 192],
+    "brown": [139, 69, 19], "gray": [128, 128, 128], "grey": [128, 128, 128],
+    "wheat": [245, 222, 179], "linen": [250, 240, 230],
+    "skyblue": [135, 206, 235], "navy": [0, 0, 128], "lightblue": [173, 216, 230],
+    "darkred": [139, 0, 0], "lightcoral": [240, 128, 128], "hotpink": [255, 105, 180],
+    "darkgreen": [0, 100, 0], "lightgreen": [144, 238, 144], "lawngreen": [124, 252, 0],
+    "lightyellow": [255, 255, 224], "goldenrod": [218, 165, 32],
+    "coral": [255, 127, 80], "ivory": [255, 255, 240],
+    "lavender": [230, 230, 250], "peachpuff": [255, 218, 185],
+    "maroon": [128, 0, 0], "springgreen": [0, 255, 127],
+    "chartreuse": [127, 255, 0], "indigo": [75, 0, 130],
+}
+
+_KEY_ALIASES: Dict[str, Dict[str, str]] = {
+    "light": {
+        "color": "color_name", "colour": "color_name", "颜色": "color_name",
+        "亮度": "brightness_pct", "明暗": "brightness_pct",
+        "色温": "color_temp_kelvin", "色调": "hs_color",
+        "过渡": "transition", "效果": "effect",
+        "brightness_percent": "brightness_pct",
+        "temp": "color_temp_kelvin", "kelvin": "color_temp_kelvin",
+        "rgb": "rgb_color", "hs": "hs_color",
+    },
+    "climate": {
+        "温度": "temperature", "目标温度": "temperature",
+        "模式": "hvac_mode", "风速": "fan_mode",
+        "temp": "temperature", "mode": "hvac_mode",
+        "湿度": "humidity", "target_humidity": "humidity",
+        "预设": "preset_mode", "preset": "preset_mode",
+        "摆风": "swing_mode", "swing": "swing_mode",
+    },
+    "fan": {
+        "速度": "percentage", "风速": "percentage",
+        "speed": "percentage", "percent": "percentage",
+        "preset": "preset_mode", "模式": "preset_mode",
+        "方向": "direction", "direction": "direction",
+        "摇头": "oscillating", "oscillate": "oscillating",
+    },
+    "cover": {
+        "位置": "position", "pos": "position",
+        "倾斜": "tilt_position", "tilt": "tilt_position",
+    },
+    "media_player": {
+        "音量": "volume_level", "volume": "volume_level",
+        "源": "source", "source": "source", "输入源": "source",
+        "频道": "media_content_id", "channel": "media_content_id",
+    },
+    "humidifier": {
+        "湿度": "humidity", "目标湿度": "humidity",
+        "模式": "mode", "mode": "mode",
+    },
+    "vacuum": {
+        "吸力": "fan_speed", "档位": "fan_speed", "speed": "fan_speed",
+        "命令": "command", "cmd": "command",
+    },
+    "alarm_control_panel": {
+        "密码": "code", "pin": "code", "password": "code",
+    },
+    "water_heater": {
+        "温度": "temperature", "temp": "temperature",
+        "模式": "operation_mode", "mode": "operation_mode",
+    },
+    "siren": {
+        "音量": "volume_level", "volume": "volume_level",
+        "音调": "tone", "声音": "tone",
+        "时长": "duration", "持续": "duration",
+    },
+    "timer": {
+        "时长": "duration", "时间": "duration",
+    },
+    "todo": {
+        "内容": "item", "任务": "item", "task": "item",
+        "截止": "due_date", "due": "due_date",
+    },
+    "calendar": {
+        "标题": "summary", "title": "summary",
+        "开始": "start_date_time", "start": "start_date_time",
+        "结束": "end_date_time", "end": "end_date_time",
+        "地点": "location", "place": "location",
+    },
+    "remote": {
+        "命令": "command", "cmd": "command",
+        "设备": "device", "次数": "num_repeats",
+    },
+    "valve": {
+        "位置": "position", "pos": "position",
+    },
+}
+
+_CLIMATE_MODE_ZH: Dict[str, str] = {
+    "制冷": "cool", "冷气": "cool", "冷": "cool", "降温": "cool",
+    "制热": "heat", "暖气": "heat", "热": "heat", "加热": "heat", "升温": "heat",
+    "自动": "auto", "智能": "auto",
+    "除湿": "dry", "抽湿": "dry", "干燥": "dry",
+    "送风": "fan_only", "通风": "fan_only", "风扇": "fan_only",
+    "关闭": "off", "关": "off", "停": "off",
+    "节能": "eco", "省电": "eco",
+    "舒适": "comfort", "睡眠": "sleep",
+}
+
+_FAN_MODE_ZH: Dict[str, str] = {
+    "低": "low", "低速": "low", "小": "low", "弱": "low", "微风": "low",
+    "中": "medium", "中速": "medium", "中等": "medium",
+    "高": "high", "高速": "high", "大": "high", "强": "high", "强风": "high",
+    "自动": "auto", "智能": "auto",
+    "静音": "silent", "安静": "silent",
+    "强力": "turbo", "最大": "turbo",
+}
+
+_SERVICE_ALIAS_ZH: Dict[str, List[str]] = {
+    "turn_on": ["打开", "开", "开启", "启动", "亮", "开灯", "启用", "激活"],
+    "turn_off": ["关闭", "关", "关掉", "熄灭", "灭", "关灯", "停止", "禁用"],
+    "toggle": ["切换", "反转", "翻转"],
+    "start": ["启动", "开始", "运行", "清扫", "开始清扫"],
+    "stop": ["停止", "停", "暂停"],
+    "pause": ["暂停", "休息"],
+    "return_to_base": ["回充", "回家", "返回", "回去", "返回基座", "回充电座"],
+    "lock": ["锁", "上锁", "锁门", "锁上"],
+    "unlock": ["解锁", "开锁", "开门"],
+    "open_cover": ["打开", "开", "升起", "拉开"],
+    "close_cover": ["关闭", "关", "放下", "拉上", "合上"],
+    "set_temperature": ["设温", "调温", "温度设为", "温度调到"],
+    "set_hvac_mode": ["模式", "切换模式", "设置模式"],
+    "set_fan_speed": ["风速", "调风", "吸力"],
+    "locate": ["定位", "找", "响铃", "发声"],
+    "set_volume_level": ["音量", "调音量", "声音"],
+    "media_play": ["播放", "继续播放", "继续"],
+    "media_pause": ["暂停", "暂停播放"],
+    "media_next_track": ["下一首", "下一曲", "下一个"],
+    "media_previous_track": ["上一首", "上一曲", "上一个"],
+    "press": ["按", "按下", "点击", "触发"],
+    "alarm_disarm": ["撤防", "解除警报", "关闭警报"],
+    "alarm_arm_home": ["在家布防", "家庭布防"],
+    "alarm_arm_away": ["离家布防", "外出布防"],
+    "alarm_arm_night": ["夜间布防", "晚上布防", "睡眠布防"],
+    "alarm_trigger": ["触发警报", "拉响警报"],
+    "open_valve": ["打开阀门", "开阀"],
+    "close_valve": ["关闭阀门", "关阀"],
+    "start_mowing": ["割草", "开始割草", "除草"],
+    "dock": ["回充", "返回基座", "回家"],
+    "install": ["安装", "更新", "升级"],
+    "add_item": ["添加", "新增", "加"],
+    "remove_item": ["删除", "移除", "去掉"],
+    "create_event": ["创建事件", "新建事件", "添加日程"],
+    "send_command": ["发送命令", "调用", "控制"],
+    "enable_motion_detection": ["开启侦测", "启用移动侦测"],
+    "disable_motion_detection": ["关闭侦测", "禁用移动侦测"],
+    "snapshot": ["拍照", "截图", "抓拍"],
+    "record": ["录像", "录制", "开始录像"],
+    "set_value": ["设置", "设为", "调为"],
+    "increment": ["增加", "加1", "+1"],
+    "decrement": ["减少", "减1", "-1"],
+    "reset": ["重置", "清零"],
+    "select_option": ["选择", "选"],
+    "select_next": ["下一个"],
+    "select_previous": ["上一个"],
+    "reload": ["重新加载", "刷新"],
+    "trigger": ["触发", "执行"],
+    "oscillate": ["摆头", "摇头", "转头"],
+    "set_percentage": ["设置风速", "调风速"],
+    "volume_set": ["设置音量", "调音量"],
+    "volume_up": ["音量+", "加大音量", "声音大一点"],
+    "volume_down": ["音量-", "减小音量", "声音小一点"],
+    "volume_mute": ["静音", "消音"],
+    "set_temperature": ["设置温度", "调温", "温度设为"],
+    "set_humidity": ["设置湿度", "调湿", "湿度设为"],
+    "set_hvac_mode": ["设置模式", "切换模式", "模式"],
+    "set_fan_mode": ["设置风速", "调风速", "风速"],
+    "set_fan_speed": ["设置吸力", "调吸力", "吸力"],
+    "play_media": ["播放媒体", "播放音乐", "放歌"],
+}
+
+import re as _re
+
+_NUM_RE = _re.compile(r"^[+-]?\d+(?:\.\d+)?")
+_PCT_RE = _re.compile(r"^(\d+(?:\.\d+)?)\s*[%％]$")
+_TEMP_RE = _re.compile(r"^(\d+(?:\.\d+)?)\s*[度℃°]?[cCfF]?$")
+
+
+def _parse_number(value: Any) -> Optional[float]:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        m = _NUM_RE.match(value.strip())
+        if m:
+            return float(m.group())
+    return None
+
+
+def _parse_pct(value: Any) -> Optional[float]:
+    if isinstance(value, str):
+        m = _PCT_RE.match(value.strip())
+        if m:
+            return float(m.group(1))
+    return None
+
+
+def _is_rgb_list(value: Any) -> bool:
+    if isinstance(value, (list, tuple)) and len(value) == 3:
+        return all(isinstance(v, (int, float)) and 0 <= v <= 255 for v in value)
+    return False
+
+
+def _is_hs_list(value: Any) -> bool:
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return all(isinstance(v, (int, float)) for v in value)
+    return False
+
+
+_DOMAIN_DEFAULT_SERVICE: Dict[str, str] = {
+    "light": "turn_on", "switch": "turn_on", "fan": "turn_on",
+    "climate": "turn_on", "humidifier": "turn_on", "water_heater": "turn_on",
+    "media_player": "media_play", "remote": "turn_on", "siren": "turn_on",
+    "vacuum": "start", "lawn_mower": "start_mowing",
+    "cover": "open_cover", "valve": "open_valve",
+    "lock": "unlock", "button": "press", "scene": "turn_on",
+    "automation": "trigger", "script": "turn_on",
+    "timer": "start", "counter": "increment",
+    "todo": "add_item", "calendar": "create_event",
+    "input_boolean": "turn_on", "input_number": "set_value",
+    "input_select": "select_option", "input_text": "set_value",
+    "number": "set_value", "select": "select_option", "text": "set_value",
+    "update": "install",
+}
+
+
+def fuzzy_resolve_service(domain: str, user_text: str) -> Optional[str]:
+    text = user_text.strip().lower()
+    domain_def = DOMAIN_REGISTRY.get(domain)
+    if domain_def is None:
+        return None
+    available = {s.name for s in domain_def.services}
+    if text in available:
+        return text
+    for svc_name, aliases in _SERVICE_ALIAS_ZH.items():
+        real = domain_def.action_services.get(svc_name, svc_name)
+        if real in available:
+            for alias in aliases:
+                if alias in text or text in alias:
+                    return real
+    for svc in domain_def.services:
+        if svc.name in text:
+            return svc.name
+        for a in svc.aliases:
+            if a in text:
+                return svc.name
+        if svc.description and svc.description in text:
+            return svc.name
+    default = _DOMAIN_DEFAULT_SERVICE.get(domain)
+    if default and default in available:
+        return default
+    return domain_def.services[0].name if domain_def.services else None
+
+
+def normalize_service_data(domain: str, service: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(data, dict):
+        data = {}
+    aliases = _KEY_ALIASES.get(domain, {})
+    normalized: Dict[str, Any] = {}
+    for key, value in data.items():
+        k = str(key).strip() if isinstance(key, str) else key
+        canonical_key = aliases.get(k, k)
+        normalized[canonical_key] = value
+
+    if domain == "light" and service in ("turn_on", "toggle"):
+        color_val = normalized.get("color_name")
+        if isinstance(color_val, str):
+            color_lower = color_val.strip().lower()
+            en = _COLOR_ZH_TO_EN.get(color_lower, color_lower)
+            if en in _COLOR_NAME_TO_TEMP:
+                normalized.pop("color_name", None)
+                normalized.setdefault("color_temp_kelvin", _COLOR_NAME_TO_TEMP[en])
+            elif en in _COLOR_NAME_TO_RGB:
+                normalized.pop("color_name", None)
+                normalized.setdefault("rgb_color", _COLOR_NAME_TO_RGB[en])
+            else:
+                normalized["color_name"] = en
+        elif _is_rgb_list(color_val):
+            normalized.pop("color_name", None)
+            normalized.setdefault("rgb_color", list(color_val))
+
+        for k in ("color_temp_kelvin", "color_temp"):
+            v = normalized.get(k)
+            if isinstance(v, str):
+                n = _parse_number(v)
+                if n is not None:
+                    normalized[k] = int(n)
+
+        rgb_val = normalized.get("rgb_color")
+        if isinstance(rgb_val, str):
+            parts = _re.findall(r"\d+", rgb_val)
+            if len(parts) == 3:
+                normalized["rgb_color"] = [int(x) for x in parts]
+
+        if "brightness_pct" in normalized and "brightness" not in normalized:
+            pct_raw = normalized.pop("brightness_pct")
+            pct = _parse_pct(pct_raw) if isinstance(pct_raw, str) else _parse_number(pct_raw)
+            if pct is not None:
+                normalized["brightness"] = max(0, min(255, int(float(pct) * 255 / 100)))
+        elif "brightness" in normalized:
+            b = normalized["brightness"]
+            if isinstance(b, str):
+                pct = _parse_pct(b)
+                if pct is not None:
+                    normalized["brightness"] = max(0, min(255, int(pct * 255 / 100)))
+                else:
+                    n = _parse_number(b)
+                    if n is not None:
+                        if n <= 1.0:
+                            normalized["brightness"] = max(0, min(255, int(n * 255)))
+                        elif n <= 100:
+                            normalized["brightness"] = max(0, min(255, int(n * 255 / 100)))
+                        else:
+                            normalized["brightness"] = max(0, min(255, int(n)))
+
+        if "transition" in normalized:
+            t = normalized["transition"]
+            n = _parse_number(t)
+            if n is not None:
+                normalized["transition"] = n
+
+    if domain == "climate":
+        for mode_key in ("hvac_mode", "preset_mode"):
+            v = normalized.get(mode_key)
+            if isinstance(v, str):
+                mapped = _CLIMATE_MODE_ZH.get(v.strip(), v.strip().lower())
+                normalized[mode_key] = mapped
+        v = normalized.get("fan_mode")
+        if isinstance(v, str):
+            mapped = _FAN_MODE_ZH.get(v.strip(), v.strip().lower())
+            normalized["fan_mode"] = mapped
+        for temp_key in ("temperature", "target_temp_high", "target_temp_low"):
+            v = normalized.get(temp_key)
+            if isinstance(v, str):
+                n = _parse_number(v)
+                if n is not None:
+                    normalized[temp_key] = n
+
+    if domain == "fan":
+        v = normalized.get("percentage")
+        if isinstance(v, str):
+            pct = _parse_pct(v)
+            if pct is not None:
+                normalized["percentage"] = int(pct)
+            else:
+                n = _parse_number(v)
+                if n is not None:
+                    normalized["percentage"] = int(n) if n > 1 else int(n * 100)
+        v = normalized.get("preset_mode")
+        if isinstance(v, str):
+            mapped = _FAN_MODE_ZH.get(v.strip(), v.strip().lower())
+            normalized["preset_mode"] = mapped
+        v = normalized.get("oscillating")
+        if isinstance(v, str):
+            normalized["oscillating"] = v.strip().lower() in ("true", "1", "on", "是", "开")
+
+    if domain == "cover":
+        for pk in ("position", "tilt_position"):
+            v = normalized.get(pk)
+            if isinstance(v, str):
+                pct = _parse_pct(v)
+                if pct is not None:
+                    normalized[pk] = int(pct)
+                else:
+                    n = _parse_number(v)
+                    if n is not None:
+                        normalized[pk] = max(0, min(100, int(n)))
+
+    if domain == "media_player":
+        v = normalized.get("volume_level")
+        if v is not None:
+            n = _parse_number(v)
+            if n is not None:
+                normalized["volume_level"] = n / 100.0 if n > 1.0 else n
+
+    if domain == "humidifier":
+        v = normalized.get("humidity")
+        if v is not None:
+            n = _parse_number(v)
+            if n is not None:
+                normalized["humidity"] = int(n)
+        v = normalized.get("mode")
+        if isinstance(v, str):
+            mapped = _CLIMATE_MODE_ZH.get(v.strip(), v.strip().lower())
+            normalized["mode"] = mapped
+
+    return normalized
 
 
 def validate_service_call(domain: str, service: str, data: Dict[str, Any] = None) -> Dict[str, Any]:
