@@ -108,6 +108,112 @@ async def _verify_generated_service_file(
 _TARGET_PARAMS = ("entity_id", "device_id", "area_id", "floor_id", "label_id")
 
 
+def _as_entity_id_list(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(item) for item in value if isinstance(item, str) and item]
+    return []
+
+
+def _extract_entity_ids(service_data: dict, target: dict | None = None) -> list[str]:
+    entity_ids = _as_entity_id_list(service_data.get("entity_id"))
+    if target:
+        entity_ids.extend(_as_entity_id_list(target.get("entity_id")))
+    return list(dict.fromkeys(entity_ids))
+
+
+_COVER_FEATURE_OPEN = 1
+_COVER_FEATURE_CLOSE = 2
+_COVER_FEATURE_SET_POSITION = 4
+_COVER_FEATURE_STOP = 8
+_COVER_FEATURE_OPEN_TILT = 16
+_COVER_FEATURE_CLOSE_TILT = 32
+_COVER_FEATURE_STOP_TILT = 64
+_COVER_FEATURE_SET_TILT_POSITION = 128
+
+
+def _cover_supported_features(hass: HomeAssistant, entity_id: str) -> int:
+    state = hass.states.get(entity_id)
+    if state is None:
+        return 0
+    try:
+        return int(state.attributes.get("supported_features", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _resolve_cover_service_for_features(
+    hass: HomeAssistant,
+    service: str,
+    service_data: dict,
+    target: dict | None = None,
+) -> tuple[str, dict]:
+    entity_ids = _extract_entity_ids(service_data, target)
+    if len(entity_ids) != 1:
+        return service, service_data
+    features = _cover_supported_features(hass, entity_ids[0])
+    if not features:
+        return service, service_data
+    if service == "open_cover" and not features & _COVER_FEATURE_OPEN and features & _COVER_FEATURE_OPEN_TILT:
+        return "open_cover_tilt", service_data
+    if service == "close_cover" and not features & _COVER_FEATURE_CLOSE and features & _COVER_FEATURE_CLOSE_TILT:
+        return "close_cover_tilt", service_data
+    if service == "stop_cover" and not features & _COVER_FEATURE_STOP and features & _COVER_FEATURE_STOP_TILT:
+        return "stop_cover_tilt", service_data
+    if service == "set_cover_position" and not features & _COVER_FEATURE_SET_POSITION and features & _COVER_FEATURE_SET_TILT_POSITION:
+        updated = dict(service_data)
+        if "position" in updated and "tilt_position" not in updated:
+            updated["tilt_position"] = updated.pop("position")
+        return "set_cover_tilt_position", updated
+    if service == "toggle" and not features & (_COVER_FEATURE_OPEN | _COVER_FEATURE_CLOSE) and features & (_COVER_FEATURE_OPEN_TILT | _COVER_FEATURE_CLOSE_TILT):
+        return "toggle_tilt", service_data
+    return service, service_data
+
+
+def _expected_state_for_service(domain: str, service: str, before: str | None) -> str | None:
+    from ..domain_registry import get_expected_state
+    return get_expected_state(domain, service, before)
+
+
+async def _verify_entity_control_state(
+    hass: HomeAssistant,
+    entity_ids: list[str],
+    service: str | dict[str, str],
+    before: dict[str, str | None],
+) -> dict[str, object]:
+    if not entity_ids:
+        return {"verified": True, "skipped": True}
+
+    deadline = time.monotonic() + 2.0
+    details: list[dict[str, object]] = []
+    while time.monotonic() < deadline:
+        details = []
+        all_verified = True
+        for entity_id in entity_ids:
+            domain = entity_id.split(".", 1)[0]
+            state_obj = hass.states.get(entity_id)
+            after = state_obj.state if state_obj else None
+            entity_service = service.get(entity_id, "") if isinstance(service, dict) else service
+            expected = _expected_state_for_service(domain, entity_service, before.get(entity_id))
+            verified = True if expected is None else after == expected
+            if not verified:
+                all_verified = False
+            details.append(
+                {
+                    "entity_id": entity_id,
+                    "before": before.get(entity_id),
+                    "after": after,
+                    "expected": expected,
+                    "verified": verified,
+                }
+            )
+        if all_verified:
+            return {"verified": True, "entities": details}
+        await asyncio.sleep(0.2)
+    return {"verified": False, "entities": details}
+
+
 def _extract_discovered_entity_id(results: list[object]) -> str | None:
 
     for item in results:
@@ -171,7 +277,13 @@ def _build_missing_target_response(
         else {}
     )
     available_entities = tool._get_exposed_entities_list(domain, exposed_entities)[:10]
-    return {
+    from ..domain_registry import get_service as _get_svc
+    svc_def = _get_svc(domain, service)
+    param_hints = (
+        [{"name": p.name, "desc": p.description, "type": p.param_type} for p in svc_def.params]
+        if svc_def and svc_def.params else []
+    )
+    resp: dict[str, object] = {
         "success": False,
         "error": f"Service call requires at least one of: {', '.join(_TARGET_PARAMS)}",
         "retryable": True,
@@ -181,21 +293,13 @@ def _build_missing_target_response(
         "data": data,
         "available_entities": available_entities,
         "recovery_hint": (
-            "Resolve a concrete target entity first, then call the same service again."
+            "Resolve a concrete target entity first, then call the same service again. "
+            "Include ALL user-mentioned attributes in data (natural language accepted)."
         ),
-        "suggested_next_tools": [
-            {
-                "tool": "SmartDiscovery",
-                "args": {"domain": domain, "limit": 10},
-                "reason": "Find candidate entity IDs for this service domain.",
-            },
-            {
-                "tool": "GetLiveContext",
-                "args": {"domain": domain, "limit": 20},
-                "reason": "Inspect available exposed entities and their current states.",
-            },
-        ],
     }
+    if param_hints:
+        resp["available_params"] = param_hints
+    return resp
 
 
 class GetSystemIndexTool(llm.Tool):
@@ -901,20 +1005,28 @@ class EntityQueryTool(llm.Tool):
 
 class ServiceCallTool(llm.Tool):
     name = "ServiceCall"
-    description = """Call a registered Home Assistant service. Params: domain, service, data (dict).
-PREFER native intent tools (HassLightSet, HassTurnOn/Off, HassVacuumStart, HassClimateSetTemperature, HassMediaPause, etc.) for device control — they handle entity matching and error reporting better. Only use ServiceCall when no matching intent tool exists.
-Good for: calendar events, todo items, triggering automations/scripts, notifications, input helpers, timers, and any service not covered by intent tools.
-Do NOT use for: creating automations (use HAControl), installing integrations (use ConfigEntries), managing HACS (use HACS tool), editing YAML config (use ConfigFile), creating helpers (use HelperManager).
-Use ListServices to discover available services, ServiceHelp for parameter details.
-DISCIPLINE: 1) Only call the service the user asked for — no extra "helpful" calls. 2) Minimum data payload — only include params needed for the request. 3) If the target entity is ambiguous, ask before calling. 4) After calling, check the response; if it failed, diagnose before retrying.
-CAMERA RECORD: ServiceCall(domain="camera", service="record", data={"entity_id": ..., "filename": ..., "duration": <seconds>}). `duration` MUST be parsed from the user's request (any language, any phrasing → seconds). Never use a silent default. If the user gave no duration, ask first."""
+    description = """Call any Home Assistant service. Params: domain, service, data (dict), or flat service fields.
+RULES:
+1. entity_id MUST be provided. User device names are fuzzy-matched automatically.
+2. Put service parameters as real fields, not boolean words. Correct: color_name="white"; wrong: white=true.
+3. Service names are auto-routed per domain (e.g. vacuum turn_on→start, cover turn_on→open_cover).
+4. Common parameter styles:
+   light.turn_on: brightness(0-255), brightness_pct(0-100), color_name(str), rgb_color([r,g,b]), color_temp_kelvin(number)
+   climate.set_temperature: temperature(number), hvac_mode(cool/heat/auto/dry/fan_only/off)
+   fan.set_percentage: percentage(0-100); media_player.volume_set: volume_level(0-1)
+   cover.set_cover_position / valve.set_valve_position: position(0-100)
+5. Never omit parameters the user mentioned. Never add parameters the user didn't mention.
+Use ListServices/ServiceHelp to discover available services and parameters."""
     parameters = vol.Schema(
         {
             vol.Required("domain"): str,
             vol.Required("service"): str,
             vol.Optional("data", default={}): dict,
-        }
+        },
+        extra=vol.ALLOW_EXTRA,
     )
+
+    _RESERVED_KEYS = frozenset({"domain", "service", "data"})
 
     async def async_call(
         self, hass: HomeAssistant, tool_input: llm.ToolInput, llm_context: llm.LLMContext
@@ -922,6 +1034,14 @@ CAMERA RECORD: ServiceCall(domain="camera", service="record", data={"entity_id":
         domain = tool_input.tool_args.get("domain", "")
         service = tool_input.tool_args.get("service", "")
         data = tool_input.tool_args.get("data", {})
+        overflow = {
+            k: v for k, v in tool_input.tool_args.items()
+            if k not in self._RESERVED_KEYS
+        }
+        if overflow:
+            if not isinstance(data, dict):
+                data = {}
+            data = {**overflow, **data}
 
         if isinstance(data, str):
             try:
@@ -943,6 +1063,40 @@ CAMERA RECORD: ServiceCall(domain="camera", service="record", data={"entity_id":
             if isinstance(k, str):
                 sanitized[k] = v
         data = sanitized
+        from ..domain_registry import normalize_service_data, get_action_service, fuzzy_resolve_service
+        service = get_action_service(domain, service)
+        ha_services = hass.services.async_services_for_domain(domain) if domain else {}
+        if service not in ha_services:
+            resolved = fuzzy_resolve_service(domain, service)
+            if resolved and resolved in ha_services:
+                service = resolved
+        if domain == "light" and service in {"turn_on", "toggle"}:
+            bad_color_keys = [
+                key for key, value in data.items()
+                if isinstance(key, str)
+                and isinstance(value, bool)
+                and value
+                and key.strip().lower() in {
+                    "white", "red", "green", "blue", "yellow", "purple",
+                    "pink", "orange", "cyan", "magenta", "warm_white",
+                    "cold_white", "warm", "cool",
+                }
+            ]
+            if bad_color_keys:
+                return {
+                    "success": False,
+                    "error": "Invalid light color parameter shape",
+                    "retryable": True,
+                    "domain": domain,
+                    "service": service,
+                    "bad_data": data,
+                    "required_shape": {
+                        "entity_id": "light.xxx",
+                        "color_name": bad_color_keys[0],
+                    },
+                    "hint": "Do not send color words as boolean keys. Put the color value in color_name, rgb_color, or color_temp_kelvin.",
+                }
+        data = normalize_service_data(domain, service, data)
         data = await _async_normalize_camera_service_paths(hass, domain, service, data)
 
         if domain == "camera" and service in {"turn_on", "turn_off"}:
@@ -1023,6 +1177,20 @@ CAMERA RECORD: ServiceCall(domain="camera", service="record", data={"entity_id":
                         "available_entities": exposed[:10],
                     }
 
+        if domain == "cover":
+            service, service_data = _resolve_cover_service_for_features(
+                hass,
+                service,
+                service_data,
+                target,
+            )
+
+        verify_entity_ids = _extract_entity_ids(service_data, target)
+        before_states = {
+            entity_id: (state.state if (state := hass.states.get(entity_id)) else None)
+            for entity_id in verify_entity_ids
+        }
+
         try:
             await hass.services.async_call(
                 domain,
@@ -1055,6 +1223,18 @@ CAMERA RECORD: ServiceCall(domain="camera", service="record", data={"entity_id":
                         response["success"] = False
                         response["error"] = f"{domain}.{service} did not produce a verified output file"
                         response["message"] = f"Called {domain}.{service}, but output verification failed"
+            if verify_entity_ids:
+                verification = await _verify_entity_control_state(
+                    hass,
+                    verify_entity_ids,
+                    service,
+                    before_states,
+                )
+                response["verification"] = verification
+                if not bool(verification.get("verified")):
+                    response["success"] = False
+                    response["error"] = f"{domain}.{service} did not verify target state change"
+                    response["message"] = f"Called {domain}.{service}, but state verification failed"
             return response
         except Exception as err:
             _LOGGER.error("ServiceCall failed: %s.%s - %s", domain, service, err)
@@ -1888,12 +2068,16 @@ class AreaDevicesTool(llm.Tool):
 
 class BatchControlTool(llm.Tool):
     name = "BatchControl"
-    description = "Control multiple devices in one batch."
+    description = "Control multiple devices in one batch. Use entity_ids when known. Otherwise use discovery filters domain/area/state/name_contains. Domain-aware actions are normalized internally: for vacuum, turn_on means start cleaning and turn_off means return to base; for cover, turn_on/open means open and turn_off means close; for lock, turn_on means unlock and turn_off means lock. For 'turn off all lights', use domain='light', state='on', action='turn_off'. For 'open/start all vacuums', use domain='vacuum', action='turn_on'. Do not ask the user to list entities when domain/filter is enough."
     parameters = vol.Schema(
         {
-            vol.Required("entity_ids"): list,
+            vol.Optional("entity_ids", default=[]): list,
             vol.Required("action"): vol.In(["turn_on", "turn_off", "toggle"]),
             vol.Optional("data", default={}): dict,
+            vol.Optional("domain", default=""): str,
+            vol.Optional("area", default=""): str,
+            vol.Optional("state", default=""): str,
+            vol.Optional("name_contains", default=""): str,
         }
     )
 
@@ -1903,22 +2087,107 @@ class BatchControlTool(llm.Tool):
         entity_ids = tool_input.tool_args.get("entity_ids", [])
         action = tool_input.tool_args.get("action", "turn_on")
         data = tool_input.tool_args.get("data", {})
+        entity_ids = [str(entity_id) for entity_id in entity_ids if isinstance(entity_id, str)]
+        if not entity_ids:
+            domain = str(tool_input.tool_args.get("domain", "") or "").strip()
+            area = str(tool_input.tool_args.get("area", "") or "").strip()
+            state = str(tool_input.tool_args.get("state", "") or "").strip()
+            name_contains = str(tool_input.tool_args.get("name_contains", "") or "").strip()
+            if not domain:
+                return {
+                    "success": False,
+                    "error": "entity_ids or domain is required",
+                    "hint": "For 'all lights', call BatchControl with domain='light' and optionally state='on'.",
+                }
+            from ..smart_discovery import get_smart_discovery
+            discovery = get_smart_discovery(hass)
+            discovered = await discovery.discover_entities(
+                domain=domain,
+                area=area or None,
+                state=state or None,
+                name_contains=name_contains or None,
+                limit=100,
+                assistant=llm_context.assistant if llm_context else None,
+            )
+            entity_ids = [
+                str(item.get("entity_id"))
+                for item in discovered
+                if isinstance(item, dict) and item.get("entity_id")
+            ]
+            if not entity_ids:
+                return {
+                    "success": False,
+                    "error": "no matching entities found",
+                    "filters": {
+                        "domain": domain,
+                        "area": area,
+                        "state": state,
+                        "name_contains": name_contains,
+                    },
+                }
+        before_states = {
+            entity_id: (state.state if (state := hass.states.get(entity_id)) else None)
+            for entity_id in entity_ids
+        }
         results = []
+        called_services: dict[str, str] = {}
         for entity_id in entity_ids:
             try:
                 domain = entity_id.split(".")[0]
+                from ..domain_registry import get_action_service, normalize_service_data, fuzzy_resolve_service
+                service = get_action_service(domain, action)
+                ha_services = hass.services.async_services_for_domain(domain)
+                if service not in ha_services:
+                    resolved = fuzzy_resolve_service(domain, service)
+                    if resolved and resolved in ha_services:
+                        service = resolved
+                called_services[entity_id] = service
+                svc_data = normalize_service_data(domain, service, dict(data))
+                if domain == "cover":
+                    service, service_payload = _resolve_cover_service_for_features(
+                        hass,
+                        service,
+                        {"entity_id": entity_id, **svc_data},
+                    )
+                    called_services[entity_id] = service
+                    svc_data = {
+                        k: v for k, v in service_payload.items()
+                        if k != "entity_id"
+                    }
                 await hass.services.async_call(
                     domain,
-                    action,
-                    {"entity_id": entity_id, **data},
+                    service,
+                    {"entity_id": entity_id, **svc_data},
                     blocking=True,
                 )
-                results.append({"entity_id": entity_id, "success": True})
+                results.append({"entity_id": entity_id, "service": service, "success": True})
             except Exception as err:
                 results.append(
                     {"entity_id": entity_id, "success": False, "error": str(err)}
                 )
-        return {"success": True, "results": results}
+        verification = await _verify_entity_control_state(
+            hass,
+            entity_ids,
+            called_services,
+            before_states,
+        )
+        by_entity = {
+            str(item.get("entity_id")): item
+            for item in verification.get("entities", [])
+            if isinstance(item, dict)
+        }
+        for item in results:
+            entity_id = item.get("entity_id")
+            if isinstance(entity_id, str) and entity_id in by_entity:
+                item["verification"] = by_entity[entity_id]
+                if not bool(by_entity[entity_id].get("verified")):
+                    item["success"] = False
+                    item["error"] = "state verification failed"
+        return {
+            "success": all(bool(item.get("success")) for item in results),
+            "results": results,
+            "verification": verification,
+        }
 
 
 class NotifyTool(llm.Tool):
