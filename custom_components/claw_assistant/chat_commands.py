@@ -250,13 +250,11 @@ def _build_command_catalog_message(language: str | None = None) -> str:
             if spec.subcommands:
                 from .runtime.reply_formatter import is_chinese
                 zh = is_chinese(language)
-                desc = _spec_desc(spec, language)
-                lines.append(f"**`/{spec.name}`** — {desc}")
                 for sub_usage, sub_desc_en, sub_desc_zh in spec.subcommands:
                     sub_usage_esc = _escape_md_angles(sub_usage)
                     sub_desc = sub_desc_zh if zh else sub_desc_en
-                    lines.append(f"　　`{sub_usage_esc}` — {sub_desc}")
-                lines.append("")
+                    lines.append(f"`{sub_usage_esc}` — {sub_desc}")
+                    lines.append("")
             else:
                 usage = _escape_md_angles(spec.usage)
                 desc = _spec_desc(spec, language)
@@ -290,8 +288,7 @@ def _build_help_message(command_name: str = "", language: str | None = None) -> 
     lookup = command_name.strip()
     if not lookup:
         return (
-            f"{t('cmd_help_header', language)}\n\n"
-            f"{_build_command_catalog_message(language)}\n\n"
+            f"\u200b\n\n{_build_command_catalog_message(language)}\n\n"
             f"---\n{t('cmd_help_footer', language)}"
         )
 

@@ -93,10 +93,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "当前没有正在运行的任务。",
         "en": "No active run to stop.",
     },
-    "cmd_help_header": {
-        "zh": "可用命令：",
-        "en": "Available commands:",
-    },
     "cmd_help_footer": {
         "zh": "输入 `/help 命令名` 查看详情。",
         "en": "Use `/help command_name` for details.",
