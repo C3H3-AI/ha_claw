@@ -174,14 +174,24 @@ def build_base_prompt(
     ch_type = get_channel_type(conversation_id)
     if is_im_channel(conversation_id):
         appended_sections.append(
-            f"## Channel\nType: {ch_type}"
+            f"## Channel\n"
+            f"Type: {ch_type} (instant messaging).\n"
+            f"You are chatting inside an IM bot (WeChat / QQ / etc.). "
+            f"The user reads your reply as a text message on their phone or desktop. "
+            f"Full markdown is supported: bold, italic, lists, tables, code blocks, etc. "
+            f"If the user sends an image or file, acknowledge it and describe what you see."
         )
     else:
         appended_sections.append(
-            "## Channel\nType: ha (Home Assistant frontend). "
+            "## Channel\n"
+            "Type: ha (Home Assistant frontend chat panel).\n"
+            "You are inside the Home Assistant web UI Assist chat window. "
+            "The user types text and reads your reply in a rich-markdown bubble. "
+            "You may use full markdown: bold, italic, lists, tables, code blocks, etc. "
             "Write shareable media under `OUTPUT_DIR`; reply with `output_url(name)` "
             "or `[VIDEO:/local/...]`/`[IMAGE:...]`/`[GIF:...]`/`[FILE:...]` — auto-rendered. "
-            "Camera/media specifics live in their tool descriptions."
+            "Camera/media specifics live in their tool descriptions. "
+            "This is NOT a voice channel — the user is reading, not listening."
         )
 
     topic_hint = build_homeassistant_topic_hint(text)

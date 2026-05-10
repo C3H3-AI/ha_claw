@@ -1,7 +1,13 @@
 (function() {
     'use strict';
     
-    const HACRACK_VERSION = '20260509-assist-dock-v30';
+    const HACRACK_VERSION = '7.8.0';
+    if (window.__hacrackVersion && window.__hacrackVersion !== HACRACK_VERSION) {
+        window.__hacrackVersion = HACRACK_VERSION;
+        location.reload();
+        return;
+    }
+    window.__hacrackVersion = HACRACK_VERSION;
     let initialized = false;
     let pollInterval = null;
     let hassRef = null;
@@ -180,9 +186,209 @@
             } catch(_) {}
         }, 5000);
 
+        (function setupDialogObserver() {
+            if (window.__clawDialogObsInstalled) return;
+            window.__clawDialogObsInstalled = true;
+
+            function dq(root, sel) {
+                if (!root) return null;
+                let el = root.querySelector?.(sel);
+                if (el) return el;
+                const sr = root.shadowRoot;
+                if (sr) { el = dq(sr, sel); if (el) return el; }
+                const ch = root.querySelectorAll?.('*') || [];
+                for (let i = 0; i < Math.min(ch.length, 80); i++) {
+                    if (ch[i].shadowRoot) { el = dq(ch[i].shadowRoot, sel); if (el) return el; }
+                }
+                return null;
+            }
+            function dqAll(root, sel, out, seen) {
+                if (!root || seen.has(root)) return out;
+                seen.add(root);
+                try { root.querySelectorAll?.(sel).forEach(x => out.push(x)); } catch(_) {}
+                const ch = root.querySelectorAll?.('*') || [];
+                for (let i = 0; i < ch.length; i++) {
+                    if (ch[i].shadowRoot) dqAll(ch[i].shadowRoot, sel, out, seen);
+                    if (ch[i].tagName === 'SLOT') {
+                        const assigned = ch[i].assignedElements?.({ flatten: true }) || [];
+                        for (const a of assigned) dqAll(a, sel, out, seen);
+                    }
+                }
+                return out;
+            }
+            function textOf(el) {
+                if (!el) return '';
+                return (el.innerText || el.textContent || '').trim().slice(0, 200);
+            }
+
+            function extractDialog(haDialog) {
+                const result = { type: 'unknown' };
+                const parentHost = haDialog.getRootNode?.()?.host;
+                if (parentHost) result.type = parentHost.tagName?.toLowerCase() || 'unknown';
+
+                const hdr = dq(haDialog, 'ha-dialog-header');
+                if (hdr) {
+                    const titleEl = dq(hdr, '[slot="title"], .header-title');
+                    const subEl = dq(hdr, '[slot="subtitle"], .header-subtitle');
+                    result.title = textOf(titleEl) || haDialog.getAttribute?.('header-title') || '';
+                    const sub = textOf(subEl) || haDialog.getAttribute?.('header-subtitle') || '';
+                    if (sub) result.subtitle = sub;
+                } else {
+                    result.title = haDialog.getAttribute?.('header-title') || textOf(dq(haDialog, '.title, h1, h2')) || '';
+                }
+
+                const bodyItems = [];
+                const seen = new Set();
+                const SEL_INPUTS = 'ha-input, ha-textfield, ha-select, ha-combo-box, ha-entity-picker, ha-area-picker, ha-device-picker, ha-selector, ha-form, ha-yaml-editor, ha-code-editor, input, textarea, select, ha-date-input, ha-time-input, ha-icon-picker';
+                const inputs = dqAll(haDialog, SEL_INPUTS, [], seen);
+                for (const inp of inputs) {
+                    const tag = inp.tagName.toLowerCase();
+                    const item = { element: tag };
+                    const label = inp.getAttribute('label') || inp.getAttribute('aria-label') || inp.getAttribute('placeholder') || '';
+                    if (label) item.label = label.slice(0, 80);
+                    if (tag === 'select' || tag === 'ha-select') {
+                        const nativeSelect = tag === 'select' ? inp : dq(inp, 'select');
+                        if (nativeSelect) {
+                            item.value = nativeSelect.value || '';
+                            item.options = [...nativeSelect.options].slice(0, 20).map(o => ({ value: o.value, text: o.textContent.trim().slice(0, 60), selected: o.selected }));
+                        } else {
+                            item.value = (inp.value ?? '').toString().slice(0, 200);
+                        }
+                    } else if (tag === 'ha-form') {
+                        item.element = 'ha-form';
+                        try {
+                            const schema = inp.schema;
+                            if (Array.isArray(schema)) {
+                                item.fields = schema.slice(0, 20).map(s => ({
+                                    name: s.name, type: s.type || s.selector && Object.keys(s.selector)[0] || 'text',
+                                    label: s.label || s.name, required: !!s.required
+                                }));
+                            }
+                            const data = inp.data;
+                            if (data && typeof data === 'object') item.values = Object.fromEntries(Object.entries(data).slice(0, 20).map(([k,v]) => [k, String(v).slice(0, 100)]));
+                        } catch(_) {}
+                    } else {
+                        const native = (tag.startsWith('ha-') ? dq(inp, 'input, textarea') : inp) || inp;
+                        item.value = (native.value ?? '').toString().slice(0, 200);
+                        const tp = native.getAttribute?.('type');
+                        if (tp) item.input_type = tp;
+                    }
+                    if (inp.disabled || inp.hasAttribute?.('disabled')) item.disabled = true;
+                    if (inp.required || inp.hasAttribute?.('required')) item.required = true;
+                    if (inp.readOnly || inp.hasAttribute?.('readonly')) item.readonly = true;
+                    if (label) item.hint = 'FrontendInspect type text="' + label.slice(0, 40) + '" value="..."';
+                    bodyItems.push(item);
+                }
+
+                const SEL_TEXT = 'p, .secondary, [id*="description"], ha-alert, ha-markdown';
+                const texts = dqAll(haDialog, SEL_TEXT, [], new Set());
+                for (const t of texts) {
+                    const txt = textOf(t);
+                    if (txt && txt.length > 2) bodyItems.push({ element: 'text', text: txt });
+                }
+
+                const SEL_LIST = 'ha-list-item, mwc-list-item, ha-check-list-item, ha-clickable-list-item';
+                const listItems = dqAll(haDialog, SEL_LIST, [], new Set());
+                if (listItems.length) {
+                    result.list_items = listItems.slice(0, 30).map(li => {
+                        const o = { text: textOf(li).slice(0, 100) };
+                        const rl = li.getAttribute('role');
+                        if (rl) o.role = rl;
+                        if (li.selected || li.activated || li.hasAttribute?.('selected') || li.hasAttribute?.('activated')) o.selected = true;
+                        return o;
+                    });
+                }
+
+                if (bodyItems.length) result.body = bodyItems;
+
+                const footerBtns = [];
+                const SEL_BTNS = 'ha-button, mwc-button, ha-icon-button, button';
+                const ftr = dq(haDialog, 'ha-dialog-footer, [slot="footer"], footer');
+                const btnRoot = ftr || haDialog;
+                const btns = dqAll(btnRoot, SEL_BTNS, [], new Set());
+                for (const b of btns) {
+                    const txt = textOf(b);
+                    const slot = b.getAttribute?.('slot') || '';
+                    const item = {};
+                    if (txt) item.text = txt.slice(0, 60);
+                    if (slot.includes('primary')) item.role = 'primary';
+                    else if (slot.includes('secondary')) item.role = 'secondary';
+                    if (b.disabled || b.hasAttribute?.('disabled')) item.disabled = true;
+                    if (b.getAttribute?.('data-dialog') === 'close') item.action = 'close';
+                    const variant = b.getAttribute?.('variant');
+                    if (variant === 'danger') item.variant = 'danger';
+                    if (txt) item.hint = 'FrontendInspect tap text="' + txt.slice(0, 40) + '"';
+                    if (Object.keys(item).length) footerBtns.push(item);
+                }
+                if (footerBtns.length) result.buttons = footerBtns;
+
+                return result;
+            }
+
+            function captureAndSend(haDialogEl) {
+                try {
+                    const snap = extractDialog(haDialogEl);
+                    if (!snap.title && !snap.body && !snap.buttons && !snap.list_items) return;
+                    const dialogs = [snap];
+                    window.__clawActiveDialogs = dialogs;
+                    window.dispatchEvent(new CustomEvent('claw-dialog-opened', { detail: dialogs }));
+                    getConn().sendMessagePromise({
+                        type: 'ha_crack/dialog_snapshot',
+                        dialogs
+                    }).catch(() => {});
+                } catch(_) {}
+            }
+
+            document.addEventListener('opened', (ev) => {
+                const path = ev.composedPath?.() || [];
+                let haDialog = null;
+                for (const el of path) {
+                    if (el.tagName?.toLowerCase() === 'ha-dialog') { haDialog = el; break; }
+                }
+                if (!haDialog) return;
+                setTimeout(() => captureAndSend(haDialog), 250);
+            }, true);
+
+            document.addEventListener('closed', (ev) => {
+                const path = ev.composedPath?.() || [];
+                let isDialog = false;
+                for (const el of path) {
+                    if (el.tagName?.toLowerCase() === 'ha-dialog') { isDialog = true; break; }
+                }
+                if (!isDialog) return;
+                window.__clawActiveDialogs = null;
+                window.dispatchEvent(new CustomEvent('claw-dialog-closed'));
+                try {
+                    getConn().sendMessagePromise({
+                        type: 'ha_crack/dialog_snapshot',
+                        dialogs: []
+                    }).catch(() => {});
+                } catch(_) {}
+            }, true);
+        })();
+
     }
 
     function setupGoalContinuationStream() {}
+
+    const _patchMarkdownIndent = () => {
+        const chat = deepQuery('ha-assist-chat');
+        const sr = chat?.shadowRoot;
+        if (!sr) return;
+        sr.querySelectorAll('ha-markdown').forEach(md => {
+            if (md.shadowRoot && !md.shadowRoot.getElementById('claw-md-fix')) {
+                const s = document.createElement('style');
+                s.id = 'claw-md-fix';
+                s.textContent = 'ha-markdown-element > :is(ol, ul) { padding-inline-start: 2.15em !important; }';
+                md.shadowRoot.appendChild(s);
+            }
+        });
+        if (!sr.__clawMdObs) {
+            sr.__clawMdObs = new MutationObserver(() => _patchMarkdownIndent());
+            sr.__clawMdObs.observe(sr, { childList: true, subtree: true });
+        }
+    };
+    window.addEventListener('claw-chat-updated', () => _patchMarkdownIndent());
 
     function setupAssistRightDock(hass) {
         if (window.__clawAssistDockInstalled) return;
@@ -195,6 +401,8 @@
                 const r = await hass.connection.sendMessagePromise({ type: 'ha_crack/get_settings' });
                 const newVal = r?.enable_sidebar_dock !== false;
                 if (_initialSettingsLoaded && newVal !== _sidebarDockEnabled) {
+                    window.__clawAssistDockInstalled = false;
+                    try { sessionStorage.removeItem('clawDockState'); } catch(e) {}
                     location.reload();
                     return;
                 }
@@ -240,7 +448,8 @@
                         display: flex;
                         flex-direction: column;
                         overflow: hidden;
-                        background: var(--primary-background-color, #fff);
+                        background: var(--card-background-color, var(--primary-background-color, #fff));
+                        --primary-background-color: var(--card-background-color, #fff);
                         transition: width .25s cubic-bezier(.4,0,.2,1);
                         box-shadow: -1px 0 0 0 var(--divider-color, rgba(0,0,0,.12));
                         z-index: 100;
@@ -496,25 +705,7 @@
             dockBody.appendChild(chat);
             dock.setAttribute('open', '');
 
-            const patchMarkdownIndent = (root) => {
-                if (!root) return;
-                root.querySelectorAll('ha-markdown').forEach(md => {
-                    if (md.shadowRoot && !md.shadowRoot.getElementById('claw-md-fix')) {
-                        const s = document.createElement('style');
-                        s.id = 'claw-md-fix';
-                        s.textContent = 'ha-markdown-element > :is(ol, ul) { padding-inline-start: 2.15em !important; }';
-                        md.shadowRoot.appendChild(s);
-                    }
-                });
-            };
-            const chatSR = chat.shadowRoot;
-            if (chatSR) {
-                patchMarkdownIndent(chatSR);
-                if (!chatSR.__clawMdObs) {
-                    chatSR.__clawMdObs = new MutationObserver(() => patchMarkdownIndent(chatSR));
-                    chatSR.__clawMdObs.observe(chatSR, { childList: true, subtree: true });
-                }
-            }
+            _patchMarkdownIndent();
 
             neutralizeVoiceDialog(voiceEl);
             voiceEl.style.display = 'none';
@@ -618,10 +809,19 @@
         window.__clawAssistChatPatched = true;
         const STORAGE_KEY = 'claw_assist_chat_state_v1';
         const settings = window.__clawSettings = window.__clawSettings || { continuous_conversation: false };
+        let _ccInitialLoaded = false;
         const refreshSettings = async () => {
             try {
                 const r = await hass.connection.sendMessagePromise({ type: 'ha_crack/get_settings' });
-                settings.continuous_conversation = !!r?.continuous_conversation;
+                const newVal = !!r?.continuous_conversation;
+                if (_ccInitialLoaded && newVal !== settings.continuous_conversation) {
+                    try { localStorage.removeItem(STORAGE_KEY); } catch(e) {}
+                    window.__clawAssistChatPatched = false;
+                    location.reload();
+                    return;
+                }
+                settings.continuous_conversation = newVal;
+                _ccInitialLoaded = true;
                 if (!settings.continuous_conversation) {
                     try { localStorage.removeItem(STORAGE_KEY); } catch(e) {}
                     if (state) {
@@ -678,6 +878,9 @@
             const originalUpdated = proto.updated;
             proto.updated = function(changed) {
                 originalUpdated?.call(this, changed);
+                if (this.shadowRoot) {
+                    try { window.dispatchEvent(new CustomEvent('claw-chat-updated', { detail: this })); } catch(e) {}
+                }
                 if (state.resetting) return;
                 if (!settings.continuous_conversation) return;
                 if (Array.isArray(this._conversation) && this._conversation.length > 0) {
@@ -1208,9 +1411,10 @@
             }
         }).catch(() => {});
 
+        window.addEventListener('claw-chat-updated', () => installUploadUI());
         setInterval(() => {
             if (deepQuery('ha-assist-chat')?.shadowRoot) installUploadUI();
-        }, 1500);
+        }, 5000);
     }
 
     function setupContextStatusBar(hass) {
@@ -1443,6 +1647,10 @@
                 '<span class="sb-sep">│</span>' +
                 `⏲ <span class="sb-time">${timer}</span>`;
         };
+
+        window.addEventListener('claw-chat-updated', () => {
+            if (settings.enable_context_status_bar) { installHooks(); render(); }
+        });
 
         const startStatusBar = () => {
             if (statusLoop) return;

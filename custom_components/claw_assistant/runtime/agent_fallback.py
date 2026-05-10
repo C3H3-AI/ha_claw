@@ -940,6 +940,7 @@ async def run_agent_fallback_chain(
 
     _TRANSIENT_ERROR_KEYWORDS = ("disconnected", "connection", "timeout", "reset by peer", "broken pipe", "eof occurred",
                                  "cannot connect", "server disconnected", "ssl", "clientconnector", "serverdisconnected",
+                                 "tool_calls", "must be followed by",
                                  "无法连接", "连接失败", "网络错误", "请检查网络", "连接超时", "服务器断开",
                                  "服务不可用", "请稍后再试", "ai 服务")
     _MAX_TRANSIENT_RETRIES = 2
@@ -970,6 +971,17 @@ async def run_agent_fallback_chain(
                 await _trim_chat_log_for_context_overflow(hass, conversation_id)
         except Exception as _pf_err:
             LOGGER.debug("Preflight compression check failed: %s", _pf_err)
+
+        try:
+            from .context_compressor import sanitize_tool_pairs
+            _chat_content = _get_chat_log_content(hass, conversation_id)
+            if _chat_content:
+                _repaired = sanitize_tool_pairs(_chat_content)
+                if _repaired is not _chat_content:
+                    _chat_content.clear()
+                    _chat_content.extend(_repaired)
+        except Exception as _san_err:
+            LOGGER.debug("Pre-API tool pair sanitize failed: %s", _san_err)
 
         try:
             tool_mode_token = set_runtime_tool_mode("minimal")
@@ -1011,6 +1023,16 @@ async def run_agent_fallback_chain(
                     _error_text = failure_reason or error_probe
                     _cc.step_down_context(_error_text)
                     await _trim_chat_log_for_context_overflow(hass, conversation_id, force=True)
+                    try:
+                        from .context_compressor import sanitize_tool_pairs
+                        _rc = _get_chat_log_content(hass, conversation_id)
+                        if _rc:
+                            _rr = sanitize_tool_pairs(_rc)
+                            if _rr is not _rc:
+                                _rc.clear()
+                                _rc.extend(_rr)
+                    except Exception:
+                        pass
                     LOGGER.info(
                         "Agent %s hit context_length_exceeded (attempt %d/3); "
                         "context stepped to %d, compressed and retrying",
@@ -1320,6 +1342,16 @@ async def run_agent_fallback_chain(
                     _cc = get_compressor()
                     _cc.step_down_context(err_msg)
                     await _trim_chat_log_for_context_overflow(hass, conversation_id, force=True)
+                    try:
+                        from .context_compressor import sanitize_tool_pairs
+                        _rc2 = _get_chat_log_content(hass, conversation_id)
+                        if _rc2:
+                            _rr2 = sanitize_tool_pairs(_rc2)
+                            if _rr2 is not _rc2:
+                                _rc2.clear()
+                                _rc2.extend(_rr2)
+                    except Exception:
+                        pass
                     LOGGER.info(
                         "Agent %s raised context-too-long exception (attempt %d/2); "
                         "context stepped to %d, compressed and retrying same agent",

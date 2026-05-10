@@ -74,7 +74,7 @@ def _tool_desc(name: str, a: dict, lang: str, hass=None) -> str:
     e = _esc
 
     if name == "GetLiveContext":
-        return "⚡️ 我正在思考中..." if zh else "⚡️ I'm thinking about it...."
+        return "⚡️ 正在深度推理中..." if zh else "⚡️ Deep reasoning..."
     if name == "BatchControl":
         ids = a.get("entity_ids", [])
         raw_act = str(a.get("action", ""))
@@ -118,6 +118,13 @@ def _tool_desc(name: str, a: dict, lang: str, hass=None) -> str:
     if name == "WebSearch":
         q = e(str(a.get("query", "")))[:50]
         eng = a.get("engine", "")
+        raw_q = str(a.get("query", ""))
+        if raw_q.startswith("http://") or raw_q.startswith("https://"):
+            from urllib.parse import urlparse
+            host = urlparse(raw_q).netloc or raw_q[:30]
+            if zh:
+                return f"🌎 正在访问 {host}..."
+            return f"🌎 Visiting {host}..."
         _engine_zh = {"google": "谷歌", "bing": "必应", "baidu": "百度", "bing_cn": "必应"}
         _engine_en = {"google": "Google", "bing": "Bing", "baidu": "Baidu", "bing_cn": "Bing CN"}
         if zh:
@@ -135,8 +142,8 @@ def _tool_desc(name: str, a: dict, lang: str, hass=None) -> str:
         u = a.get("url", "")
         host = urlparse(u).netloc if u else ""
         if zh:
-            return f"🌎 正在读取 {host}..." if host else "🌎 正在读取网页..."
-        return f"🌎 Reading {host}..." if host else "🌎 Reading page..."
+            return f"🌎 正在访问 {host}..." if host else "🌎 正在访问网页..."
+        return f"🌎 Visiting {host}..." if host else "🌎 Visiting page..."
     if name == "WebReadChunk":
         pos = a.get("position", 0)
         did = a.get("doc_id", "")

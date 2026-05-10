@@ -804,6 +804,53 @@ def get_compressor() -> ContextCompressor:
     return _compressor
 
 
+def sanitize_tool_pairs(content: list) -> list:
+    from homeassistant.components.conversation.chat_log import ToolResultContent
+
+    surviving_call_ids: set[str] = set()
+    for msg in content:
+        if getattr(msg, "role", "") == "assistant":
+            for tc in getattr(msg, "tool_calls", None) or []:
+                cid = getattr(tc, "id", "") or getattr(tc, "tool_call_id", "") or ""
+                if cid:
+                    surviving_call_ids.add(cid)
+
+    result_call_ids: set[str] = set()
+    for msg in content:
+        if isinstance(msg, ToolResultContent):
+            cid = getattr(msg, "tool_call_id", "") or ""
+            if cid:
+                result_call_ids.add(cid)
+
+    orphaned = result_call_ids - surviving_call_ids
+    if orphaned:
+        content = [
+            m for m in content
+            if not (isinstance(m, ToolResultContent) and getattr(m, "tool_call_id", "") in orphaned)
+        ]
+        LOGGER.info("sanitize_tool_pairs: removed %d orphaned tool result(s)", len(orphaned))
+
+    missing = surviving_call_ids - result_call_ids
+    if missing:
+        patched = []
+        for msg in content:
+            patched.append(msg)
+            if getattr(msg, "role", "") == "assistant":
+                for tc in getattr(msg, "tool_calls", None) or []:
+                    cid = getattr(tc, "id", "") or getattr(tc, "tool_call_id", "") or ""
+                    if cid in missing:
+                        patched.append(ToolResultContent(
+                            agent_id=getattr(msg, "agent_id", ""),
+                            tool_call_id=cid,
+                            tool_name=getattr(tc, "tool_name", "unknown"),
+                            tool_result="[Tool result unavailable — timeout or error occurred]",
+                        ))
+        content = patched
+        LOGGER.info("sanitize_tool_pairs: added %d stub tool result(s) for orphaned tool_calls", len(missing))
+
+    return content
+
+
 async def compress_chat_log(hass: HomeAssistant, conversation_id: str, *, summary_agent_id: str = "", force: bool = False, focus_topic: str = "") -> bool:
     from homeassistant.util.hass_dict import HassKey
     DATA_CHAT_LOGS: HassKey = HassKey("conversation_chat_log")

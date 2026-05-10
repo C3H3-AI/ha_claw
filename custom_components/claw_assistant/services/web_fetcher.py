@@ -184,9 +184,15 @@ class WebPageFetcher:
                             "Chrome/125.0.0.0 Safari/537.36"
                         )
                         continue
+                    elif 400 <= resp.status < 500:
+                        raise RuntimeError(
+                            f"HTTP {resp.status} - page does not exist or access denied: {url}"
+                        )
                     else:
                         _LOGGER.debug("Request %s returned status %d", url[:60], resp.status)
                         break
+            except RuntimeError:
+                raise
             except asyncio.TimeoutError:
                 _LOGGER.debug("Request timeout (attempt %d): %s", attempt, url[:60])
                 await asyncio.sleep(1)

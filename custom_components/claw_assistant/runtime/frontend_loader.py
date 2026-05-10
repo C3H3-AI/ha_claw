@@ -6,11 +6,10 @@ from homeassistant.components import frontend
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.core import HomeAssistant
 
-from ..const import DOMAIN
+from ..const import DOMAIN, VERSION
 
 _URL_PATH = f"/api/{DOMAIN}/ha_crack.js"
-_VERSION = "20260504-upload-v29"
-_MODULE_URL = f"{_URL_PATH}?v={_VERSION}"
+_MODULE_URL = f"{_URL_PATH}?v={VERSION}"
 _DATA_KEY = "frontend_loader"
 
 

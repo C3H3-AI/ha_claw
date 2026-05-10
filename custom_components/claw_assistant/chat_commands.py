@@ -771,6 +771,15 @@ def _purge_native_chat_log(hass, conversation_id: str | None) -> None:
             all_logs.pop(conversation_id, None)
     except Exception:
         pass
+    try:
+        from homeassistant.helpers.chat_session import DATA_CHAT_SESSION
+        all_sessions = hass.data.get(DATA_CHAT_SESSION)
+        if isinstance(all_sessions, dict) and conversation_id in all_sessions:
+            session = all_sessions.pop(conversation_id)
+            if hasattr(session, "async_cleanup"):
+                session.async_cleanup()
+    except Exception:
+        pass
 
 
 def _clear_conversation_runtime(hass, conversation_id: str | None) -> None:
@@ -779,6 +788,24 @@ def _clear_conversation_runtime(hass, conversation_id: str | None) -> None:
         _purge_native_chat_log(hass, old_conv_id)
         get_conversation_history().clear(old_conv_id)
     _purge_native_chat_log(hass, conversation_id)
+
+    registry = _task_registry(hass)
+    for cid in (conversation_id, old_conv_id):
+        if not cid:
+            continue
+        task = registry.pop(cid, None)
+        if task is not None and not task.done():
+            task.cancel("Cancelled by /new")
+    try:
+        from .goals import get_goal_manager
+        for cid in (conversation_id, old_conv_id, "default"):
+            if not cid:
+                continue
+            mgr = get_goal_manager(hass, cid)
+            if mgr.has_goal():
+                hass.async_create_task(mgr.async_clear())
+    except Exception:
+        pass
 
     token = set_active_conversation(conversation_id)
     try:
@@ -805,6 +832,17 @@ def _clear_conversation_runtime(hass, conversation_id: str | None) -> None:
     status.clear()
     status.update(preserved)
     status["last_conversation_id"] = conversation_id
+
+    from .state import get_runtime_store
+    runtime_store = get_runtime_store(hass)
+    runtime_store.pop("pending_goal_continuations", None)
+    runtime_store.get("completed_goal_conversations", set()).discard(str(conversation_id or "default"))
+    for key in list(runtime_store.keys()):
+        if key.startswith("_claw_pipeline_converse_cont_"):
+            runtime_store.pop(key, None)
+    for key in list(hass.data.keys()):
+        if isinstance(key, str) and key.startswith("_claw_pipeline_converse_cont_"):
+            hass.data.pop(key, None)
 
     get_should_end_flag(hass)["value"] = False
 
