@@ -169,19 +169,47 @@ async def execute_kernel_turn(
                 ),
             )
 
+            try:
+                from .context_compressor import sanitize_tool_pairs
+                from homeassistant.util.hass_dict import HassKey
+                _DK: HassKey = HassKey("conversation_chat_log")
+                _all = hass.data.get(_DK)
+                _cl = _all.get(conversation_id) if _all else None
+                if _cl and hasattr(_cl, "content") and _cl.content:
+                    _fixed = sanitize_tool_pairs(_cl.content)
+                    if _fixed is not _cl.content:
+                        _cl.content.clear()
+                        _cl.content.extend(_fixed)
+            except Exception:
+                pass
+
             tool_mode_token = set_runtime_tool_mode("kernel")
             try:
-                result = await original_async_converse(
-                    hass,
-                    user_text,
-                    conversation_id,
-                    context,
-                    language,
-                    agent_id,
-                    device_id,
-                    satellite_id,
-                    kernel_prompt,
+                import asyncio as _aio
+                result = await _aio.wait_for(
+                    original_async_converse(
+                        hass,
+                        user_text,
+                        conversation_id,
+                        context,
+                        language,
+                        agent_id,
+                        device_id,
+                        satellite_id,
+                        kernel_prompt,
+                    ),
+                    timeout=120,
                 )
+            except _aio.TimeoutError:
+                LOGGER.warning("Kernel API call timed out after 120s at step %d", step_index)
+                if steps:
+                    final_text = _render_final_answer(
+                        "API call timed out; concluding based on completed steps.",
+                        steps,
+                    )
+                    await append_final_message_and_pause(agent_id=agent_id, content=final_text)
+                    return _finalize_result(last_result, final_text) if last_result else None
+                return None
             finally:
                 reset_runtime_tool_mode(tool_mode_token)
 

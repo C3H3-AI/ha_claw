@@ -56,10 +56,20 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
     from .runtime.official_websocket_hook import context_status_bar_enabled, file_upload_enabled, sidebar_dock_enabled
     patch_pipeline_timeout(hass)
     patch_aihub_markdown_filter(hass)
+
+    cc_enabled = continuous_conversation_enabled(hass)
+    prev_cc = hass.data.get(f"{DOMAIN}_prev_continuous_conversation")
+    if prev_cc is not None and prev_cc != cc_enabled:
+        from .chat_commands import _clear_conversation_runtime
+        from .runtime.state import get_active_conversation_state
+        conv_id = get_active_conversation_state(hass).get("id")
+        _clear_conversation_runtime(hass, conv_id)
+    hass.data[f"{DOMAIN}_prev_continuous_conversation"] = cc_enabled
+
     hass.bus.async_fire(
         "ha_crack_settings_changed",
         {
-            "continuous_conversation": continuous_conversation_enabled(hass),
+            "continuous_conversation": cc_enabled,
             "enable_context_status_bar": context_status_bar_enabled(hass),
             "enable_file_upload": file_upload_enabled(hass),
             "enable_sidebar_dock": sidebar_dock_enabled(hass),

@@ -461,17 +461,25 @@ async def _execute_conversation_turn_inner(
                 extra_system_prompt=current_prompt,
             )
             if direct_result is None:
-                direct_result = await original_async_converse(
-                    hass,
-                    text,
-                    conversation_id,
-                    context,
-                    language,
-                    agent_id,
-                    device_id,
-                    satellite_id,
-                    current_prompt,
-                )
+                import asyncio as _aio
+                try:
+                    direct_result = await _aio.wait_for(
+                        original_async_converse(
+                            hass,
+                            text,
+                            conversation_id,
+                            context,
+                            language,
+                            agent_id,
+                            device_id,
+                            satellite_id,
+                            current_prompt,
+                        ),
+                        timeout=120,
+                    )
+                except _aio.TimeoutError:
+                    LOGGER.warning("Direct API call timed out after 120s")
+                    break
             direct_tool_results = _snapshot_tool_results(get_tool_results_state(hass))
             synthesized_response = extract_successful_tool_response(direct_tool_results)
             raw_response_text = ""

@@ -19,7 +19,7 @@ _LOGGER = logging.getLogger(__name__)
 class WebSearchTool(llm.Tool):
     name = "WebSearch"
     description = (
-        "Web search. Strategy: bing first, baidu fallback (auto). "
+        "Web keyword search (NOT for fetching specific URLs — use UrlFetch for that). Strategy: bing first, baidu fallback (auto). "
         "After getting results, use UrlFetch(url) to read page content, "
         "then WebReadChunk(doc_id, position) for more. "
         "Engines: google, bing, baidu, bing_cn. Leave engine empty for auto. "
@@ -139,7 +139,7 @@ def _store_chunks(hass: HomeAssistant, url: str, title: str, full_text: str) -> 
 
 class UrlFetchTool(llm.Tool):
     name = "UrlFetch"
-    description = "Fetch a URL and return its content as chunk 0. If the page has more content, use WebReadChunk with the returned doc_id and position to read subsequent chunks."
+    description = "Fetch a URL and return its content as chunk 0. If the page has more content, use WebReadChunk with the returned doc_id and position to read subsequent chunks. IMPORTANT: When the user provides an explicit URL/link, ALWAYS use this tool directly — do NOT use WebSearch."
     parameters = vol.Schema({
         vol.Required("url"): str,
     })

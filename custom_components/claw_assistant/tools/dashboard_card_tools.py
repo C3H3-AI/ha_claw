@@ -410,8 +410,19 @@ class DashboardCardTool(llm.Tool):
             return None, "card_yaml must include card type"
         return parsed, ""
 
-    async def _save_config(self, config_obj, ll_config: dict) -> None:
+    async def _save_config(self, config_obj, ll_config: dict, hass: HomeAssistant | None = None, dashboard_url: str | None = None) -> None:
         await config_obj.async_save(ll_config)
+        if hass is not None:
+            hass.bus.async_fire("lovelace_updated")
+            try:
+                from .frontend_tools import queue_frontend_exec
+                import time as _t
+                path = f"/{dashboard_url or 'lovelace'}"
+                exec_id = f"ll_nav_{int(_t.time()*1000)}"
+                js = f"(function(){{history.pushState(null,'','{path}');window.dispatchEvent(new CustomEvent('location-changed'));return {{navigated:'{path}'}}}})()"
+                queue_frontend_exec(hass, exec_id, js)
+            except Exception:
+                pass
 
     async def _list_dashboards(self, hass: HomeAssistant) -> JsonObjectType:
         from homeassistant.components.lovelace.const import LOVELACE_DATA
@@ -570,7 +581,7 @@ class DashboardCardTool(llm.Tool):
             new_view["icon"] = icon
 
         views.append(new_view)
-        await self._save_config(config_obj, ll_config)
+        await self._save_config(config_obj, ll_config, hass=hass, dashboard_url=dashboard_url)
 
         return {
             "success": True,
@@ -632,7 +643,7 @@ class DashboardCardTool(llm.Tool):
             card.update(card_config)
 
         cards.append(card)
-        await self._save_config(config_obj, ll_config)
+        await self._save_config(config_obj, ll_config, hass=hass, dashboard_url=dashboard_url)
 
         result: dict[str, Any] = {
             "success": True,
@@ -691,7 +702,7 @@ class DashboardCardTool(llm.Tool):
         if parsed_card is None and card_config:
             cards[card_index].update(card_config)
 
-        await self._save_config(config_obj, ll_config)
+        await self._save_config(config_obj, ll_config, hass=hass, dashboard_url=dashboard_url)
 
         return {
             "success": True,
@@ -775,7 +786,7 @@ class DashboardCardTool(llm.Tool):
             cards[card_index] = parsed
             card = parsed
 
-        await self._save_config(config_obj, ll_config)
+        await self._save_config(config_obj, ll_config, hass=hass, dashboard_url=dashboard_url)
 
         return {
             "success": True,
@@ -809,7 +820,7 @@ class DashboardCardTool(llm.Tool):
             return {"success": False, "error": f"card_index {card_index} out of range (0..{len(cards) - 1})"}
 
         removed = cards.pop(card_index)
-        await self._save_config(config_obj, ll_config)
+        await self._save_config(config_obj, ll_config, hass=hass, dashboard_url=dashboard_url)
 
         return {
             "success": True,
@@ -832,7 +843,7 @@ class DashboardCardTool(llm.Tool):
             return {"success": False, "error": f"view_index {view_index} out of range"}
 
         removed = views.pop(view_index)
-        await self._save_config(config_obj, ll_config)
+        await self._save_config(config_obj, ll_config, hass=hass, dashboard_url=dashboard_url)
 
         return {
             "success": True,

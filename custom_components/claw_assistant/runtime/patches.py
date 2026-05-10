@@ -394,6 +394,21 @@ def patch_hide_tool_calls_from_pipeline(hass: HomeAssistant) -> None:
     def filtered_process_event(self, event) -> None:
         delta = (event.data or {}).get("chat_log_delta")
 
+        if (
+            event.type == PipelineEventType.INTENT_PROGRESS
+            and isinstance(delta, dict)
+            and "_tts_skip_content" in delta
+        ):
+            restored = {k: v for k, v in delta.items() if k != "_tts_skip_content"}
+            restored["content"] = delta["_tts_skip_content"]
+            return original_process_event(
+                self,
+                PipelineEvent(
+                    event.type,
+                    {**(event.data or {}), "chat_log_delta": restored},
+                ),
+            )
+
         # Suppress the frontend `.thinking-wrapper` UNCONDITIONALLY.
         # Reason: claw_assistant is the visible conversation agent, while
         # gemini / openai_conversation / open_router are only internal
@@ -459,10 +474,20 @@ def patch_hide_tool_calls_from_pipeline(hass: HomeAssistant) -> None:
 
     PipelineRun.process_event = filtered_process_event
     setattr(PipelineRun, _PIPELINE_FILTER_ORIGINAL, original_process_event)
+
+    original_text_to_speech = PipelineRun.text_to_speech
+
+    async def filtered_text_to_speech(self, tts_input, override_media_path=None):
+        if tts_input and _agent_is_ours(self):
+            tts_input = _clean_for_tts(tts_input)
+        return await original_text_to_speech(self, tts_input, override_media_path=override_media_path)
+
+    PipelineRun.text_to_speech = filtered_text_to_speech
+    setattr(PipelineRun, "_claw_original_text_to_speech", original_text_to_speech)
+
     setattr(PipelineRun, _PIPELINE_FILTER_PATCHED, True)
     LOGGER.debug(
-        "Patched PipelineRun.process_event to hide tool_calls/tool_result deltas "
-        "from the Assist frontend for claw_assistant-owned pipelines"
+        "Patched PipelineRun.process_event + text_to_speech for claw_assistant pipelines"
     )
 
 
@@ -476,9 +501,13 @@ def unpatch_hide_tool_calls_from_pipeline() -> None:
 
     PipelineRun.process_event = original_process_event
     delattr(PipelineRun, _PIPELINE_FILTER_ORIGINAL)
+    original_tts = getattr(PipelineRun, "_claw_original_text_to_speech", None)
+    if original_tts:
+        PipelineRun.text_to_speech = original_tts
+        delattr(PipelineRun, "_claw_original_text_to_speech")
     if hasattr(PipelineRun, _PIPELINE_FILTER_PATCHED):
         delattr(PipelineRun, _PIPELINE_FILTER_PATCHED)
-    LOGGER.debug("Restored PipelineRun.process_event after claw_assistant unload")
+    LOGGER.debug("Restored PipelineRun.process_event + text_to_speech after claw_assistant unload")
 
 
 def patch_strip_thinking_content_serialization(hass: HomeAssistant) -> None:
@@ -559,14 +588,55 @@ def _is_tool_progress_enabled(hass: HomeAssistant) -> bool:
 
 _HEADING_STRIP_RE = re.compile(r"^#{1,6}\s+")
 
+_MD_BOLD_ITALIC_RE = re.compile(r"(?<!\w)\*{1,3}([^*]+?)\*{1,3}(?!\w)")
+_MD_STRIKE_RE = re.compile(r"~~([^~]+)~~")
+_MD_CODE_BLOCK_RE = re.compile(r"```[^\n]*\n[\s\S]*?```")
+_MD_INLINE_CODE_RE = re.compile(r"`([^`]+)`")
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(https?://[^)\s]+\)")
+_MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(https?://[^)\s]+\)")
+_MD_HEADING_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
+_MD_BLOCKQUOTE_RE = re.compile(r"^>\s?", re.MULTILINE)
+_MD_HR_RE = re.compile(r"^[-*_]{3,}\s*$", re.MULTILINE)
+_MD_LIST_RE = re.compile(r"^[\s]*[-*+]\s", re.MULTILINE)
+_MD_ORDERED_LIST_RE = re.compile(r"^[\s]*\d+\.\s", re.MULTILINE)
+_MD_TABLE_SEP_RE = re.compile(r"\|?[-:]+[-|: ]+\|?")
+_MD_TABLE_PIPE_RE = re.compile(r"\|")
+_MULTI_SPACE_RE = re.compile(r"[ \t]{2,}")
+_MULTI_NEWLINE_RE = re.compile(r"\n{3,}")
+
+
+def _clean_for_tts(text: str) -> str:
+    if not text:
+        return text
+    t = _MD_CODE_BLOCK_RE.sub("", text)
+    t = _MD_IMAGE_RE.sub(r"\1", t)
+    t = _MD_LINK_RE.sub(r"\1", t)
+    t = _MD_BOLD_ITALIC_RE.sub(r"\1", t)
+    t = _MD_STRIKE_RE.sub(r"\1", t)
+    t = _MD_INLINE_CODE_RE.sub(r"\1", t)
+    t = _MD_HEADING_RE.sub("", t)
+    t = _MD_BLOCKQUOTE_RE.sub("", t)
+    t = _MD_HR_RE.sub("", t)
+    t = _MD_TABLE_SEP_RE.sub("", t)
+    t = _MD_TABLE_PIPE_RE.sub(" ", t)
+    t = _MD_LIST_RE.sub("", t)
+    t = _MD_ORDERED_LIST_RE.sub("", t)
+    t = _MULTI_SPACE_RE.sub(" ", t)
+    t = _MULTI_NEWLINE_RE.sub("\n\n", t)
+    return t.strip()
+
 
 def _wrap_listener_for_tracking(chat_log, original_listener):
-    """Wrap delta_listener to track the last emitted character and strip headings."""
+    """Wrap delta_listener to track the last emitted character, strip headings,
+    and separate TTS content (cleaned) from frontend display content (original)."""
     if getattr(chat_log, "_claw_listener_wrapped", False):
         return original_listener
 
     def tracked_listener(log, delta):
-        content = delta.get("content") if isinstance(delta, dict) else None
+        if not isinstance(delta, dict):
+            return original_listener(log, delta)
+        skip_tts = delta.pop("_claw_skip_tts", False)
+        content = delta.get("content")
         if content:
             last = getattr(chat_log, "_claw_last_char", "\n")
             if last == "\n":
@@ -577,6 +647,18 @@ def _wrap_listener_for_tracking(chat_log, original_listener):
                         return
                     delta = {**delta, "content": content}
             chat_log._claw_last_char = content[-1]
+        if skip_tts:
+            if content:
+                delta = {k: v for k, v in delta.items() if k != "content"}
+                delta["_tts_skip_content"] = content
+            return original_listener(log, delta)
+        if content:
+            tts_text = _clean_for_tts(content)
+            delta = {**delta, "_tts_skip_content": content}
+            if tts_text:
+                delta["content"] = tts_text
+            else:
+                del delta["content"]
         return original_listener(log, delta)
 
     chat_log._claw_listener_wrapped = True
@@ -965,6 +1047,7 @@ def _maybe_apply_global_response_format(hass, result, agent_id) -> None:
     if not result or not result.response or not result.response.speech:
         LOGGER.debug("global_format: skip (no result/response/speech) agent=%s", agent_id)
         return
+
     plain = result.response.speech.get("plain")
     if not isinstance(plain, dict):
         LOGGER.debug("global_format: skip (no plain dict) agent=%s", agent_id)
@@ -981,17 +1064,35 @@ def _maybe_apply_global_response_format(hass, result, agent_id) -> None:
     )
     from .response_format import apply_agent_response_format
 
-    agent_name = "Claw Assistant"
+    is_ours = False
+    agent_name = "Assistant"
+    if agent_id:
+        from homeassistant.helpers import entity_registry as er
+        registry = er.async_get(hass)
+        entity = registry.async_get(agent_id)
+        if entity is not None:
+            is_ours = entity.platform == DOMAIN
+            if is_ours:
+                agent_name = "Claw Assistant"
+            else:
+                agent_name = entity.name or entity.original_name or entity.platform.replace("_", " ").title()
+        else:
+            state = hass.states.get(agent_id)
+            if state:
+                agent_name = state.attributes.get("friendly_name") or agent_id.split(".")[-1].replace("_", " ").title()
+            else:
+                agent_name = agent_id.split(".")[-1].replace("_", " ").title()
 
     conversation_mode = DEFAULT_CONVERSATION_MODE
-    try:
-        entries = hass.config_entries.async_entries(DOMAIN)
-        if entries:
-            conversation_mode = entries[0].options.get(
-                CONF_CONVERSATION_MODE, DEFAULT_CONVERSATION_MODE
-            )
-    except Exception:
-        pass
+    if is_ours:
+        try:
+            entries = hass.config_entries.async_entries(DOMAIN)
+            if entries:
+                conversation_mode = entries[0].options.get(
+                    CONF_CONVERSATION_MODE, DEFAULT_CONVERSATION_MODE
+                )
+        except Exception:
+            pass
 
     apply_agent_response_format(
         result,

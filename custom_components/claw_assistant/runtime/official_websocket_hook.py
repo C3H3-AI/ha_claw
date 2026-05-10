@@ -885,6 +885,27 @@ def _install_recognize_intent_hook(hass) -> None:
 
         pipeline_mod.conversation.async_converse = _hooked_converse
         pipeline_mod.conversation.async_get_chat_log = _hooked_get_chat_log
+
+        if getattr(self, "tts_stream", None) is not None:
+            voice_hint = (
+                "## Channel\n"
+                "Type: voice (speech-to-text → you → text-to-speech pipeline).\n"
+                "The user spoke into a microphone; their words were transcribed by STT. "
+                "Your entire reply will be synthesized by a TTS engine and played back as audio. "
+                "The user will HEAR your answer, not read it. "
+                "Write exactly as you would speak: short, natural, conversational sentences. "
+                "Never use markdown formatting (bold, italic, headings, lists, tables, code blocks) — "
+                "TTS will read the raw symbols aloud and it sounds terrible. "
+                "Never use emoji — they are either skipped or read as Unicode names. "
+                "Avoid URLs, file paths, and long numbers; paraphrase instead. "
+                "If the answer is complex, give a brief spoken summary and suggest "
+                "the user check the Home Assistant dashboard for details."
+            )
+            if conversation_extra_system_prompt:
+                conversation_extra_system_prompt = conversation_extra_system_prompt + "\n\n" + voice_hint
+            else:
+                conversation_extra_system_prompt = voice_hint
+
         try:
             return await _original_recognize(
                 self, intent_input, conversation_id, conversation_extra_system_prompt,
@@ -948,6 +969,25 @@ async def websocket_frontend_exec_result(hass, connection, msg):
     connection.send_result(msg["id"])
 
 
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_crack/dialog_snapshot",
+        vol.Required("dialogs"): list,
+    }
+)
+@websocket_api.async_response
+async def websocket_dialog_snapshot(hass, connection, msg):
+    from ..tools.frontend_tools import store_frontend_text_cache, _domain_data
+    dialogs = msg["dialogs"]
+    domain = _domain_data(hass)
+    if dialogs:
+        domain["claw_active_dialogs"] = dialogs
+        store_frontend_text_cache(hass, "dialog_snapshot", dialogs)
+    else:
+        domain.pop("claw_active_dialogs", None)
+    connection.send_result(msg["id"])
+
+
 def install_official_websocket_process_hook(hass) -> None:
 
     domain_data = hass.data.setdefault("claw_assistant", {})
@@ -966,6 +1006,7 @@ def install_official_websocket_process_hook(hass) -> None:
     websocket_api.async_register_command(hass, websocket_frontend_snapshot)
     websocket_api.async_register_command(hass, websocket_frontend_exec_poll)
     websocket_api.async_register_command(hass, websocket_frontend_exec_result)
+    websocket_api.async_register_command(hass, websocket_dialog_snapshot)
     hass.http.register_view(ClawUploadView())
     hass.http.register_view(ClawFileView())
 
