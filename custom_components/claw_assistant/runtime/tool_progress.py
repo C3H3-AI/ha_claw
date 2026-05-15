@@ -307,20 +307,20 @@ def _tool_desc(name: str, a: dict, lang: str, hass=None) -> str:
     if name == "InstallSkill":
         n = e(str(a.get("name", "")))[:50]
         if zh:
-            return f"📦 正在安装技能: {n}..." if n else "📦 正在安装技能..."
-        return f"📦 Installing skill: {n}..." if n else "📦 Installing skill..."
+            return f"🧩 正在安装技能: {n}..." if n else "🧩 正在安装技能..."
+        return f"🧩 Installing skill: {n}..." if n else "🧩 Installing skill..."
     if name == "ListInstalledSkills":
-        return "📦 正在列举已安装技能..." if zh else "📦 Listing installed skills..."
+        return "🧩 正在列举已安装技能..." if zh else "🧩 Listing installed skills..."
     if name == "GetSkillIndex":
         kw = e(str(a.get("keyword", "")))[:50]
         if zh:
-            return f"💫 正在检索技能: {kw}..." if kw else "💫 正在列举技能索引..."
-        return f"💫 Skill index: {kw}..." if kw else "💫 Listing skill index..."
+            return f"🧩 正在检索技能: {kw}..." if kw else "🧩 正在列举技能索引..."
+        return f"🧩 Skill index: {kw}..." if kw else "🧩 Listing skill index..."
     if name == "GetInstalledSkill":
         n = e(str(a.get("name", "")))[:50]
         if zh:
-            return f"📦 正在读取技能: {n}..." if n else "📦 正在读取技能..."
-        return f"📦 Reading skill: {n}..." if n else "📦 Reading skill..."
+            return f"🧩 正在读取技能: {n}..." if n else "🧩 正在读取技能..."
+        return f"🧩 Reading skill: {n}..." if n else "🧩 Reading skill..."
     if name == "HomeAssistantGuide":
         act = e(str(a.get("action", "")))
         if zh:
@@ -393,6 +393,21 @@ def _tool_desc(name: str, a: dict, lang: str, hass=None) -> str:
         if zh:
             return f"💫 正在查询 {d} 帮助..." if d else "💫 正在查询服务帮助..."
         return f"💫 Help: {d}..." if d else "💫 Service help..."
+    if name == "ReadFile":
+        act = str(a.get("action", "read")).strip()
+        p = e(str(a.get("path", "")).rsplit("/", 1)[-1])[:20]
+        query = e(str(a.get("query", "")))[:20]
+        if zh:
+            _v = {"read": "阅读", "search": "搜索", "search_fuzzy": "模糊搜索", "info": "查看"}
+            verb = _v.get(act, "阅读")
+            if query:
+                return f"📝 {verb}: {query}..."
+            return f"📝 {verb} {p}..." if p else f"📝 {verb}中..."
+        _v = {"read": "Reading", "search": "Searching", "search_fuzzy": "Fuzzy search", "info": "Checking"}
+        verb = _v.get(act, "Reading")
+        if query:
+            return f"📝 {verb}: {query}..."
+        return f"📝 {verb} {p}..." if p else f"📝 {verb}..."
     if name == "ConfigFile":
         act = e(str(a.get("action", "")))
         p = e(str(a.get("path", "")))[:50]
@@ -402,8 +417,8 @@ def _tool_desc(name: str, a: dict, lang: str, hass=None) -> str:
     if name == "DeleteSkill":
         n = e(str(a.get("name", "")))[:50]
         if zh:
-            return f"🔗 正在删除技能: {n}..." if n else "🔗 正在删除技能..."
-        return f"🔗 Deleting skill: {n}..." if n else "🔗 Deleting skill..."
+            return f"🧩 正在删除技能: {n}..." if n else "🧩 正在删除技能..."
+        return f"🧩 Deleting skill: {n}..." if n else "🧩 Deleting skill..."
     if name == "UpsertGuideDoc":
         return "🔗 正在更新指南文档..." if zh else "🔗 Updating guide doc..."
     if name == "DeleteGuideDoc":
@@ -481,6 +496,37 @@ def _tool_desc(name: str, a: dict, lang: str, hass=None) -> str:
             return f"🎨 正在{desc}..."
         desc = _DC_EN.get(act, f"Dashboard: {act}")
         return f"🎨 {desc}..."
+    if name == "FrontendInspect":
+        act = str(a.get("action", "")).strip()
+        _ctl = {"navigate", "tap", "type", "key", "scroll", "exec_js"}
+        icon = "🕹️" if act in _ctl else "🪩"
+        if zh:
+            _FI_ZH = {
+                "snapshot": "观察页面", "navigate": "跳转页面",
+                "tap": "点击元素", "type": "输入内容",
+                "key": "按键操作", "scroll": "滚动页面",
+                "exec_js": "执行脚本", "search_cache": "检索缓存",
+            }
+            return f"{icon} FrontendInspect: {_FI_ZH.get(act, '操控页面')}..."
+        _FI_EN = {
+            "snapshot": "Observing page", "navigate": "Navigating",
+            "tap": "Tapping element", "type": "Typing input",
+            "key": "Key press", "scroll": "Scrolling page",
+            "exec_js": "Executing script", "search_cache": "Searching cache",
+        }
+        return f"{icon} FrontendInspect: {_FI_EN.get(act, 'Inspecting')}..."
+    if name == "ExposeEntity":
+        act = e(str(a.get("action", "")))
+        if zh:
+            return f"💫  ExposeEntity: {'曝光实体' if act == 'expose' else '查询未曝光实体'}..."
+        return f"💫  ExposeEntity: {'Exposing' if act == 'expose' else 'Listing unexposed'}..."
+    if name == "MemoryGraph":
+        act = e(str(a.get("action", "")))
+        _MG_ZH = {"recall": "回忆", "remember": "记忆", "link": "关联", "forget": "遗忘", "get": "读取", "stats": "统计"}
+        _MG_EN = {"recall": "Recalling", "remember": "Remembering", "link": "Linking", "forget": "Forgetting", "get": "Reading", "stats": "Stats"}
+        if zh:
+            return f"🧬 MemoryGraph: {_MG_ZH.get(act, act)}..."
+        return f"🧬 MemoryGraph: {_MG_EN.get(act, act)}..."
     if name.startswith("Hass"):
         eid = e(str(a.get("name", a.get("entity_id", ""))))[:22]
         tag = name.replace("Hass", "")
@@ -509,25 +555,3 @@ def _short_hint(args: dict) -> str:
     return ""
 
 
-def _args_hint(args: dict | None) -> str:
-    if not args:
-        return ""
-    parts: list[str] = []
-    for k in ("action", "entity_id", "entity_ids", "domain", "service",
-              "query", "name", "area", "path", "url", "script_id",
-              "camera_entity", "target", "intent_type", "registry",
-              "keyword", "codes", "reason", "agent_id", "question"):
-        v = args.get(k)
-        if v is None:
-            continue
-        if isinstance(v, list):
-            sv = ",".join(str(i) for i in v[:3])
-            if len(v) > 3:
-                sv += f"+{len(v)-3}"
-            parts.append(f"{k}={sv}")
-        elif isinstance(v, str) and v:
-            sv = _esc(v)
-            if len(sv) > 60:
-                sv = sv[:57] + "..."
-            parts.append(f"{k}={sv}")
-    return " ".join(parts[:4])
