@@ -1,7 +1,7 @@
 (function() {
     'use strict';
     
-    const HACRACK_VERSION = '8.0.0';
+    const HACRACK_VERSION = '8.1.0';
     if (window.__hacrackVersion && window.__hacrackVersion !== HACRACK_VERSION) {
         window.__hacrackVersion = HACRACK_VERSION;
         location.reload();
@@ -273,6 +273,28 @@
         if (window.__clawBridgeConn === conn) return;
         window.__clawBridgeConn = conn;
 
+        const _NAV_KEY = '__claw_user_path';
+        const _AI_NAV_KEY = '__claw_ai_navigated';
+        try {
+            const aiNav = sessionStorage.getItem(_AI_NAV_KEY);
+            const userPath = sessionStorage.getItem(_NAV_KEY);
+            if (aiNav && userPath && window.location.pathname !== userPath) {
+                sessionStorage.removeItem(_AI_NAV_KEY);
+                setTimeout(() => {
+                    history.replaceState(null, '', userPath);
+                    window.dispatchEvent(new CustomEvent('location-changed'));
+                }, 300);
+            } else {
+                sessionStorage.removeItem(_AI_NAV_KEY);
+            }
+        } catch(_) {}
+        let _aiNavActive = false;
+        window.addEventListener('location-changed', () => {
+            if (_aiNavActive) return;
+            try { sessionStorage.setItem(_NAV_KEY, window.location.pathname + window.location.search); } catch(_) {}
+        });
+        try { if (!sessionStorage.getItem(_NAV_KEY)) sessionStorage.setItem(_NAV_KEY, window.location.pathname + window.location.search); } catch(_) {}
+
         const seen = new Set();
 
         function getConn() {
@@ -300,6 +322,11 @@
             if (!task?.id || !task?.code || seen.has(task.id)) return;
             seen.add(task.id);
             if (seen.size > 200) { const it = seen.values(); seen.delete(it.next().value); }
+            const isNav = /pushState|replaceState|location-changed|location\.href|navigate/.test(task.code);
+            if (isNav) {
+                _aiNavActive = true;
+                try { sessionStorage.setItem(_AI_NAV_KEY, '1'); } catch(_) {}
+            }
             let result;
             try {
                 try {
@@ -311,6 +338,7 @@
             } catch(e) {
                 result = { error: e.message, stack: (e.stack||'').slice(0,300) };
             }
+            if (isNav) { setTimeout(() => { _aiNavActive = false; }, 500); }
             if (result === undefined || result === null) result = { value: null };
             else if (typeof result !== 'object') result = { value: result };
             else { try { JSON.stringify(result); } catch(_) { result = { value: String(result) }; } }
@@ -1536,18 +1564,26 @@
 
         const _nudgeFabs = (offset) => {
             const val = offset ? offset + 'px' : '';
+            const trans = 'right .25s cubic-bezier(.4,0,.2,1), inset-inline-end .25s cubic-bezier(.4,0,.2,1)';
+            const applyOffset = (el) => {
+                if (!el) return;
+                el.style.transition = trans;
+                el.style.right = val || '';
+                el.style.insetInlineEnd = val || '';
+            };
             const msr = getMainSR();
             if (!msr) return;
             const walk = (node) => {
                 if (!node?.shadowRoot) return;
                 try {
-                    const fab = node.shadowRoot.getElementById('fab');
-                    if (fab) {
-                        fab.style.transition = 'right .25s cubic-bezier(.4,0,.2,1), inset-inline-end .25s cubic-bezier(.4,0,.2,1)';
-                        fab.style.right = val || '';
-                        fab.style.insetInlineEnd = val || '';
-                    }
-                    node.shadowRoot.querySelectorAll('*').forEach(c => {
+                    const sr = node.shadowRoot;
+                    applyOffset(sr.getElementById('fab'));
+                    sr.querySelectorAll('ha-fab, ha-button-group, .fab, [class*="fab"]').forEach(applyOffset);
+                    sr.querySelectorAll('ha-button').forEach(btn => {
+                        const cs = getComputedStyle(btn);
+                        if ((cs.position === 'fixed' || cs.position === 'absolute') && parseInt(cs.bottom) < 120) applyOffset(btn);
+                    });
+                    sr.querySelectorAll('*').forEach(c => {
                         if (c.shadowRoot) walk(c);
                     });
                 } catch(_) {}

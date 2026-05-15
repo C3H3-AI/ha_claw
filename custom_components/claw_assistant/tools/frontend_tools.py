@@ -118,6 +118,20 @@ def search_frontend_text_cache(hass: HomeAssistant, query: str, limit: int = 500
     }
 
 
+async def async_restore_nav_path(hass: HomeAssistant) -> None:
+    dd = _domain_data(hass)
+    original = dd.pop("_ai_nav_original_path", None)
+    if not original or original == "/":
+        return
+    restore_id = f"navrestore_{int(time.time())}"
+    js = f"(function(){{history.replaceState(null,'',{json.dumps(original)});window.dispatchEvent(new CustomEvent('location-changed'));return {{restored:{json.dumps(original)}}};}})()"
+    queue_frontend_exec(hass, restore_id, js)
+    try:
+        await async_wait_frontend_exec_result(hass, restore_id, timeout=5.0)
+    except Exception:
+        pass
+
+
 def pop_frontend_exec_result(hass: HomeAssistant, exec_id: str, timeout: float = 10.0) -> Any:
     results = _domain_data(hass).setdefault(_FRONTEND_EXEC_RESULTS, {})
     if exec_id in results:
