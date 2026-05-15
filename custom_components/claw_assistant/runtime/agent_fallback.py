@@ -904,7 +904,7 @@ async def run_agent_fallback_chain(
         )
     )
 
-    ha_internal_agent = "conversation.home_assistant"
+    ha_internal_agent = "conversation.home_assistant" if len(text) <= 200 else ""
     try:
         tool_results_state = get_tool_results_state(hass)
         tool_results_state.clear()
@@ -1273,7 +1273,6 @@ async def run_agent_fallback_chain(
                         conversation_id=conversation_id,
                         stage="tool_failure",
                     )
-                    agent_errors.append(f"{current_agent_id}: {failure_reason[:160]}")
                     if agent_queue:
                         pending_handoff_context = _build_agent_recovery_prompt(
                             failed_agent_name=get_agent_name(hass, current_agent_id),
@@ -1294,6 +1293,8 @@ async def run_agent_fallback_chain(
                             "Agent %s tool failure; retry %d/%d before fallback",
                             current_agent_id, retries, _MAX_TRANSIENT_RETRIES,
                         )
+                    else:
+                        agent_errors.append(f"{current_agent_id}: {failure_reason[:160]}")
                     continue
                 await async_record_agent_failure(
                     hass,
@@ -1302,7 +1303,6 @@ async def run_agent_fallback_chain(
                     conversation_id=conversation_id,
                     stage="response_error",
                 )
-                agent_errors.append(f"{current_agent_id}: {failure_reason[:160]}")
                 pending_handoff_context = _build_agent_recovery_prompt(
                     failed_agent_name=get_agent_name(hass, current_agent_id),
                     original_text=original_text,
@@ -1322,6 +1322,8 @@ async def run_agent_fallback_chain(
                         "Agent %s error response; retry %d/%d before fallback",
                         current_agent_id, retries, _MAX_TRANSIENT_RETRIES,
                     )
+                else:
+                    agent_errors.append(f"{current_agent_id}: {failure_reason[:160]}")
                 continue
 
             if result.response.speech and "plain" in result.response.speech:
@@ -1512,14 +1514,6 @@ async def run_agent_fallback_chain(
                     conversation_id=conversation_id,
                 )
                 return result
-            if "content parts are required" in err_msg:
-                LOGGER.debug(
-                    "Agent %s: Google AI SDK returned an empty response after tool calls; trying the next agent",
-                    current_agent_id,
-                )
-                agent_errors.append(f"{current_agent_id}: empty response")
-            else:
-                agent_errors.append(f"{current_agent_id}: {err_msg[:100]}")
             await async_record_agent_failure(
                 hass,
                 current_agent_id,
@@ -1539,6 +1533,11 @@ async def run_agent_fallback_chain(
                     "Agent %s exception; retry %d/%d before moving on: %s",
                     current_agent_id, retries, _MAX_TRANSIENT_RETRIES, err_msg[:120],
                 )
+            else:
+                if "content parts are required" in err_msg:
+                    agent_errors.append(f"{current_agent_id}: empty response")
+                else:
+                    agent_errors.append(f"{current_agent_id}: {err_msg[:100]}")
             continue
 
     resolved_lang = language or hass.config.language or "en"
@@ -1553,6 +1552,9 @@ async def run_agent_fallback_chain(
     else:
         error_detail = t("agents_unavailable", resolved_lang)
     LOGGER.warning("Agent fallback chain exhausted: %s", error_detail)
+
+    get_should_end_flag(hass)["value"] = False
+
     intent_response = intent.IntentResponse(language=resolved_lang)
     intent_response.async_set_error(
         intent.IntentResponseErrorCode.UNKNOWN,
