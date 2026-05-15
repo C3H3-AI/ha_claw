@@ -252,16 +252,38 @@ async def execute_kernel_turn(
                 return _finalize_result(result, final_text)
 
             if step.tool_name:
-                from ..const import CONF_MAX_TOOL_REPEAT, DEFAULT_MAX_TOOL_REPEAT
+                from ..const import (
+                    CONF_MAX_TOOL_REPEAT, DEFAULT_MAX_TOOL_REPEAT,
+                    CONF_IDENTICAL_CALL_WARN, DEFAULT_IDENTICAL_CALL_WARN,
+                    CONF_IDENTICAL_CALL_STOP, DEFAULT_IDENTICAL_CALL_STOP,
+                )
                 max_repeat = DEFAULT_MAX_TOOL_REPEAT
+                identical_warn = DEFAULT_IDENTICAL_CALL_WARN
+                identical_stop = DEFAULT_IDENTICAL_CALL_STOP
                 for entry in hass.config_entries.async_entries("claw_assistant"):
                     max_repeat = int(entry.options.get(CONF_MAX_TOOL_REPEAT, DEFAULT_MAX_TOOL_REPEAT))
+                    identical_warn = int(entry.options.get(CONF_IDENTICAL_CALL_WARN, DEFAULT_IDENTICAL_CALL_WARN))
+                    identical_stop = int(entry.options.get(CONF_IDENTICAL_CALL_STOP, DEFAULT_IDENTICAL_CALL_STOP))
                     break
-                bail_prompt = check_tool_repeat(hass, tool_name=step.tool_name, max_repeat=max_repeat)
+                bail_prompt, should_stop = check_tool_repeat(
+                    hass,
+                    tool_name=step.tool_name,
+                    tool_args=step.tool_args,
+                    max_repeat=max_repeat,
+                    identical_warn=identical_warn,
+                    identical_stop=identical_stop,
+                )
+                if should_stop:
+                    LOGGER.warning(
+                        "Identical tool loop detected: %s, requesting graceful stop",
+                        step.tool_name,
+                    )
+                    extra_system_prompt = _append_prompt(extra_system_prompt, bail_prompt)
+                    continue
                 if bail_prompt:
                     LOGGER.warning(
-                        "Tool repeat limit reached: %s called %d+ times (limit %d)",
-                        step.tool_name, max_repeat, max_repeat,
+                        "Tool repeat limit reached: %s",
+                        step.tool_name,
                     )
                     extra_system_prompt = _append_prompt(extra_system_prompt, bail_prompt)
                     continue
@@ -292,7 +314,11 @@ async def execute_kernel_turn(
                 language=language,
                 device_id=device_id,
             )
-            tool_calls_state.append(step.tool_name)
+            tool_calls_state.append({
+                "tool_name": step.tool_name,
+                "tool_args": step.tool_args,
+                "success": tool_result.get("success", False),
+            })
             tool_results_state.append(
                 {
                     "tool_name": tool_result["tool_name"],
