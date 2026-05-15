@@ -63,7 +63,7 @@ def build_conversation_runtime_config(
         summary_agent=secondary_agent if primary_agent and fallback_agent and secondary_agent else "",
         conversation_mode=conversation_mode,
         enable_ai_summary=bool(summary_agents),
-        enable_web_search=bool(options.get(CONF_ENABLE_WEB_SEARCH, False)),
+        enable_web_search=bool(options.get(CONF_ENABLE_WEB_SEARCH, True)),
         global_inject=str(global_state.get("inject", "")),
         output_mode=str(output_state.get("mode", "")),
     )

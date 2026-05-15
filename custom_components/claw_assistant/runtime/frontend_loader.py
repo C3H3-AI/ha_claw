@@ -19,9 +19,15 @@ async def async_setup_frontend_loader(hass: HomeAssistant) -> None:
         return
 
     js_path = Path(__file__).parents[1] / "www" / "ha_crack.js"
-    await hass.http.async_register_static_paths(
-        [StaticPathConfig(_URL_PATH, str(js_path), cache_headers=False)]
-    )
+    media_path = Path(__file__).parents[1] / "www" / "media"
+    static_paths = [
+        StaticPathConfig(_URL_PATH, str(js_path), cache_headers=False),
+    ]
+    if media_path.is_dir():
+        static_paths.append(
+            StaticPathConfig(f"/local/{DOMAIN}/media", str(media_path), cache_headers=True)
+        )
+    await hass.http.async_register_static_paths(static_paths)
     frontend.add_extra_js_url(hass, _MODULE_URL)
     domain_data[_DATA_KEY] = True
 
