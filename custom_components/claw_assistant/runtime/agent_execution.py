@@ -39,10 +39,11 @@ async def process_agent_turn(
 ) -> conversation.ConversationResult:
 
     if not user_input.text or not user_input.text.strip():
+        error_msg = t("no_valid_input", user_input.language)
         intent_response = intent.IntentResponse(language=user_input.language)
         intent_response.async_set_error(
             intent.IntentResponseErrorCode.NO_INTENT_MATCH,
-            t("no_valid_input", user_input.language),
+            error_msg,
         )
         return conversation.ConversationResult(
             conversation_id=user_input.conversation_id or ulid.ulid(),
