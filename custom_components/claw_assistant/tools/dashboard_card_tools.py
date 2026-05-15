@@ -224,12 +224,12 @@ STEP4_EFFICIENCY = (
 )
 
 STEP_VERIFY = (
-    "[MANDATORY VERIFICATION] "
-    "YOU MUST immediately call DashboardCard with action=get_dashboard after any add/update. "
-    "Check the card exists at the correct view_index and card_index. "
-    "If the card content is wrong or missing, call update_card to fix it. "
-    "DO NOT skip this verification step. DO NOT just tell user it worked without checking."
+    "Card saved. Call verify_card with same indexes to confirm rendering. "
+    "DO NOT use get_card or get_dashboard to verify — they waste tokens. "
+    "verify_card is the ONLY correct verification method."
 )
+
+_INSTRUCTIONS_SENT_KEY = "claw_dashboard_card_instructions_sent"
 
 
 class DashboardCardTool(llm.Tool):
@@ -241,7 +241,11 @@ class DashboardCardTool(llm.Tool):
         "THIS IS FOR PERSISTENT DASHBOARD CARDS ONLY — cards that stay in the dashboard config. "
         "NOT for dynamic/temporary effects like full-screen overlays, guided tours, tutorial masks, toast notifications, or any JS-injected UI. "
         "For ANY dynamic visual effect or temporary UI overlay, use FrontendInspect action=exec_js instead. "
-        "Actions: check_dependency, list_dashboards, get_dashboard, get_card, add_view, add_card, update_card, patch_card, remove_card, remove_view. "
+        "Actions: check_dependency, list_dashboards, get_dashboard, get_card, add_view, add_card, update_card, patch_card, remove_card, remove_view, verify_card. "
+        "verify_card: lightweight check — confirms card exists + scans frontend for rendering errors (hui-error-card). "
+        "Use verify_card after add/update instead of get_dashboard — it only checks ONE card, saves tokens. "
+        "VERIFICATION RULE: After add_card/update_card/patch_card, ALWAYS use verify_card. NEVER use get_card or get_dashboard to verify — they are expensive and waste tokens. "
+        "get_card is ONLY for when you need to READ the full card config before editing. "
         "PATCH-FIRST RULE (MANDATORY for any modification): "
         "When modifying an existing card, YOU MUST use action=patch_card with surgical anchor ops — "
         "NEVER re-emit the full content string. Only fall back to update_card when the change covers >50% of the card. "
@@ -273,6 +277,7 @@ class DashboardCardTool(llm.Tool):
                 "patch_card",
                 "remove_card",
                 "remove_view",
+                "verify_card",
             ]),
             vol.Optional("dashboard_url", default=""): str,
             vol.Optional("view_index", default=0): int,
@@ -289,10 +294,21 @@ class DashboardCardTool(llm.Tool):
         }
     )
 
+    @staticmethod
+    def _should_send_instructions(hass: HomeAssistant) -> bool:
+        from ..runtime.state import get_conversation_status
+        status = get_conversation_status(hass)
+        if status.get(_INSTRUCTIONS_SENT_KEY):
+            return False
+        status[_INSTRUCTIONS_SENT_KEY] = True
+        return True
+
     async def async_call(
         self, hass: HomeAssistant, tool_input: llm.ToolInput, llm_context: llm.LLMContext
     ) -> JsonObjectType:
-        action = tool_input.tool_args["action"]
+        action = tool_input.tool_args.get("action")
+        if not action:
+            return {"success": False, "error": "Missing required parameter: action"}
         dashboard_url = tool_input.tool_args.get("dashboard_url", "").strip() or None
         view_index = tool_input.tool_args.get("view_index", 0)
         card_index = tool_input.tool_args.get("card_index", 0)
@@ -329,6 +345,8 @@ class DashboardCardTool(llm.Tool):
                 return await self._remove_card(hass, dashboard_url, view_index, section_index, card_index)
             if action == "remove_view":
                 return await self._remove_view(hass, dashboard_url, view_index)
+            if action == "verify_card":
+                return await self._verify_card(hass, dashboard_url, view_index, section_index, card_index)
             return {"success": False, "error": f"Unknown action: {action}"}
         except Exception as err:
             _LOGGER.exception("DashboardCardTool error: %s", err)
@@ -448,12 +466,25 @@ class DashboardCardTool(llm.Tool):
             return None, "card_yaml must include card type"
         return parsed, ""
 
-    async def _save_config(self, config_obj, ll_config: dict, hass: HomeAssistant | None = None, dashboard_url: str | None = None) -> None:
+    async def _save_config(self, config_obj, ll_config: dict, hass: HomeAssistant | None = None, dashboard_url: str | None = None) -> dict | None:
+        if config_obj.mode == "yaml":
+            return {
+                "success": False,
+                "error": "yaml_mode_not_editable",
+                "message": (
+                    f"Dashboard '{dashboard_url or 'lovelace'}' uses YAML mode and cannot be edited via API. "
+                    "Options: (1) Use FileManager tool to edit the YAML file directly, "
+                    "or (2) use a storage-mode dashboard (check list_dashboards), "
+                    "or (3) create a new storage-mode dashboard."
+                ),
+                "yaml_path": getattr(config_obj, 'path', None),
+            }
         await config_obj.async_save(ll_config)
         if hass is not None:
-            hass.bus.async_fire("lovelace_updated")
+            hass.bus.async_fire("lovelace_updated", {"url_path": config_obj.url_path, "mode": config_obj.mode})
             try:
-                from .frontend_tools import queue_frontend_exec
+                import asyncio as _aio
+                from .frontend_tools import queue_frontend_exec, async_wait_frontend_exec_result
                 import time as _t
                 exec_id = f"ll_reload_{int(_t.time()*1000)}"
                 js = (
@@ -477,8 +508,44 @@ class DashboardCardTool(llm.Tool):
                     "})()"
                 )
                 queue_frontend_exec(hass, exec_id, js)
+                await _aio.sleep(2.5)
+                verify_id = f"ll_verify_{int(_t.time()*1000)}"
+                verify_js = (
+                    "(function(){"
+                    "var errors=[];"
+                    "function scan(root){"
+                    "if(!root)return;"
+                    "var els=root.querySelectorAll?root.querySelectorAll('hui-error-card'):[];"
+                    "for(var i=0;i<els.length;i++){"
+                    "var cfg=els[i]._config||{};"
+                    "errors.push({error:cfg.error||'',message:cfg.message||'',severity:cfg.severity||'error'});"
+                    "}"
+                    "var children=root.querySelectorAll?root.querySelectorAll('*'):[];"
+                    "for(var j=0;j<children.length;j++){"
+                    "if(children[j].shadowRoot)scan(children[j].shadowRoot);"
+                    "}"
+                    "}"
+                    "scan(document);"
+                    "return {error_cards:errors,count:errors.length};"
+                    "})()"
+                )
+                queue_frontend_exec(hass, verify_id, verify_js)
+                verify_result = await async_wait_frontend_exec_result(hass, verify_id, timeout=8.0)
+                if isinstance(verify_result, dict) and verify_result.get("count", 0) > 0:
+                    return {
+                        "frontend_errors": verify_result.get("error_cards", []),
+                        "error_count": verify_result["count"],
+                        "_ai_instruction": (
+                            "The frontend detected rendering errors after saving the card config. "
+                            "Review the error details above and fix the card configuration. "
+                            "Common causes: referencing undefined entities, invalid card type, "
+                            "missing required config fields, or JS errors in custom card content. "
+                            "Use get_card to read current config, fix the issue, then update_card."
+                        ),
+                    }
             except Exception:
                 pass
+        return None
 
     async def _list_dashboards(self, hass: HomeAssistant) -> JsonObjectType:
         from homeassistant.components.lovelace.const import LOVELACE_DATA
@@ -489,10 +556,14 @@ class DashboardCardTool(llm.Tool):
 
         result = []
         for url_path, db in data.dashboards.items():
+            editable = db.mode != "yaml"
             info: dict[str, Any] = {
                 "url_path": url_path or "lovelace",
                 "mode": db.mode,
+                "editable": editable,
             }
+            if not editable:
+                info["yaml_path"] = getattr(db, 'path', None)
             if db.config:
                 info["title"] = db.config.get("title", "")
                 info["icon"] = db.config.get("icon", "")
@@ -501,7 +572,9 @@ class DashboardCardTool(llm.Tool):
         return {
             "success": True, "dashboards": result,
             "_action_required": (
-                "YOU MUST now either: (1) call get_dashboard with a dashboard_url to inspect views, "
+                "Review the dashboards above. Dashboards with editable=true can be modified via API. "
+                "Dashboards with editable=false use YAML mode — edit the YAML file directly or use a storage-mode dashboard. "
+                "YOU MUST now either: (1) call get_dashboard with an EDITABLE dashboard_url to inspect views, "
                 "or (2) call add_view to create a new page for your card."
             ),
         }
@@ -637,25 +710,31 @@ class DashboardCardTool(llm.Tool):
             new_view["icon"] = icon
 
         views.append(new_view)
-        await self._save_config(config_obj, ll_config, hass=hass, dashboard_url=dashboard_url)
+        save_err = await self._save_config(config_obj, ll_config, hass=hass, dashboard_url=dashboard_url)
+        if isinstance(save_err, dict) and save_err.get("error"):
+            return save_err
 
         dash_path = dashboard_url or "lovelace"
         nav_path = f"/{dash_path}/{path}"
 
-        return {
+        result: dict[str, Any] = {
             "success": True,
             "message": f"View '{title}' created at index {len(views) - 1}",
             "view_index": len(views) - 1,
             "path": path,
             "dashboard_url": dash_path,
             "_navigate_to": nav_path,
-            "_style_rules": STEP2_VISUAL,
             "_action_required": (
-                f"YOU MUST now call DashboardCard with action=add_card, "
-                f"view_index={len(views) - 1}, and your HTML content. "
-                f"Follow the _style_rules above when writing content."
+                f"Now call DashboardCard with action=add_card, "
+                f"view_index={len(views) - 1}, and your HTML content."
             ),
         }
+        if self._should_send_instructions(hass):
+            result["_style_rules"] = STEP2_VISUAL
+        if isinstance(save_err, dict) and save_err.get("frontend_errors"):
+            result["frontend_errors"] = save_err["frontend_errors"]
+            result["_ai_instruction"] = save_err.get("_ai_instruction", "")
+        return result
 
     async def _add_card(
         self,
@@ -703,7 +782,9 @@ class DashboardCardTool(llm.Tool):
             card.update(card_config)
 
         cards.append(card)
-        await self._save_config(config_obj, ll_config, hass=hass, dashboard_url=dashboard_url)
+        save_err = await self._save_config(config_obj, ll_config, hass=hass, dashboard_url=dashboard_url)
+        if isinstance(save_err, dict) and save_err.get("error"):
+            return save_err
 
         dash_path = dashboard_url or "lovelace"
         view_path = views[view_index].get("path", str(view_index))
@@ -720,13 +801,16 @@ class DashboardCardTool(llm.Tool):
             "_navigate_to": nav_path,
             "_action_required": STEP_VERIFY,
         }
-        if card.get("type") == CARD_TYPE:
+        if card.get("type") == CARD_TYPE and self._should_send_instructions(hass):
             result["_card_config"] = API_CARD_CONFIG
             result["_data_binding"] = API_DATA_BINDING
             result["_pitfalls"] = API_PITFALLS
             result["_efficiency"] = STEP4_EFFICIENCY
         if views[view_index].get("type") == "sections":
             result["section_index"] = section_index if section_index >= 0 else len(views[view_index].get("sections", [])) - 1
+        if isinstance(save_err, dict) and save_err.get("frontend_errors"):
+            result["frontend_errors"] = save_err["frontend_errors"]
+            result["_ai_instruction"] = save_err.get("_ai_instruction", "")
         return result
 
     async def _update_card(
@@ -767,13 +851,15 @@ class DashboardCardTool(llm.Tool):
         if parsed_card is None and card_config:
             cards[card_index].update(card_config)
 
-        await self._save_config(config_obj, ll_config, hass=hass, dashboard_url=dashboard_url)
+        save_err = await self._save_config(config_obj, ll_config, hass=hass, dashboard_url=dashboard_url)
+        if isinstance(save_err, dict) and save_err.get("error"):
+            return save_err
 
         dash_path = dashboard_url or "lovelace"
         view_path = views[view_index].get("path", str(view_index))
         nav_path = f"/{dash_path}/{view_path}"
 
-        return {
+        result: dict[str, Any] = {
             "success": True,
             "message": f"Card updated at view {view_index}, card {card_index}",
             "current_card": cards[card_index],
@@ -781,6 +867,10 @@ class DashboardCardTool(llm.Tool):
             "_navigate_to": nav_path,
             "_action_required": STEP_VERIFY,
         }
+        if isinstance(save_err, dict) and save_err.get("frontend_errors"):
+            result["frontend_errors"] = save_err["frontend_errors"]
+            result["_ai_instruction"] = save_err.get("_ai_instruction", "")
+        return result
 
     async def _patch_card(
         self,
@@ -856,7 +946,9 @@ class DashboardCardTool(llm.Tool):
             cards[card_index] = parsed
             card = parsed
 
-        await self._save_config(config_obj, ll_config, hass=hass, dashboard_url=dashboard_url)
+        save_err = await self._save_config(config_obj, ll_config, hass=hass, dashboard_url=dashboard_url)
+        if isinstance(save_err, dict) and save_err.get("error"):
+            return save_err
 
         dash_path = dashboard_url or "lovelace"
         view_path = views[view_index].get("path", str(view_index))
@@ -895,7 +987,9 @@ class DashboardCardTool(llm.Tool):
             return {"success": False, "error": f"card_index {card_index} out of range (0..{len(cards) - 1})"}
 
         removed = cards.pop(card_index)
-        await self._save_config(config_obj, ll_config, hass=hass, dashboard_url=dashboard_url)
+        save_err = await self._save_config(config_obj, ll_config, hass=hass, dashboard_url=dashboard_url)
+        if isinstance(save_err, dict) and save_err.get("error"):
+            return save_err
 
         return {
             "success": True,
@@ -918,7 +1012,9 @@ class DashboardCardTool(llm.Tool):
             return {"success": False, "error": f"view_index {view_index} out of range"}
 
         removed = views.pop(view_index)
-        await self._save_config(config_obj, ll_config, hass=hass, dashboard_url=dashboard_url)
+        save_err = await self._save_config(config_obj, ll_config, hass=hass, dashboard_url=dashboard_url)
+        if isinstance(save_err, dict) and save_err.get("error"):
+            return save_err
 
         dash_path = dashboard_url or "lovelace"
         fallback_index = max(0, view_index - 1)
@@ -930,3 +1026,99 @@ class DashboardCardTool(llm.Tool):
             "message": f"Removed view '{removed.get('title', '')}' (was index {view_index})",
             "_navigate_to": nav_path,
         }
+
+    async def _verify_card(
+        self,
+        hass: HomeAssistant,
+        dashboard_url: str | None,
+        view_index: int,
+        section_index: int,
+        card_index: int,
+    ) -> JsonObjectType:
+        config_obj, ll_config = await self._get_lovelace_config(hass, dashboard_url)
+        if config_obj is None:
+            return {"success": False, "error": ll_config}
+
+        views = ll_config.get("views", [])
+        if view_index < 0 or view_index >= len(views):
+            return {"success": False, "error": f"view_index {view_index} out of range"}
+
+        cards, err = self._resolve_cards(views[view_index], section_index)
+        if cards is None:
+            return {"success": False, "error": err}
+        if card_index < 0 or card_index >= len(cards):
+            return {"success": False, "error": f"card_index {card_index} out of range (0..{len(cards) - 1})"}
+
+        card = cards[card_index]
+        result: dict[str, Any] = {
+            "success": True,
+            "exists": True,
+            "card_type": card.get("type", ""),
+            "view_index": view_index,
+            "card_index": card_index,
+        }
+
+        try:
+            import asyncio as _aio
+            from .frontend_tools import queue_frontend_exec, async_wait_frontend_exec_result
+            import time as _t
+
+            verify_id = f"cv_{int(_t.time()*1000)}"
+            dash_path = dashboard_url or "lovelace"
+            vpath = views[view_index].get("path", str(view_index))
+            verify_js = (
+                "(function(){"
+                "var errors=[];"
+                "function scan(root){"
+                "if(!root)return;"
+                "var els=root.querySelectorAll?root.querySelectorAll('hui-error-card'):[];"
+                "for(var i=0;i<els.length;i++){"
+                "var cfg=els[i]._config||{};"
+                "errors.push({error:cfg.error||'',message:cfg.message||'',severity:cfg.severity||'error'});"
+                "}"
+                "var children=root.querySelectorAll?root.querySelectorAll('*'):[];"
+                "for(var j=0;j<children.length;j++){"
+                "if(children[j].shadowRoot)scan(children[j].shadowRoot);"
+                "}"
+                "}"
+                "var ha=document.querySelector('home-assistant');"
+                "var main=ha&&ha.shadowRoot&&ha.shadowRoot.querySelector('home-assistant-main');"
+                "var msr=main&&main.shadowRoot;"
+                "var drawer=msr&&msr.querySelector('ha-drawer');"
+                "var dsr=drawer&&drawer.shadowRoot;"
+                "var app=dsr&&dsr.querySelector('.mdc-drawer-app-content');"
+                "var pr=app&&app.querySelector('partial-panel-resolver');"
+                "var panel=pr&&pr.querySelector('ha-panel-lovelace');"
+                "if(!panel){return {error:'no_panel'}}"
+                "var root=panel.shadowRoot&&panel.shadowRoot.querySelector('hui-root');"
+                "if(!root){return {error:'no_hui_root'}}"
+                "var vroot=root.shadowRoot;"
+                "if(!vroot){return {error:'no_view_root'}}"
+                "var view=vroot.querySelector('hui-view,hui-masonry-view,hui-sections-view,hui-panel-view');"
+                "if(!view){return {error:'no_view'}}"
+                "scan(view.shadowRoot||view);"
+                "return {error_cards:errors,count:errors.length,path:window.location.pathname};"
+                "})()"
+            )
+            queue_frontend_exec(hass, verify_id, verify_js)
+            verify_result = await async_wait_frontend_exec_result(hass, verify_id, timeout=6.0)
+            if isinstance(verify_result, dict):
+                err_count = verify_result.get("count", 0)
+                if err_count > 0:
+                    result["frontend_errors"] = verify_result.get("error_cards", [])
+                    result["render_ok"] = False
+                    result["_ai_instruction"] = (
+                        "Frontend rendering errors detected on this view. "
+                        "Check the error messages above. Common fixes: "
+                        "verify entity IDs exist, check card type spelling, "
+                        "ensure required config fields are present. "
+                        "Use get_card to read full config, then update_card or patch_card to fix."
+                    )
+                else:
+                    result["render_ok"] = True
+                if verify_result.get("error"):
+                    result["frontend_note"] = verify_result["error"]
+        except Exception:
+            result["frontend_check"] = "unavailable"
+
+        return result
