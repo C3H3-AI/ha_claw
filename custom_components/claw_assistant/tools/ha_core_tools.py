@@ -789,7 +789,15 @@ query(required for search/search_fuzzy), context_chars(default 200)."""
             return {"success": True, "path": str(target), "action": action, "query": query, **result}
 
         result = await hass.async_add_executor_job(_read_text_file, target, offset, max_chars)
-        return {"success": True, "path": str(target), **result}
+        resp: dict[str, Any] = {"success": True, "path": str(target), **result}
+        if result.get("truncated") and result.get("next_offset") is not None:
+            remaining = result["total_chars"] - result["next_offset"]
+            resp["_hint"] = (
+                f"Content truncated. {remaining} chars remaining. "
+                f"You MUST call ReadFile again with offset={result['next_offset']} "
+                f"to continue reading the next page."
+            )
+        return resp
 
 
 class ConfigFileTool(llm.Tool):
