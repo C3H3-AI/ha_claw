@@ -208,7 +208,7 @@
         
         initialized = true;
         console.info(`%c</>HACrack%cv${HACRACK_VERSION}`,"background:#03a9f4;color:#fff;padding:2px 6px;font:bold 10px monaco;border-radius:3px 0 0 3px","background:#0288d1;color:#fff;padding:2px 6px;font:bold 10px monaco;border-radius:0 3px 3px 0");
-        pollInterval = setInterval(() => pollPendingJS(hass), 2000);
+        pollInterval = setInterval(() => pollPendingJS(hass), 1500);
         pollPendingJS(hass);
         exposeGlobalAPI();
         registerHistoryWindow(hass);
@@ -3758,7 +3758,7 @@
             if (!pollInterval) {
                 const hass = getHass();
                 if (hass?.connection) {
-                    pollInterval = setInterval(() => pollPendingJS(getHass() || hass), 2000);
+                    pollInterval = setInterval(() => pollPendingJS(getHass() || hass), 1500);
                     pollPendingJS(hass);
                 }
             }
