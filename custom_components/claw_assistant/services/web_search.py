@@ -10,7 +10,8 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 from aiohttp import ClientSession, ClientTimeout, TCPConnector
-from bs4 import BeautifulSoup
+from curl_cffi.requests import Session as CffiSession
+from ._html_selector import Selector
 from urllib.parse import unquote
 
 from .web_fetcher import WebPageFetcher
@@ -50,10 +51,24 @@ def _default_engines(hass=None) -> list[str]:
     return ["bing", "google"]
 
 BLOCKED_DOMAINS = {"zhihu.com", "zhihu.cn"}
+try:
+    from browserforge.headers import Browser as _BfBrowser, HeaderGenerator as _BfHeaderGenerator
+    _HEADER_GEN = _BfHeaderGenerator(
+        browser=[
+            _BfBrowser(name="chrome", min_version=130, max_version=147),
+            _BfBrowser(name="firefox", min_version=130),
+            _BfBrowser(name="edge", min_version=130),
+        ],
+        os=("windows", "macos", "linux"),
+        device="desktop",
+    )
+except ImportError:
+    _HEADER_GEN = None
+
 UA_LIST = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
 ]
 
 
@@ -155,13 +170,23 @@ class WebSearch:
         self.connector = None
 
     def _get_headers(self) -> Dict[str, str]:
+        if _HEADER_GEN is not None:
+            headers = dict(_HEADER_GEN.generate())
+            lang = "zh-CN,zh;q=0.9,en;q=0.8" if _is_cn(self._hass) else "en-US,en;q=0.9"
+            headers["Accept-Language"] = lang
+            return headers
         lang = "zh-CN,zh;q=0.9,en;q=0.8" if _is_cn(self._hass) else "en-US,en;q=0.9"
         return {
             "User-Agent": self._get_random_ua(),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
             "Accept-Language": lang,
-            "Accept-Encoding": "gzip, deflate",
-            "Connection": "keep-alive"
+            "Accept-Encoding": "gzip, deflate, br, zstd",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
         }
 
     def _get_random_ua(self) -> str:
@@ -192,27 +217,24 @@ class WebSearch:
         results = []
         required_domains = _extract_required_domains(query)
         try:
-            from requests import get as sync_get
-            lang = "zh-CN,zh;q=0.9,en;q=0.8" if _is_cn(self._hass) else "en-US,en;q=0.9"
+            headers = self._get_headers()
             resp = await asyncio.to_thread(
-                lambda: sync_get(
+                lambda: CffiSession(impersonate="chrome").get(
                     url="https://html.duckduckgo.com/html/",
                     params={"q": query},
-                    headers={
-                        "User-Agent": self._get_random_ua(),
-                        "Accept": "text/html",
-                        "Accept-Language": lang,
-                    },
+                    headers=headers,
                     timeout=30,
+                    verify=False,
                 )
             )
-            soup = BeautifulSoup(resp.text, "html.parser")
-            for item in soup.select(".result"):
-                title_el = item.select_one(".result__a")
-                desc_el = item.select_one(".result__snippet")
-                if not title_el:
+            page = Selector(content=resp.text)
+            for item in page.css(".result"):
+                title_nodes = item.css(".result__a")
+                desc_nodes = item.css(".result__snippet")
+                if not title_nodes:
                     continue
-                href = title_el.get("href", "")
+                title_el = title_nodes[0]
+                href = str(title_el.attrib.get("href", ""))
                 if href.startswith("//duckduckgo.com/l/?uddg="):
                     href = unquote(href.split("uddg=")[1].split("&")[0])
                 if not href or href.startswith("/"):
@@ -221,8 +243,8 @@ class WebSearch:
                     continue
                 if not _matches_required_domains(href, required_domains):
                     continue
-                title = title_el.get_text(strip=True)
-                desc = desc_el.get_text(strip=True) if desc_el else ""
+                title = str(title_el.get_all_text(strip=True))
+                desc = str(desc_nodes[0].get_all_text(strip=True)) if desc_nodes else ""
                 results.append(SearchResult(
                     title=title, url=href, snippet=desc,
                     metadata={"engine": "google", "timestamp": datetime.now().isoformat()},
@@ -231,7 +253,7 @@ class WebSearch:
                     break
             if results:
                 self._cache_results(query, "google", results)
-                _LOGGER.debug("Google(startpage): %d results", len(results))
+                _LOGGER.debug("Google(DDG): %d results", len(results))
         except Exception as e:
             _LOGGER.error("Google search error: %s", e, exc_info=True)
         return results
@@ -240,31 +262,34 @@ class WebSearch:
         self, html: str, engine: str, num: int, required_domains: set[str]
     ) -> List[SearchResult]:
         cfg = ENGINES.get(engine, {})
-        soup = BeautifulSoup(html, "html.parser")
+        page = Selector(content=html)
         results: List[SearchResult] = []
 
         if cfg:
             for selector in cfg["sel"].split(", "):
-                items = soup.select(selector)[:num]
+                items = page.css(selector)[:num]
                 if items:
                     _LOGGER.debug("%s found %d items with selector %s", engine, len(items), selector)
                     for item in items:
                         title_el = link_el = desc_el = None
                         for ts in cfg["title"].split(", "):
-                            title_el = item.select_one(ts)
-                            if title_el:
+                            found = item.css(ts)
+                            if found:
+                                title_el = found[0]
                                 break
                         for ls in cfg["link"].split(", "):
-                            link_el = item.select_one(ls)
-                            if link_el:
+                            found = item.css(ls)
+                            if found:
+                                link_el = found[0]
                                 break
                         for ds in cfg["desc"].split(", "):
-                            desc_el = item.select_one(ds)
-                            if desc_el:
+                            found = item.css(ds)
+                            if found:
+                                desc_el = found[0]
                                 break
                         if not title_el or not link_el:
                             continue
-                        href = link_el.get("href", "")
+                        href = str(link_el.attrib.get("href", ""))
                         if not href:
                             continue
                         if href.startswith("/"):
@@ -273,8 +298,8 @@ class WebSearch:
                             continue
                         if not _matches_required_domains(href, required_domains):
                             continue
-                        title = title_el.get_text(strip=True)
-                        snippet = desc_el.get_text(strip=True) if desc_el else ""
+                        title = str(title_el.get_all_text(strip=True))
+                        snippet = str(desc_el.get_all_text(strip=True)) if desc_el else ""
                         if title and href:
                             results.append(SearchResult(
                                 title=title, url=href, snippet=snippet,
@@ -366,9 +391,9 @@ class WebSearch:
                     break
 
         if not results:
-            soup = BeautifulSoup(html, "html.parser")
-            for a in soup.select("a[href]"):
-                href = a.get("href", "")
+            fallback_page = Selector(content=html)
+            for a in fallback_page.css("a[href]"):
+                href = str(a.attrib.get("href", ""))
                 if not href or not href.startswith("http"):
                     continue
                 try:
@@ -384,7 +409,7 @@ class WebSearch:
                 if href in seen:
                     continue
                 seen.add(href)
-                title = a.get_text(strip=True) or domain
+                title = str(a.get_all_text(strip=True)) or domain
                 if len(title) < 3:
                     title = domain
                 results.append(SearchResult(
