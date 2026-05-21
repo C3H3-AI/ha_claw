@@ -22,6 +22,8 @@ _FRONTEND_EXEC_SUBS = "claw_frontend_exec_subs"
 _FRONTEND_TEXT_CACHE = "claw_frontend_text_cache"
 
 _SNAPSHOT_TTL = 5
+_EXEC_JS_CACHE_KEY = "claw_exec_js_cache"
+_EXEC_JS_CACHE_TTL = 10
 
 
 def _domain_data(hass: HomeAssistant) -> dict:
@@ -42,6 +44,30 @@ def get_frontend_snapshot(hass: HomeAssistant) -> dict | None:
     if time.time() - entry["ts"] > _SNAPSHOT_TTL:
         return None
     return entry["data"]
+
+
+def _get_exec_js_cache(hass: HomeAssistant, js_code: str) -> Any | None:
+    """Get cached exec_js result for the same js_code."""
+    cache = _domain_data(hass).get(_EXEC_JS_CACHE_KEY)
+    if not cache:
+        return None
+    code_key = hash(js_code.strip())
+    entry = cache.get(code_key)
+    if not entry:
+        return None
+    if time.time() - entry["ts"] > _EXEC_JS_CACHE_TTL:
+        return None
+    return entry["result"]
+
+
+def _store_exec_js_cache(hass: HomeAssistant, js_code: str, result: Any) -> None:
+    """Store exec_js result in cache."""
+    cache = _domain_data(hass).setdefault(_EXEC_JS_CACHE_KEY, {})
+    code_key = hash(js_code.strip())
+    cache[code_key] = {"ts": time.time(), "result": result}
+    if len(cache) > 20:
+        oldest_key = min(cache, key=lambda k: cache[k]["ts"])
+        del cache[oldest_key]
 
 
 def queue_frontend_exec(hass: HomeAssistant, exec_id: str, js_code: str) -> None:
@@ -279,6 +305,7 @@ class FrontendInspectTool(llm.Tool):
         vol.Optional("direction", default="down"): vol.In(["up", "down", "left", "right"]),
         vol.Optional("amount", default=300): int,
         vol.Optional("depth", default=8): int,
+        vol.Optional("force", default=False): bool,  # Force refresh, bypass cache
     })
 
     _DEEP_QUERY = """
@@ -411,6 +438,21 @@ class FrontendInspectTool(llm.Tool):
         action = args["action"]
 
         if action == "snapshot":
+            force = args.get("force", False)
+            if not force:
+                cached = get_frontend_snapshot(hass)
+                if cached:
+                    active_dialogs = _domain_data(hass).get("claw_active_dialogs")
+                    out = {
+                        "success": True,
+                        "snapshot": cached,
+                        "_cached": True,
+                        "_hint": "This is cached data from recent snapshot. Use action=snapshot with force=true to refresh, or use idx from interactables to interact."
+                    }
+                    if active_dialogs:
+                        out["snapshot"]["active_dialogs"] = active_dialogs
+                    return out
+            
             _domain_data(hass).pop(_FRONTEND_SNAPSHOT_KEY, None)
             depth = args.get("depth", 15)
             selector = args.get("selector")
@@ -442,6 +484,7 @@ class FrontendInspectTool(llm.Tool):
             queue_frontend_exec(hass, exec_id, js)
             result = await async_wait_frontend_exec_result(hass, exec_id)
             _domain_data(hass).pop(_FRONTEND_SNAPSHOT_KEY, None)
+            _domain_data(hass).pop(_EXEC_JS_CACHE_KEY, None)
             await asyncio.sleep(1.5)
             return {"success": True, "result": result}
 
@@ -461,11 +504,24 @@ class FrontendInspectTool(llm.Tool):
             js_code = args.get("js_code")
             if not js_code:
                 return {"error": "js_code is required for exec_js action"}
+            
+            force = args.get("force", False)
+            if not force:
+                cached = _get_exec_js_cache(hass, js_code)
+                if cached is not None:
+                    return {
+                        "success": True,
+                        "result": cached,
+                        "_cached": True,
+                        "_hint": "This is cached result from recent exec_js with same code. Add force=true to re-execute."
+                    }
+            
             exec_id = f"exec_{int(time.time()*1000)}"
             queue_frontend_exec(hass, exec_id, js_code)
             result = await async_wait_frontend_exec_result(hass, exec_id)
             if result and "error" not in (result if isinstance(result, dict) else {}):
                 store_frontend_text_cache(hass, "exec_js", result)
+                _store_exec_js_cache(hass, js_code, result)
             if isinstance(result, str) and len(result) > 4000:
                 size = 4000
                 chunks = [result[i:i + size] for i in range(0, len(result), size)]
@@ -588,6 +644,7 @@ class FrontendInspectTool(llm.Tool):
         queue_frontend_exec(hass, exec_id, js)
         result = await async_wait_frontend_exec_result(hass, exec_id)
         _domain_data(hass).pop(_FRONTEND_SNAPSHOT_KEY, None)
+        _domain_data(hass).pop(_EXEC_JS_CACHE_KEY, None)
         out = {"success": result and "error" not in result, "result": result}
         await asyncio.sleep(0.5)
         active_dialogs = _domain_data(hass).get("claw_active_dialogs")
@@ -695,6 +752,7 @@ class FrontendInspectTool(llm.Tool):
         queue_frontend_exec(hass, exec_id, js)
         result = await async_wait_frontend_exec_result(hass, exec_id)
         _domain_data(hass).pop(_FRONTEND_SNAPSHOT_KEY, None)
+        _domain_data(hass).pop(_EXEC_JS_CACHE_KEY, None)
         return {"success": result and "error" not in result, "result": result}
 
     async def _do_key(self, hass, tool_input):
@@ -759,6 +817,7 @@ class FrontendInspectTool(llm.Tool):
         queue_frontend_exec(hass, exec_id, js)
         result = await async_wait_frontend_exec_result(hass, exec_id)
         _domain_data(hass).pop(_FRONTEND_SNAPSHOT_KEY, None)
+        _domain_data(hass).pop(_EXEC_JS_CACHE_KEY, None)
         return {"success": result and "error" not in result, "result": result}
 
     async def _snapshot_with_auto_scroll(self, hass, depth, selector):
@@ -1128,11 +1187,15 @@ class FrontendInspectTool(llm.Tool):
                 return '';
             }}
 
+            var _seenElements = new WeakSet();
+            
             function markInteractive(el, o) {{
                 if (!isInteractive(el)) return;
+                if (_seenElements.has(el)) return;
                 var rect = el.getBoundingClientRect();
                 if (rect.width === 0 && rect.height === 0) return;
                 if (!isTopElement(el)) return;
+                _seenElements.add(el);
                 _idxCounter++;
                 var idx = _idxCounter;
                 el.setAttribute('data-claw-idx', String(idx));
@@ -1170,8 +1233,12 @@ class FrontendInspectTool(llm.Tool):
                 _interactables.push(entry);
             }}
 
+            var _snappedNodes = new WeakSet();
+            
             function snap(el, d) {{
                 if (!el) return null;
+                if (el.nodeType === 1 && _snappedNodes.has(el)) return null;
+                if (el.nodeType === 1) _snappedNodes.add(el);
                 var isHaHost = el.nodeType === 1 && HA_SHADOW_HOSTS[el.tagName.toLowerCase()];
                 if (el.nodeType === 1 && !isHaHost && (d <= 0 || nodeCount >= MAX_NODES)) {{
                     var ft = (el.innerText || '').trim();

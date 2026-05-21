@@ -43,9 +43,6 @@ _TOOL_FALLBACK_ORIGINAL = "_claw_assistant_tool_fallback_original"
 _GLOBAL_FORMAT_PATCHED = "_claw_assistant_global_format_patched"
 _GLOBAL_FORMAT_ORIGINAL = "_claw_assistant_global_format_original"
 
-# Upstream LLM integrations whose thinking_content streaming triggers the
-# HA frontend lit truncation bug. Centralized so both pipeline-event and
-# chat_log-subscription leak paths use the same allowlist.
 _THINKING_BUGGY_UPSTREAM_PLATFORMS = (
     "google_generative_ai_conversation",
     "openai_conversation",
@@ -142,11 +139,6 @@ def unpatch_local_intents() -> None:
 
 
 async def async_downgrade_intents_package(hass: HomeAssistant) -> None:
-    # Pin home-assistant-intents to 2026.3.3 on disk. Newer versions ship a
-    # bloated zh-CN.json (~533 sentence templates) that explode into ~76k
-    # regex matches per recognize call and stall the event loop.
-    # get_intents() reads the JSON from disk on every call, so a force-
-    # reinstall takes effect immediately without restarting the process.
     import os
     import sys
 
@@ -190,7 +182,6 @@ async def async_downgrade_intents_package(hass: HomeAssistant) -> None:
     os.environ[_INTENTS_DOWNGRADE_DONE] = "1"
     LOGGER.info("home-assistant-intents downgraded to 2026.3.3")
 
-    # Clear default_agent's cached zh-* intents so next recognize re-reads disk.
     try:
         for entry in list(hass.data.values()):
             if not isinstance(entry, dict):
@@ -412,17 +403,6 @@ def patch_hide_tool_calls_from_pipeline(hass: HomeAssistant) -> None:
                 ),
             )
 
-        # Suppress the frontend `.thinking-wrapper` UNCONDITIONALLY.
-        # Reason: claw_assistant is the visible conversation agent, while
-        # gemini / openai_conversation / open_router are only internal
-        # backends invoked through internal_llm. The PipelineRun.intent_agent
-        # platform therefore reads as `claw_assistant`, never as the upstream
-        # platform that actually emitted the chunk, so any platform-based
-        # gate is a no-op here. The wrapper is gated by
-        # `e.thinking || (e.tool_calls && length>0)` in the dialog template,
-        # so we strip BOTH fields from every forwarded delta. chat_log
-        # internal accumulation is untouched: tool execution, history,
-        # TTS, and diagnostics still receive the full payload.
         if (
             event.type == PipelineEventType.INTENT_PROGRESS
             and isinstance(delta, dict)
@@ -540,10 +520,6 @@ def patch_strip_thinking_content_serialization(hass: HomeAssistant) -> None:
     original_as_dict = AssistantContent.as_dict
 
     def patched_as_dict(self) -> dict[str, Any]:
-        # Strip unconditionally: see the rationale on the pipeline-event
-        # patch above. The agent_id on the AssistantContent reflects the
-        # claw_assistant entity, not the upstream backend, so platform
-        # filtering would always miss the case we actually need to fix.
         result = original_as_dict(self)
         result.pop("thinking_content", None)
         result.pop("tool_calls", None)
@@ -587,6 +563,25 @@ def _is_tool_progress_enabled(hass: HomeAssistant) -> bool:
     if not entries:
         return True
     return entries[0].options.get(CONF_ENABLE_TOOL_PROGRESS, True)
+
+
+def _is_tool_details_enabled(hass: HomeAssistant) -> bool:
+    from ..const import CONF_ENABLE_TOOL_DETAILS
+    entries = hass.config_entries.async_entries(DOMAIN)
+    if not entries:
+        return False
+    return entries[0].options.get(CONF_ENABLE_TOOL_DETAILS, False)
+
+
+def _get_current_token_stats(hass: HomeAssistant, chat_log) -> tuple[int, int]:
+    """Get current token usage and context window size."""
+    try:
+        from .context_compressor import _estimate_total_tokens
+        content = getattr(chat_log, "content", []) or []
+        tokens_used = _estimate_total_tokens(content)
+        return tokens_used, 262144
+    except Exception:
+        return 0, 262144
 
 
 _HEADING_STRIP_RE = re.compile(r"^#{1,6}\s+")
@@ -635,9 +630,18 @@ def _wrap_listener_for_tracking(chat_log, original_listener):
     if getattr(chat_log, "_claw_listener_wrapped", False):
         return original_listener
 
+    thinking_marker_id = f"think_{id(chat_log)}"
+    if not hasattr(chat_log, "_claw_thinking_buffer"):
+        chat_log._claw_thinking_buffer = []
+    
     def tracked_listener(log, delta):
         if not isinstance(delta, dict):
             return original_listener(log, delta)
+        
+        thinking_content = delta.pop("thinking_content", None)
+        if thinking_content:
+            log._claw_thinking_buffer.append(thinking_content)
+        
         skip_tts = delta.pop("_claw_skip_tts", False)
         content = delta.get("content")
         if content:
@@ -672,7 +676,7 @@ def _wrap_listener_for_tracking(chat_log, original_listener):
 _PROGRESS_CHUNK_RE = re.compile(r"(\*[^*]*\*|[^\s*]+|\s+)")
 
 
-async def _emit_frontend_progress(hass: HomeAssistant, chat_log, text: str) -> None:
+async def _emit_frontend_progress(hass: HomeAssistant, chat_log, text: str, *, extra: dict | None = None) -> None:
     listener = getattr(chat_log, "delta_listener", None)
     if not listener or not text:
         return
@@ -697,20 +701,27 @@ async def _emit_frontend_progress(hass: HomeAssistant, chat_log, text: str) -> N
         text = "\n" + text
     full = text
 
+    _extra = extra or {}
+
     if not _is_streaming_enabled(hass):
-        listener(chat_log, {"content": full, "_claw_skip_tts": True})
+        listener(chat_log, {"content": full, "_claw_skip_tts": True, **_extra})
         listener(chat_log, {"content": "\n", "_claw_skip_tts": True})
         return
 
     chunks = _PROGRESS_CHUNK_RE.findall(full)
     if not chunks:
-        listener(chat_log, {"content": full, "_claw_skip_tts": True})
+        listener(chat_log, {"content": full, "_claw_skip_tts": True, **_extra})
         listener(chat_log, {"content": "\n", "_claw_skip_tts": True})
         return
 
     await asyncio.sleep(0)
+    first_chunk = True
     for chunk in chunks:
-        listener(chat_log, {"content": chunk, "_claw_skip_tts": True})
+        d = {"content": chunk, "_claw_skip_tts": True}
+        if first_chunk:
+            d.update(_extra)
+            first_chunk = False
+        listener(chat_log, d)
         await asyncio.sleep(0.02)
     listener(chat_log, {"content": "\n", "_claw_skip_tts": True})
 
@@ -719,7 +730,7 @@ def patch_tool_progress(hass: HomeAssistant) -> None:
 
     from homeassistant.components.conversation import chat_log as chat_log_module
     from .events import fire_live_progress
-    from .tool_progress import tool_progress_line
+    from .tool_progress import tool_progress_line, thinking_progress_line
 
     if getattr(chat_log_module.ChatLog, _TOOL_PROGRESS_PATCHED, False):
         return
@@ -754,23 +765,29 @@ def patch_tool_progress(hass: HomeAssistant) -> None:
         if native_thinking and native_thinking.strip():
             thinking_text = native_thinking.strip()
         _progress_on = _is_tool_progress_enabled(hass)
+        _details_on = _is_tool_details_enabled(hass)
         if thinking_text and _progress_on:
-            truncated = thinking_text[:120].replace("#", "").replace(">", "").replace("<", "").replace("|", "")
-            lines = [l.strip() for l in truncated.splitlines() if l.strip()]
-            display = " ".join(lines)
-            from .state import get_conversation_status
-            lang = get_conversation_status(hass).get("user_language") or hass.config.language or "en"
-            await _emit_frontend_progress(hass, self, f"\n┊ *💭 {display}*")
-            fire_live_progress(
-                hass,
-                conversation_id=getattr(self, "conversation_id", None),
-                phase="thinking",
-                text=truncated,
-                display_text=tool_progress_line("GetLiveContext", {}, lang).strip(),
-            )
+            from .state import get_channel_type as _gct2
+            if _gct2(getattr(self, "conversation_id", None)) != "ha":
+                truncated = thinking_text[:120].replace("#", "").replace(">", "").replace("<", "").replace("|", "")
+                lines = [l.strip() for l in truncated.splitlines() if l.strip()]
+                display = " ".join(lines)
+                await _emit_frontend_progress(hass, self, f"\n┊ *💭 {display}*")
+                from .state import get_conversation_status
+                lang = get_conversation_status(hass).get("user_language") or hass.config.language or "en"
+                _tk_used, _ctx_win = _get_current_token_stats(hass, self)
+                fire_live_progress(
+                    hass,
+                    conversation_id=getattr(self, "conversation_id", None),
+                    phase="thinking",
+                    text=truncated,
+                    display_text=thinking_progress_line(truncated, lang),
+                    tokens_used=_tk_used,
+                    context_window=_ctx_win,
+                )
 
         tool_calls = getattr(content, "tool_calls", None)
-        if tool_calls and _progress_on:
+        if tool_calls and (_progress_on or _details_on):
             from .state import get_conversation_status
             lang = get_conversation_status(hass).get("user_language") or hass.config.language or "en"
             for tc in tool_calls:
@@ -783,27 +800,102 @@ def patch_tool_progress(hass: HomeAssistant) -> None:
                     others = [p for p in peers if not p.get("is_you")]
                     if others:
                         args["agent_name"] = others[0].get("agent_name", "")
-                line = tool_progress_line(tc.tool_name, args, lang, hass=hass)
-                await _emit_frontend_progress(hass, self, line.strip())
-                fire_live_progress(
-                    hass,
-                    conversation_id=getattr(self, "conversation_id", None),
-                    phase="tool_call",
-                    text="",
-                    tool_name=tc.tool_name,
-                    display_text=line.strip(),
-                )
+                from .state import get_channel_type as _gct, get_conversation_status as _gcs
+                _is_ha_frontend = _gct(getattr(self, "conversation_id", None)) == "ha"
+                _is_voice = _gcs(hass).get("is_voice_pipeline", False)
+                _tool_info_payload = {"_claw_tool_info": {
+                    "tool_call_id": getattr(tc, "id", ""),
+                    "marker_id": getattr(tc, "id", ""),
+                    "tool_name": tc.tool_name,
+                    "tool_args": dict(tc.tool_args),
+                }}
+                listener = self.delta_listener
+                if listener:
+                    if _is_ha_frontend and not _is_voice:
+                        if _details_on:
+                            listener(self, {"content": f"\n\n<!--CLAW_TOOL:{getattr(tc, 'id', '')}-->\n\n", "_claw_skip_tts": True, **_tool_info_payload})
+                        elif _progress_on:
+                            line = tool_progress_line(tc.tool_name, args, lang, hass=hass)
+                            listener(self, {"content": f"\n\n{line}\n\n", "_claw_skip_tts": True})
+                    elif _progress_on:
+                        line = tool_progress_line(tc.tool_name, args, lang, hass=hass)
+                        listener(self, {"content": f"\n\n{line}\n\n", "_claw_skip_tts": True, **_tool_info_payload})
+                line = tool_progress_line(tc.tool_name, args, lang, hass=hass) if _progress_on else ""
+                if line:
+                    _tk_used, _ctx_win = _get_current_token_stats(hass, self)
+                    fire_live_progress(
+                        hass,
+                        conversation_id=getattr(self, "conversation_id", None),
+                        phase="tool_call",
+                        text="",
+                        tool_name=tc.tool_name,
+                        display_text=line.strip(),
+                        tokens_used=_tk_used,
+                        context_window=_ctx_win,
+                    )
 
-        _had_progress = bool(thinking_text) or bool(
+        streamed_thinking = getattr(self, "_claw_thinking_buffer", [])
+        final_thinking = ""
+        if streamed_thinking:
+            full_thinking = "".join(streamed_thinking)
+            cleaned = full_thinking.replace("#", "").replace(">", "").replace("<", "").replace("|", "")
+            lines = [l.strip() for l in cleaned.splitlines() if l.strip()]
+            final_thinking = " ".join(lines)
+            self._claw_thinking_buffer = []
+        elif thinking_text:
+            cleaned = thinking_text.replace("#", "").replace(">", "").replace("<", "").replace("|", "")
+            lines = [l.strip() for l in cleaned.splitlines() if l.strip()]
+            final_thinking = " ".join(lines)
+        if final_thinking and _progress_on:
+            listener = getattr(self, "delta_listener", None)
+            if listener:
+                from .state import get_channel_type as _gct2, get_conversation_status as _gcs2
+                _is_ha2 = _gct2(getattr(self, "conversation_id", None)) == "ha"
+                _is_voice2 = _gcs2(hass).get("is_voice_pipeline", False)
+                if _details_on and _is_ha2 and not _is_voice2:
+                    listener(self, {
+                        "_claw_thinking": final_thinking,
+                        "_claw_marker_id": f"think_{id(self)}",
+                        "_claw_skip_tts": True,
+                    })
+                else:
+                    truncated = final_thinking[:80]
+                    listener(self, {
+                        "content": f"\n┊ *💭 {truncated}{'...' if len(final_thinking) > 80 else ''}*\n",
+                        "_claw_skip_tts": True,
+                    })
+
+        _had_progress = bool(thinking_text) or bool(streamed_thinking) or bool(
             tool_calls and any(not getattr(tc, "external", False) for tc in tool_calls)
         )
         if _had_progress:
             self._claw_progress_active = False
             self._claw_has_content = False
 
-        async for result in original_async_add_assistant_content(
+        _gen = original_async_add_assistant_content(
             self, content, tool_call_tasks=tool_call_tasks
-        ):
+        )
+        import inspect
+        if inspect.iscoroutine(_gen):
+            _gen = await _gen
+            if _gen is None:
+                return
+            if not hasattr(_gen, "__aiter__"):
+                yield _gen
+                return
+        async for result in _gen:
+            _rl = getattr(self, "delta_listener", None)
+            if _rl and hasattr(result, "tool_call_id"):
+                from .state import get_channel_type as _gct2
+                if _gct2(getattr(self, "conversation_id", None)) == "ha" and _details_on:
+                    _rl(self, {
+                        "_claw_tool_result": {
+                            "tool_call_id": result.tool_call_id,
+                            "tool_name": getattr(result, "tool_name", ""),
+                            "tool_result": getattr(result, "tool_result", None),
+                        },
+                        "_claw_skip_tts": True,
+                    })
             yield result
 
     chat_log_module.ChatLog.async_add_assistant_content = (
@@ -820,17 +912,17 @@ def patch_tool_progress(hass: HomeAssistant) -> None:
     _STREAM_HEADING_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
 
     async def patched_delta_stream(self, agent_id, stream):
-        if not getattr(self, "_claw_listener_wrapped", False):
-            orig = getattr(self, "delta_listener", None)
-            if orig:
-                self.delta_listener = _wrap_listener_for_tracking(self, orig)
+        orig = getattr(self, "delta_listener", None)
+        if orig and not getattr(self, "_claw_listener_wrapped", False):
+            self.delta_listener = _wrap_listener_for_tracking(self, orig)
 
         async def _filtered_stream(src):
             async for delta in src:
-                if isinstance(delta, dict) and "content" in delta and delta["content"]:
-                    c = _STREAM_HEADING_RE.sub("", delta["content"])
-                    if c != delta["content"]:
-                        delta = {**delta, "content": c}
+                if isinstance(delta, dict):
+                    if "content" in delta and delta["content"]:
+                        c = _STREAM_HEADING_RE.sub("", delta["content"])
+                        if c != delta["content"]:
+                            delta = {**delta, "content": c}
                 yield delta
 
         async for item in original_delta_stream(self, agent_id, _filtered_stream(stream)):

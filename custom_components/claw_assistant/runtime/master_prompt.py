@@ -19,6 +19,25 @@ _CACHED_MASTER_SECTIONS: tuple[str, ...] | None = None
 _CACHED_MASTER_SIGNATURE: tuple[str, ...] | None = None
 
 
+def _build_capability_overview() -> str:
+    try:
+        from ..tools.registry import TOOL_REGISTRY
+    except Exception:
+        return ""
+    if not TOOL_REGISTRY:
+        return ""
+    categories: dict[str, list[str]] = {}
+    for name, info in TOOL_REGISTRY.items():
+        cat = info.get("category", "misc")
+        categories.setdefault(cat, []).append(name)
+    summary_parts = [f"{cat}({len(tools)})" for cat, tools in categories.items()]
+    return (
+        "## Capabilities\n"
+        f"You have {len(TOOL_REGISTRY)} tools across: {', '.join(summary_parts)}.\n"
+        "Tool descriptions are in the function schema. Use tools directly; do NOT call tools to discover your own capabilities."
+    )
+
+
 def invalidate_master_prompt_cache() -> None:
     global _CACHED_MASTER_SECTIONS, _CACHED_MASTER_SIGNATURE
     _CACHED_MASTER_SECTIONS = None
@@ -26,9 +45,6 @@ def invalidate_master_prompt_cache() -> None:
 
 
 def build_master_prompt_sections(*, user_text: str = "") -> tuple[str, ...]:
-
-    del user_text
-
     global _CACHED_MASTER_SECTIONS, _CACHED_MASTER_SIGNATURE
     from .skill_store import _ensure_prompt_store_fresh
     current_sig = _ensure_prompt_store_fresh().signature
@@ -54,6 +70,10 @@ def build_master_prompt_sections(*, user_text: str = "") -> tuple[str, ...]:
         sections.append(
             f"## Installed Skill Index\n{skill_catalog}\n\n{_SKILL_INDEX_GUIDANCE}"
         )
+
+    capability_overview = _build_capability_overview()
+    if capability_overview:
+        sections.insert(0, capability_overview)
 
     result = tuple(section for section in sections if section.strip())
     _CACHED_MASTER_SECTIONS = result

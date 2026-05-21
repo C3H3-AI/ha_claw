@@ -414,7 +414,7 @@ def _prepare_flow_result_json(
                 "action": configure_action,
                 "params": {"flow_id": flow_id, "next_step_id": menu_options[0] if menu_options else ""},
             },
-            "next_action": f"Call ConfigEntries with action='{configure_action}'. Set next_step_id to one of: {menu_options}",
+            "next_action": f"This is a MENU step — choose ONE menu item to navigate into. Call ConfigEntries with action='{configure_action}', params: {{flow_id: '{flow_id}', next_step_id: '<chosen_option>'}}. Available options: {menu_options}. After completing that sub-form, the flow may return here (menu again) for you to choose another option, or finish with CREATE_ENTRY. To modify a specific setting, pick the menu option that contains it (e.g. 'advanced_options' for strategy/power settings).",
         }
 
     flow_id = result.get("flow_id")
@@ -453,7 +453,7 @@ def _prepare_flow_result_json(
             "action": configure_action,
             "params": example_params,
         },
-        "next_action": f"Call ConfigEntries with action='{configure_action}' and params shown in example_call. Fill in the field values.",
+        "next_action": f"Fill in field values and call ConfigEntries with action='{configure_action}'. Put values directly in params alongside flow_id (no wrapper). After submitting, the response may be: another form (continue filling), a menu (pick next section), or create_entry (done). Keep going until you get create_entry or abort.",
     }
 
 
@@ -787,6 +787,23 @@ Available actions:
             }
             domain, service = service_map[action]
             await hass.services.async_call(domain, service, {}, blocking=True)
+            if action == "reload_resources":
+                from ..runtime.official_websocket_hook import queue_frontend_js
+                queue_frontend_js(hass, (
+                    "(()=>{"
+                    "try{"
+                    "var jobs=[];"
+                    "if('serviceWorker' in navigator){"
+                    "jobs.push(navigator.serviceWorker.getRegistrations()"
+                    ".then(rs=>Promise.all(rs.map(r=>r.unregister()))));"
+                    "}"
+                    "if('caches' in window){"
+                    "jobs.push(caches.keys().then(ns=>Promise.all(ns.map(n=>caches.delete(n)))));"
+                    "}"
+                    "Promise.all(jobs).finally(()=>{window.location.href=window.location.pathname+'?cache_bust='+Date.now();});"
+                    "}catch(e){window.location.href=window.location.pathname+'?cache_bust='+Date.now();}"
+                    "})();"
+                ))
             return {"success": True, "message": f"Reloaded {action}"}
 
         if action == "check_config":
@@ -933,6 +950,11 @@ To INSTALL a new integration:
 
 To CHECK existing entries: config_entries/get — params: {domain: "xxx"} (optional)
 To CHANGE options: config_entries/options/init — params: {entry_id: "..."} → config_entries/options/configure
+  MULTI-STEP WIZARD: Many integrations use menu→form→menu→form patterns.
+  - If response type is "menu": pick next_step_id from menu_options and call options/configure.
+  - If response type is "form": fill fields and call options/configure.
+  - Keep calling options/configure with the SAME flow_id until you get "create_entry" (done).
+  - Don't stop mid-flow! An incomplete flow is discarded. Complete the full wizard.
   NOTE: If options/init returns "Invalid handler", the integration uses SUBENTRIES instead — see below.
 To DELETE: config_entries/delete — params: {entry_id: "..."}
 To RELOAD: config_entries/reload — params: {entry_id: "..."}
@@ -1514,7 +1536,9 @@ DISCIPLINE: 1) Follow the exact workflow steps above — no exploratory calls. 2
                 if result_type == data_entry_flow.FlowResultType.CREATE_ENTRY:
                     opt_msg = f"Options saved for {flow_id}"
                 elif result_type == data_entry_flow.FlowResultType.FORM:
-                    opt_msg = "Options form returned — fill in fields and call options/configure again"
+                    opt_msg = f"Next form step returned (step_id: {result.get('step_id', '?')}). Fill in the fields and call options/configure again with the same flow_id. This is a multi-step wizard — keep submitting until you get create_entry."
+                elif result_type == data_entry_flow.FlowResultType.MENU:
+                    opt_msg = f"Menu step returned. Pick a menu option (next_step_id) and call options/configure again."
                 elif result_type == data_entry_flow.FlowResultType.ABORT:
                     opt_msg = f"Options flow aborted: {result.get('reason', 'unknown')}"
                 else:
@@ -1720,6 +1744,9 @@ DISCIPLINE: 1) Follow the exact workflow steps above — no exploratory calls. 2
             return {"success": False, "error": str(err)}
 
 
+_FRONTEND_CATEGORIES = {"plugin", "lovelace", "theme"}
+
+
 class HACSTool(llm.Tool):
     name = "HACS"
     description = """HACS store tool — for THIRD-PARTY integrations/plugins ONLY.
@@ -1747,7 +1774,14 @@ Supported params:
 - category: integration/lovelace/plugin/theme/appdaemon/python_script/template
 - params: management params such as version/show_beta/state
 - page: page number (default 1)
-- page_size: items per page (default 15)"""
+- page_size: items per page (default 15)
+
+CATEGORY MATTERS — match the HACS tab:
+- Dashboard tab → category='plugin' (frontend cards/panels, e.g. bubble-card, mushroom, mini-graph-card). After install/update/uninstall you MUST call HAControl action=reload_resources to refresh.
+- Integration tab → category='integration' (backend integrations). Needs HA restart after install.
+- Template tab → category='template' (Jinja templates). No frontend refresh needed.
+- Theme tab → category='theme' (frontend themes). After install/update/uninstall you MUST call HAControl action=reload_resources to refresh.
+Do NOT default to 'integration' for a dashboard card — use 'plugin'."""
     parameters = vol.Schema(
         {
             vol.Required("action"): str,
@@ -1895,7 +1929,7 @@ Supported params:
                     "python_script": HacsCategory.PYTHON_SCRIPT,
                     "template": HacsCategory.TEMPLATE,
                 }
-                hacs_category = category_map.get(category, HacsCategory.INTEGRATION)
+                ai_category = category_map.get(category, HacsCategory.INTEGRATION)
 
                 repo = hacs_data.repositories.get_by_full_name(repository) if repository else None
                 target_repository = repository
@@ -1917,31 +1951,96 @@ Supported params:
                     }
 
                 existing = repo or hacs_data.repositories.get_by_full_name(target_repository)
+
                 if existing and existing.data.installed:
                     await existing.async_download_repository(ref=params.get("version"))
-                    return {
+                    effective_cat = str(existing.data.category)
+                    result = {
                         "success": True,
                         "message": f"Updated {existing.data.full_name}",
+                        "category_type": effective_cat,
                         "repository": _serialize_hacs_repo(existing),
                     }
+                    if effective_cat in _FRONTEND_CATEGORIES:
+                        result["_action_required"] = (
+                            "Frontend resource updated. You MUST now call HAControl action=reload_resources "
+                            "to reload lovelace resources and clear browser cache. Tell the user the page will refresh."
+                        )
+                    else:
+                        result["next_action"] = "Integration updated. A Home Assistant restart may be required to apply changes."
+                    return result
 
-                if existing is None:
-                    await hacs_data.async_register_repository(target_repository, hacs_category)
-                repo = hacs_data.repositories.get_by_full_name(target_repository)
-                if repo:
-                    await repo.async_download_repository(ref=params.get("version"))
+                if existing is not None:
+                    real_cat = HacsCategory(str(existing.data.category))
+                    await existing.async_download_repository(ref=params.get("version"))
+                    effective_cat = str(existing.data.category)
                     domain = (
-                        repo.data.domain
-                        or repo.data.name.replace("-", "_").replace(" ", "_").lower()
+                        getattr(existing.data, "domain", None)
+                        or existing.data.name.replace("-", "_").replace(" ", "_").lower()
                     )
-                    return {
-                        "success": True,
-                        "message": f"Installed {target_repository}",
-                        "domain": domain,
-                        "repository": _serialize_hacs_repo(repo),
-                        "next_action": f"You can now search for '{domain}' in the Home Assistant integrations page to finish setup.",
-                    }
-                return {"success": False, "error": f"Registration failed: {target_repository}"}
+                else:
+                    detected_cat = None
+                    try:
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(
+                                f"https://raw.githubusercontent.com/{target_repository}/HEAD/hacs.json",
+                                timeout=aiohttp.ClientTimeout(total=8),
+                            ) as resp:
+                                if resp.status == 200:
+                                    hacs_meta = await resp.json(content_type=None)
+                                    if isinstance(hacs_meta, dict) and hacs_meta.get("name"):
+                                        pass
+                            if detected_cat is None:
+                                api_url = f"https://api.github.com/repos/{target_repository}/git/trees/HEAD?recursive=1"
+                                async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                                    if resp.status == 200:
+                                        tree_data = await resp.json()
+                                        paths = [t["path"] for t in tree_data.get("tree", []) if t.get("type") == "blob"]
+                                        has_custom_components = any(p.startswith("custom_components/") for p in paths)
+                                        has_dist_js = any(p.startswith("dist/") and p.endswith(".js") for p in paths)
+                                        has_root_js = any("/" not in p and p.endswith(".js") for p in paths)
+                                        has_themes = any(p.startswith("themes/") and p.endswith(".yaml") for p in paths)
+                                        has_template = any(p.endswith(".jinja") or p.endswith(".jinja2") for p in paths)
+                                        if has_custom_components:
+                                            detected_cat = HacsCategory.INTEGRATION
+                                        elif has_dist_js or has_root_js:
+                                            detected_cat = HacsCategory.PLUGIN
+                                        elif has_themes:
+                                            detected_cat = HacsCategory.THEME
+                                        elif has_template:
+                                            detected_cat = HacsCategory.TEMPLATE
+                    except Exception:
+                        pass
+                    real_cat = detected_cat or ai_category
+                    try:
+                        await hacs_data.async_register_repository(target_repository, real_cat)
+                    except Exception as reg_err:
+                        return {"success": False, "error": f"Registration failed for {target_repository} as {real_cat}: {reg_err}"}
+                    existing = hacs_data.repositories.get_by_full_name(target_repository)
+                    if not existing:
+                        return {"success": False, "error": f"Repository registered but not found: {target_repository}"}
+                    await existing.async_download_repository(ref=params.get("version"))
+                    effective_cat = str(existing.data.category)
+                    domain = (
+                        getattr(existing.data, "domain", None)
+                        or existing.data.name.replace("-", "_").replace(" ", "_").lower()
+                    )
+
+                result = {
+                    "success": True,
+                    "message": f"Installed {target_repository}",
+                    "domain": domain,
+                    "category_type": effective_cat,
+                    "repository": _serialize_hacs_repo(existing),
+                }
+                if effective_cat in _FRONTEND_CATEGORIES:
+                    result["_action_required"] = (
+                        "Frontend resource installed. You MUST now call HAControl action=reload_resources "
+                        "to reload lovelace resources and clear browser cache. Tell the user the page will refresh."
+                    )
+                else:
+                    result["next_action"] = f"You can now search for '{domain}' in the Home Assistant integrations page to finish setup."
+                return result
 
             if action == "uninstall":
                 repo = hacs_data.repositories.get_by_full_name(repository) if repository else None
@@ -1949,12 +2048,22 @@ Supported params:
                     repo = _find_repo_by_query(hacs_data, query)
                 if repo is None:
                     return {"success": False, "error": "Could not find a repository to uninstall"}
+                effective_cat = str(repo.data.category)
                 await repo.uninstall()
-                return {
+                result = {
                     "success": True,
                     "message": f"Uninstalled {repo.data.full_name}",
+                    "category_type": effective_cat,
                     "repository": _serialize_hacs_repo(repo),
                 }
+                if effective_cat in _FRONTEND_CATEGORIES:
+                    result["_action_required"] = (
+                        "Frontend resource removed. You MUST now call HAControl action=reload_resources "
+                        "to reload lovelace resources and clear browser cache. Tell the user the page will refresh."
+                    )
+                else:
+                    result["next_action"] = "Integration uninstalled. A Home Assistant restart may be required."
+                return result
 
             if action == "remove":
                 repo = hacs_data.repositories.get_by_full_name(repository) if repository else None

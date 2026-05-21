@@ -43,9 +43,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-# ---------------------------------------------------------------------------
-# Data classes
-# ---------------------------------------------------------------------------
 
 VALID_OPS = frozenset({
     "replace",
@@ -96,9 +93,6 @@ class PatchReport:
         }
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 
 def apply_patches(
@@ -170,16 +164,12 @@ def apply_patches(
     )
 
 
-# ---------------------------------------------------------------------------
-# Internals
-# ---------------------------------------------------------------------------
 
 
 def _apply_one(text: str, patch: dict[str, Any], *, index: int) -> tuple[str, dict[str, Any]]:
     op: str = patch["op"]
     new_text: str = patch.get("new_text", "") or ""
 
-    # Anchor-less ops -------------------------------------------------------
     if op == "create":
         if text.strip() and not patch.get("force"):
             raise PatchError(
@@ -196,7 +186,6 @@ def _apply_one(text: str, patch: dict[str, Any], *, index: int) -> tuple[str, di
     if op == "append":
         return text + new_text, {"op": op, "chars": len(new_text)}
 
-    # Anchor ops ------------------------------------------------------------
     anchor = patch.get("anchor")
     if not isinstance(anchor, str) or not anchor:
         raise PatchError(
@@ -215,7 +204,6 @@ def _apply_one(text: str, patch: dict[str, Any], *, index: int) -> tuple[str, di
             hint=_suggest_near(text, anchor),
         )
 
-    # Optional guardrail
     expected = patch.get("count")
     if isinstance(expected, int) and expected >= 0 and len(spans) != expected:
         raise PatchError(
@@ -227,7 +215,6 @@ def _apply_one(text: str, patch: dict[str, Any], *, index: int) -> tuple[str, di
     occurrence = patch.get("occurrence", "unique")
     chosen = _pick_spans(spans, occurrence, index=index, patch=patch)
 
-    # Apply from the end so earlier offsets stay valid
     result = text
     for start, end in sorted(chosen, key=lambda s: s[0], reverse=True):
         result = _splice(result, start, end, new_text, op)
@@ -314,7 +301,6 @@ def _splice(text: str, start: int, end: int, new_text: str, op: str) -> str:
         return text[:end] + new_text + text[end:]
     if op == "delete":
         return text[:start] + text[end:]
-    # Should never happen — validated upstream
     raise PatchError(f"unexpected splice op: {op}", index=-1, patch={"op": op})
 
 
@@ -336,13 +322,11 @@ def _suggest_near(text: str, anchor: str, *, window: int = 40) -> str:
     needle = anchor.strip().splitlines()[0][:40] if anchor else ""
     if not needle:
         return "Anchor is empty or whitespace-only."
-    # Fuzzy: find closest lines
     lines = text.splitlines()
     close = difflib.get_close_matches(needle, lines, n=3, cutoff=0.5)
     if close:
         preview = " | ".join(line.strip()[:80] for line in close)
         return f"No exact match. Nearest lines: {preview}"
-    # Fallback: show first chars of text
     head = text[:window].replace("\n", "\\n")
     return f"No exact match and no close lines found. Text starts with: {head!r}"
 

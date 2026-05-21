@@ -25,8 +25,6 @@ _UNSUB_KEY = "curator_unsub"
 _CHECK_INTERVAL = timedelta(minutes=5)
 _REVIEW_MARKER = "[CURATOR-REVIEW]"
 
-# Idle-trigger thresholds: silently self-organize when the assistant has been
-# active recently but has now been quiet for a while. No keyword detection.
 _IDLE_MIN_TURNS = 3
 _IDLE_QUIET_AFTER = timedelta(minutes=20)
 
@@ -373,15 +371,11 @@ async def async_run_curator(
         state["last_run_at"] = start.isoformat()
         state["run_count"] = int(state.get("run_count", 0)) + 1
         state["last_run_summary"] = f"auto: {auto_summary}"
-        # idle counters reset on every successful pass; next run requires
-        # fresh activity to satisfy ``should_run_idle``.
         state["turns_since_last_run"] = 0
         await hass.async_add_executor_job(save_state, state)
 
     llm_summary = ""
     llm_error = None
-    # If the deterministic auto-transitions found nothing to change AND
-    # there are no agent-created skills, skip the LLM pass entirely
     auto_changed = bool(
         counts.get("marked_stale")
         or counts.get("archived")

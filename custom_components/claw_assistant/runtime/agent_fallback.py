@@ -72,9 +72,29 @@ def _get_chat_log_content(hass: HomeAssistant, conversation_id: str) -> list:
     return chat_log.content if chat_log else []
 
 
+def _get_last_assistant_content(hass: HomeAssistant, conversation_id: str) -> str:
+    """Get the last assistant content from chat log (partial streaming output)."""
+    from homeassistant.components.conversation.chat_log import AssistantContent
+    content = _get_chat_log_content(hass, conversation_id)
+    if not content:
+        return ""
+    for item in reversed(content):
+        if isinstance(item, AssistantContent) and item.content:
+            return item.content.strip()
+    return ""
+
+
 async def _trim_chat_log_for_context_overflow(hass: HomeAssistant, conversation_id: str, *, summary_agent_id: str = "", force: bool = False) -> None:
-    from .context_compressor import compress_chat_log
+    from .context_compressor import compress_chat_log, apply_pending_compression
+    if apply_pending_compression(hass, conversation_id):
+        return
     await compress_chat_log(hass, conversation_id, summary_agent_id=summary_agent_id, force=force)
+
+
+def _schedule_background_compression_if_needed(hass: HomeAssistant, conversation_id: str, *, summary_agent_id: str = "") -> None:
+    """Schedule background compression after turn completes (non-blocking)."""
+    from .context_compressor import schedule_background_compression
+    schedule_background_compression(hass, conversation_id, summary_agent_id=summary_agent_id)
 
 
 def _strip_image_blocks_from_chat(chat_content: list) -> int:
@@ -384,6 +404,7 @@ async def _finalize_synthesized_success(
         )
     record_turn_activity(hass)
     set_current_thought(hass, None)
+    _schedule_background_compression_if_needed(hass, conversation_id)
     return result
 
 
@@ -457,6 +478,7 @@ async def _finalize_agent_success(
             user_text, detect_user_ending_intent
         )
     record_turn_activity(hass)
+    _schedule_background_compression_if_needed(hass, conversation_id)
     return result
 
 
@@ -802,6 +824,11 @@ def _build_fallback_extra_prompt(
     pending_handoff_context: str,
     previous_tool_results: list[dict[str, Any]],
 ) -> str | None:
+    """Build fallback extra prompt.
+
+    base_prompt already contains the full workspace docs + tool catalog + skill index
+    (built by orchestrator via build_base_prompt). We only append dynamic per-turn sections.
+    """
     lang_section = ""
     if hass is not None:
         from .prompting import _resolve_user_language, _language_display_name
@@ -955,6 +982,7 @@ async def run_agent_fallback_chain(
     device_id,
     satellite_id,
     conv_history,
+    is_first_turn: bool = False,
 ) -> Any:
 
     task_loop = get_task_loop_state(hass)
@@ -1193,16 +1221,27 @@ async def run_agent_fallback_chain(
         tool_calls_state = get_tool_calls_state(hass)
         tool_calls_state.clear()
 
-        current_extra_prompt = _build_fallback_extra_prompt(
-            hass=hass,
-            base_prompt=base_extra_prompt,
-            user_text=text,
-            pending_handoff_context=pending_handoff_context,
-            previous_tool_results=previous_tool_results,
-        )
+        if is_first_turn:
+            current_extra_prompt = _build_fallback_extra_prompt(
+                hass=hass,
+                base_prompt=base_extra_prompt,
+                user_text=text,
+                pending_handoff_context=pending_handoff_context,
+                previous_tool_results=previous_tool_results,
+            )
+        else:
+            current_extra_prompt = None
+
+        _ctx_continue_hint = transient_retry_counts.pop("__ctx_continue_hint", None)
+        if _ctx_continue_hint:
+            if current_extra_prompt:
+                current_extra_prompt = f"{current_extra_prompt}\n{_ctx_continue_hint}"
+            else:
+                current_extra_prompt = _ctx_continue_hint
 
         try:
-            from .context_compressor import get_compressor
+            from .context_compressor import get_compressor, run_deferred_compression
+            run_deferred_compression(hass, conversation_id)
             _cc = get_compressor()
             if _cc.preflight_check(_get_chat_log_content(hass, conversation_id)):
                 LOGGER.info("Preflight compression: context exceeds threshold, compressing before API call")
@@ -1296,10 +1335,21 @@ async def run_agent_fallback_chain(
                                 _rc.extend(_rr)
                     except Exception:
                         pass
+                    _partial = agent_response_text if (agent_response_text and len(agent_response_text) > 50 and not _is_error_text) else ""
+                    if _partial:
+                        _continue_hint = (
+                            f"\n\n[SYSTEM: Context was compressed due to length. "
+                            f"Your previous partial response ({len(_partial)} chars) is preserved above. "
+                            f"If the response was complete or nearly complete, just say 'OK' or provide a brief closing. "
+                            f"If more content is needed, continue naturally from where you left off. "
+                            f"Do NOT repeat what was already said.]"
+                        )
+                        transient_retry_counts["__ctx_continue_hint"] = _continue_hint
                     LOGGER.info(
                         "Agent %s hit context_length_exceeded (attempt %d/3); "
-                        "context stepped to %d, compressed and retrying",
+                        "context stepped to %d, compressed and retrying%s",
                         current_agent_id, _ctx_attempts + 1, _cc.context_length,
+                        " with continuation hint" if _partial else "",
                     )
                     agent_queue.insert(0, current_agent_id)
                     continue
@@ -1514,31 +1564,38 @@ async def run_agent_fallback_chain(
                 _is_ctx_exc = False
             _ctx_exc_attempts = transient_retry_counts.get("__ctx_compress_exc_attempts", 0)
             if _is_ctx_exc and _ctx_exc_attempts < 2:
-                transient_retry_counts["__ctx_compress_exc_attempts"] = _ctx_exc_attempts + 1
-                try:
-                    from .context_compressor import get_compressor
-                    _cc = get_compressor()
-                    _cc.step_down_context(err_msg)
-                    await _trim_chat_log_for_context_overflow(hass, conversation_id, force=True)
-                    try:
-                        from .context_compressor import sanitize_tool_pairs
-                        _rc2 = _get_chat_log_content(hass, conversation_id)
-                        if _rc2:
-                            _rr2 = sanitize_tool_pairs(_rc2)
-                            if _rr2 is not _rc2:
-                                _rc2.clear()
-                                _rc2.extend(_rr2)
-                    except Exception:
-                        pass
+                _partial_output = _get_last_assistant_content(hass, conversation_id)
+                if _partial_output and len(_partial_output) > 100:
                     LOGGER.info(
-                        "Agent %s raised context-too-long exception (attempt %d/2); "
-                        "context stepped to %d, compressed and retrying same agent",
-                        current_agent_id, _ctx_exc_attempts + 1, _cc.context_length,
+                        "Agent %s raised context exception but already has partial output (%d chars); preserving",
+                        current_agent_id, len(_partial_output),
                     )
-                except Exception as _comp_err:
-                    LOGGER.debug("Exception-path compression failed: %s", _comp_err)
-                agent_queue.insert(0, current_agent_id)
-                continue
+                else:
+                    transient_retry_counts["__ctx_compress_exc_attempts"] = _ctx_exc_attempts + 1
+                    try:
+                        from .context_compressor import get_compressor
+                        _cc = get_compressor()
+                        _cc.step_down_context(err_msg)
+                        await _trim_chat_log_for_context_overflow(hass, conversation_id, force=True)
+                        try:
+                            from .context_compressor import sanitize_tool_pairs
+                            _rc2 = _get_chat_log_content(hass, conversation_id)
+                            if _rc2:
+                                _rr2 = sanitize_tool_pairs(_rc2)
+                                if _rr2 is not _rc2:
+                                    _rc2.clear()
+                                    _rc2.extend(_rr2)
+                        except Exception:
+                            pass
+                        LOGGER.info(
+                            "Agent %s raised context-too-long exception (attempt %d/2); "
+                            "context stepped to %d, compressed and retrying same agent",
+                            current_agent_id, _ctx_exc_attempts + 1, _cc.context_length,
+                        )
+                    except Exception as _comp_err:
+                        LOGGER.debug("Exception-path compression failed: %s", _comp_err)
+                    agent_queue.insert(0, current_agent_id)
+                    continue
 
             successful_tool_response = extract_successful_tool_response(
                 get_tool_results_state(hass)

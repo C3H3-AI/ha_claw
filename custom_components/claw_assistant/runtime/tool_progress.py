@@ -4,6 +4,17 @@ def tool_progress_line(name: str, args: dict | None, lang: str = "en", hass=None
     return f"┊ *{desc}*\n"
 
 
+def thinking_progress_line(content: str, lang: str = "en") -> str:
+    from .reply_formatter import is_chinese
+    zh = is_chinese(lang)
+    content = content.replace("#", "").replace(">", "").replace("<", "").replace("|", "")
+    lines = [l.strip() for l in content.splitlines() if l.strip()]
+    display = " ".join(lines)[:100]
+    if not display:
+        return "💭 正在思考..." if zh else "💭 Thinking..."
+    return f"💭 {display}"
+
+
 def _esc(text: str) -> str:
     for ch in ("*", "_", "`", "{", "}", "[", "]", "(", ")", "#", "~", "|", "\\", ">", "<"):
         text = text.replace(ch, "")
@@ -74,7 +85,7 @@ def _tool_desc(name: str, a: dict, lang: str, hass=None) -> str:
     e = _esc
 
     if name == "GetLiveContext":
-        return "⚡️ 正在深度推理中..." if zh else "⚡️ Deep reasoning..."
+        return "⚡️ 正在获取实时状态..." if zh else "⚡️ Getting live context..."
     if name == "BatchControl":
         ids = a.get("entity_ids", [])
         raw_act = str(a.get("action", ""))
@@ -188,7 +199,9 @@ def _tool_desc(name: str, a: dict, lang: str, hass=None) -> str:
         return "⚡️ 正在思考中..." if zh else "⚡️ Deep reasoning..."
     if name == "ParallelToolCall":
         tools = a.get("tools", [])
-        cnt = len(tools) if isinstance(tools, list) else "?"
+        cnt = len(tools) if isinstance(tools, list) else 0
+        if not cnt or cnt == 0:
+            return "⚡️ 正在执行任务..." if zh else "⚡️ Executing tasks..."
         return f"⚡️ 正在并行执行 {cnt} 个任务..." if zh else f"⚡️ Parallel x{cnt}..."
     if name == "SmartDiscovery":
         hint = e(str(a.get("area", "") or a.get("domain", "")))[:40]
@@ -502,10 +515,10 @@ def _tool_desc(name: str, a: dict, lang: str, hass=None) -> str:
         icon = "🕹️" if act in _ctl else "🪩"
         if zh:
             _FI_ZH = {
-                "snapshot": "观察页面", "navigate": "确认页面",
-                "tap": "点击元素", "type": "输入内容",
-                "key": "按键操作", "scroll": "滚动页面",
-                "exec_js": "执行脚本", "search_cache": "检索缓存",
+                "snapshot": "观察", "navigate": "探索",
+                "tap": "点击", "type": "输入",
+                "key": "按键", "scroll": "滚动",
+                "exec_js": "执行", "search_cache": "检索",
             }
             return f"{icon} FrontendInspect: {_FI_ZH.get(act, '操控页面')}..."
         _FI_EN = {

@@ -94,7 +94,20 @@ class IndexManager:
             return
         self._building = True
         try:
-            self._index = await self.hass.async_add_executor_job(self._build_index_sync)
+            exposed_set: set[str] | None = None
+            if self.assistant:
+                try:
+                    from homeassistant.components.homeassistant import async_should_expose
+                    entity_reg = er.async_get(self.hass)
+                    exposed_set = {
+                        e.entity_id for e in entity_reg.entities.values()
+                        if async_should_expose(self.hass, self.assistant, e.entity_id)
+                    }
+                except Exception:
+                    exposed_set = None
+            self._index = await self.hass.async_add_executor_job(
+                self._build_index_sync, exposed_set
+            )
             self._index_timestamp = time.time()
             _LOGGER.debug("Index refreshed: %d areas, %d domains",
                          len(self._index.get("areas", [])),
@@ -111,21 +124,16 @@ class IndexManager:
             await self._async_refresh_index()
         return self._index or {}
 
-    def _build_index_sync(self) -> Dict[str, Any]:
+    def _build_index_sync(self, exposed_set: set[str] | None = None) -> Dict[str, Any]:
 
         area_reg = ar.async_get(self.hass)
         entity_reg = er.async_get(self.hass)
         device_reg = dr.async_get(self.hass)
 
-        should_expose = None
-        if self.assistant:
-            from homeassistant.components.homeassistant import async_should_expose
-            should_expose = async_should_expose
-
         entities = list(entity_reg.entities.values())
 
-        areas = self._get_areas(area_reg, entities, device_reg, should_expose)
-        domains = self._get_domains(entities, should_expose)
+        areas = self._get_areas(area_reg, entities, device_reg, exposed_set)
+        domains = self._get_domains(entities, exposed_set)
         device_classes = self._get_device_classes(entities)
         people = self._get_states_by_domain("person", include_state=True)
         automations = self._get_states_by_domain("automation", include_state=True, limit=30)
@@ -141,13 +149,13 @@ class IndexManager:
             "timestamp": time.time(),
         }
 
-    def _get_areas(self, area_reg, entities, device_reg, should_expose) -> List[Dict[str, Any]]:
+    def _get_areas(self, area_reg, entities, device_reg, exposed_set: set[str] | None) -> List[Dict[str, Any]]:
 
         area_entity_counts = defaultdict(int)
         area_device_counts = defaultdict(int)
 
         for entity in entities:
-            if should_expose and not should_expose(self.hass, self.assistant, entity.entity_id):
+            if exposed_set is not None and entity.entity_id not in exposed_set:
                 continue
             area_id = entity.area_id
             if not area_id and entity.device_id:
@@ -174,11 +182,11 @@ class IndexManager:
 
         return sorted(areas, key=lambda x: x["entities"], reverse=True)
 
-    def _get_domains(self, entities, should_expose) -> Dict[str, int]:
+    def _get_domains(self, entities, exposed_set: set[str] | None) -> Dict[str, int]:
 
         domain_counts = defaultdict(int)
         for entity in entities:
-            if should_expose and not should_expose(self.hass, self.assistant, entity.entity_id):
+            if exposed_set is not None and entity.entity_id not in exposed_set:
                 continue
             domain = entity.entity_id.split(".")[0]
             domain_counts[domain] += 1

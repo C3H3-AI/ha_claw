@@ -110,6 +110,10 @@ def extract_web_content(html: str, url: str) -> ExtractedWebContent | None:
     if extracted is not None:
         return extracted
 
+    embedded_data = _extract_embedded_js_data(page, default_title=title)
+    if embedded_data is not None:
+        return embedded_data
+
     if _looks_like_javascript_shell(page):
         return ExtractedWebContent(
             title=title,
@@ -257,6 +261,93 @@ def _extract_schema_article(
                 strategy="schema_article_body",
             )
     return None
+
+
+_EMBEDDED_JS_PATTERNS = (
+    (r'<script[^>]*id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>', "next_data"),
+    (r'window\.__NUXT__\s*=\s*(\{.*?\});?\s*(?:</script>|$)', "nuxt_data"),
+    (r'window\.__(?:INITIAL_)?(?:STATE|DATA|PROPS)__\s*=\s*(\{.*?\});?\s*(?:</script>|$)', "window_data"),
+    (r'window\.__APOLLO_STATE__\s*=\s*(\{.*?\});?\s*(?:</script>|$)', "apollo_state"),
+)
+
+
+def _extract_embedded_js_data(
+    page: Selector,
+    *,
+    default_title: str,
+) -> ExtractedWebContent | None:
+    try:
+        import chompjs
+    except ImportError:
+        return None
+
+    html = str(page)
+    
+    for pattern, strategy in _EMBEDDED_JS_PATTERNS:
+        match = re.search(pattern, html, re.DOTALL | re.IGNORECASE)
+        if match:
+            try:
+                raw_js = match.group(1)
+                data = chompjs.parse_js_object(raw_js)
+                if isinstance(data, dict):
+                    text_content = _extract_text_from_json(data)
+                    if text_content and len(text_content) >= _min_text_threshold(text_content):
+                        return ExtractedWebContent(
+                            title=default_title,
+                            content=text_content,
+                            strategy=f"embedded_js_{strategy}",
+                        )
+            except (ValueError, TypeError):
+                continue
+
+    for script in page.css("script"):
+        script_text = str(script.text or script.get_all_text(separator=" ", strip=True))
+        if not script_text or len(script_text) < 50:
+            continue
+        if "src=" in str(script) or "function(" in script_text[:200]:
+            continue
+        try:
+            for obj in chompjs.parse_js_objects(script_text):
+                if isinstance(obj, dict) and len(obj) > 2:
+                    text_content = _extract_text_from_json(obj)
+                    if text_content and len(text_content) >= _min_text_threshold(text_content):
+                        return ExtractedWebContent(
+                            title=default_title,
+                            content=text_content,
+                            strategy="embedded_js_generic",
+                        )
+        except (ValueError, TypeError):
+            continue
+
+    return None
+
+
+def _extract_text_from_json(data: Any, max_depth: int = 10) -> str:
+    if max_depth <= 0:
+        return ""
+    
+    texts: list[str] = []
+    
+    if isinstance(data, str):
+        if len(data) > 20 and not data.startswith(("http://", "https://", "data:", "/")):
+            if not re.match(r'^[A-Za-z0-9+/=]{50,}$', data):
+                texts.append(data)
+    elif isinstance(data, dict):
+        text_keys = ("text", "content", "body", "description", "title", "summary", 
+                     "article", "message", "name", "label", "value", "html",
+                     "articleBody", "headline", "abstract")
+        for key in text_keys:
+            if key in data:
+                texts.append(_extract_text_from_json(data[key], max_depth - 1))
+        for key, value in data.items():
+            if key not in text_keys and not key.startswith("_"):
+                texts.append(_extract_text_from_json(value, max_depth - 1))
+    elif isinstance(data, list):
+        for item in data[:50]:  # Limit list items
+            texts.append(_extract_text_from_json(item, max_depth - 1))
+    
+    combined = "\n".join(t for t in texts if t and len(t.strip()) > 10)
+    return _normalize_text(combined) if combined else ""
 
 
 def _iter_json_objects(value: Any) -> list[dict[str, Any]]:

@@ -51,21 +51,6 @@ MAX_SKILL_CATALOG_ITEMS = 8
 _HOMEASSISTANT_SKILL_MARKERS = ("homeassistant", "home_assistant")
 _TOKEN_RE = re.compile(r"[a-z0-9_+-]{2,}|[\u4e00-\u9fff]{2,}", flags=re.IGNORECASE)
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n?", flags=re.DOTALL)
-_DEFAULT_CONCEPT_ALIASES: dict[str, tuple[str, ...]] = {
-    "扫地机器人": ("vacuum", "robot", "cleaning"),
-    "扫地": ("vacuum", "cleaning"),
-    "打扫": ("cleaning", "clean"),
-    "清洁": ("cleaning", "clean"),
-    "客厅": ("living", "room"),
-    "卧室": ("bedroom",),
-    "灯": ("light",),
-    "开灯": ("turn_on", "light"),
-    "关灯": ("turn_off", "light"),
-    "股票": ("stock", "market"),
-    "行情": ("market",),
-}
-def _concept_aliases_path() -> Path:
-    return _data_dir() / "concept_aliases.yaml"
 
 
 def _looks_like_html_document(content: str) -> bool:
@@ -79,37 +64,6 @@ def _is_prompt_eligible_skill(skill: SkillDocument) -> bool:
     return not _looks_like_html_document(skill.content)
 
 
-def _load_concept_aliases() -> dict[str, tuple[str, ...]]:
-
-    merged = dict(_DEFAULT_CONCEPT_ALIASES)
-    aliases_path = _concept_aliases_path()
-    if yaml is None or not aliases_path.exists():
-        return merged
-    try:
-        raw = yaml.safe_load(aliases_path.read_text(encoding="utf-8"))
-        if not isinstance(raw, dict):
-            return merged
-        for key, values in raw.items():
-            if isinstance(values, (list, tuple)):
-                merged[str(key)] = tuple(str(v) for v in values)
-        return merged
-    except Exception:
-        return merged
-
-
-def reload_concept_aliases() -> None:
-
-    global _CONCEPT_ALIASES
-    _CONCEPT_ALIASES = _load_concept_aliases()
-
-
-async def async_reload_concept_aliases(hass: HomeAssistant) -> None:
-
-    global _CONCEPT_ALIASES
-    _CONCEPT_ALIASES = await hass.async_add_executor_job(_load_concept_aliases)
-
-
-_CONCEPT_ALIASES: dict[str, tuple[str, ...]] = dict(_DEFAULT_CONCEPT_ALIASES)
 
 
 @dataclass(slots=True, frozen=True)
@@ -176,17 +130,7 @@ def _tokenize_for_matching(text: str) -> tuple[str, ...]:
 
 
 def _expand_query_tokens(query: str, tokens: tuple[str, ...]) -> tuple[str, ...]:
-    seen = set(tokens)
-    expanded = list(tokens)
-    for phrase, aliases in _CONCEPT_ALIASES.items():
-        if phrase not in query:
-            continue
-        for alias in aliases:
-            if alias in seen:
-                continue
-            seen.add(alias)
-            expanded.append(alias)
-    return tuple(expanded)
+    return tokens
 
 
 def _parse_frontmatter(content: str) -> dict[str, Any]:
@@ -718,7 +662,6 @@ async def async_refresh_prompt_store(hass: HomeAssistant) -> None:
     _set_prompt_store(snapshot)
     from .master_prompt import invalidate_master_prompt_cache
     invalidate_master_prompt_cache()
-    await async_reload_concept_aliases(hass)
 
 
 async def async_save_master_prompt(hass: HomeAssistant, markdown: str) -> Path:
@@ -1273,6 +1216,14 @@ def load_relevant_skill_prompt_blocks(
     return "\n\n".join(blocks)
 
 
+def _first_sentence(text: str, limit: int = 80) -> str:
+    for sep in (". ", "。", "\n"):
+        idx = text.find(sep)
+        if 0 < idx < limit:
+            return text[:idx + 1]
+    return text[:limit].rstrip() + ("…" if len(text) > limit else "")
+
+
 def _build_skill_catalog_text(
     skills: tuple[SkillDocument, ...],
     *,
@@ -1284,7 +1235,7 @@ def _build_skill_catalog_text(
             continue
         if _is_homeassistant_priority_skill(skill):
             continue
-        description = skill.description or skill.title
+        description = _first_sentence(skill.description or skill.title)
         items.append(f"- {skill.slug}: {description}")
         if len(items) >= max_items:
             break
@@ -1303,7 +1254,7 @@ def load_skill_catalog_prompt(
     for skill in _ensure_prompt_store_fresh().skills:
         if not _is_prompt_eligible_skill(skill):
             continue
-        description = skill.description or skill.title
+        description = _first_sentence(skill.description or skill.title)
         items.append(f"- {skill.slug}: {description}")
         if len(items) >= max_items:
             break

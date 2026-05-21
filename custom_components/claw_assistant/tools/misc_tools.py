@@ -791,14 +791,6 @@ class ExecutePythonTool(llm.Tool):
         started = time.perf_counter()
         err_info: dict[str, Any] | None = None
 
-        # Force UTF-8 default for ``Path.write_text`` / ``Path.read_text`` while
-        # user code runs. The patched ``open()`` only intercepts
-        # ``builtins.open``; ``Path.write_text`` goes through ``io.open`` (C
-        # layer) which honours the *process locale* default — on a server
-        # whose locale is C/zh_CN.GBK that produces mojibake when the AI
-        # writes Chinese text without an explicit ``encoding=``. Restored in
-        # the matching ``finally`` block below so the override never leaks
-        # past one ExecutePython invocation.
         import pathlib as _pathlib
         _orig_path_write_text = _pathlib.Path.write_text
         _orig_path_read_text = _pathlib.Path.read_text
@@ -818,7 +810,6 @@ class ExecutePythonTool(llm.Tool):
                     self, encoding=encoding, errors=errors, newline=newline
                 )
             except TypeError:
-                # Python < 3.13 signature: read_text(encoding=None, errors=None)
                 return _orig_path_read_text(self, encoding=encoding, errors=errors)
 
         _pathlib.Path.write_text = _utf8_write_text  # type: ignore[assignment]
@@ -828,13 +819,6 @@ class ExecutePythonTool(llm.Tool):
             import inspect as _inspect
 
             if has_top_level_async:
-                # Run user top-level-await code on a *worker-thread* event loop
-                # so that synchronous I/O inside user code (Path.write_bytes,
-                # open(...).write, etc.) does not trip HA's blocking-call
-                # detector and does not stall the main event loop. ``hass`` in
-                # user globals is replaced with ``_MainLoopProxy`` which routes
-                # every method call back to the main loop via
-                # ``run_coroutine_threadsafe``.
                 main_loop = asyncio.get_running_loop()
                 worker_globals = dict(globals_)
                 worker_globals["hass"] = _MainLoopProxy(hass, main_loop)
@@ -900,9 +884,6 @@ class ExecutePythonTool(llm.Tool):
                 "traceback": traceback.format_exc(),
             }
         finally:
-            # Restore the original ``Path.write_text`` / ``read_text`` so the
-            # UTF-8 default does not leak to the rest of the HA process once
-            # this ExecutePython invocation returns.
             _pathlib.Path.write_text = _orig_path_write_text  # type: ignore[assignment]
             _pathlib.Path.read_text = _orig_path_read_text  # type: ignore[assignment]
 
@@ -1844,7 +1825,7 @@ Parameters:
 
 class ParallelToolCallTool(llm.Tool):
     name = "ParallelToolCall"
-    description = "Call up to 8 independent tools in parallel. Best for querying multiple entities or information sources at once. Batch as many independent calls as possible (up to 8) to reduce round trips. Params: tools=[{name,args}]. Tool name must be the registered tool name, for example {\"name\":\"SystemControl\",\"args\":{\"action\":\"set_output_mode\",\"value\":\"brief\"}}, not SystemControl.set_output_mode. Prefer using it with EntityQuery, HistoryQuery, ListServices, SmartDiscovery, and WebSearch. Do not replace name/args with natural language."
+    description = "Call up to 8 independent tools in TRUE parallel (asyncio.gather). ALWAYS use this when you have 2+ independent tool calls that don't depend on each other's results. Params: tools=[{name,args}]. Each item: {\"name\":\"ToolName\",\"args\":{...}}. Examples: [{\"name\":\"HAControl\",\"args\":{\"action\":\"shell\",\"params\":{\"command\":\"uptime\"}}},{\"name\":\"HAControl\",\"args\":{\"action\":\"shell\",\"params\":{\"command\":\"df -h\"}}}] or [{\"name\":\"EntityQuery\",\"args\":{\"domain\":\"light\"}},{\"name\":\"EntityQuery\",\"args\":{\"domain\":\"climate\"}}]. Works with ALL tools including HAControl, EntityQuery, HistoryQuery, WebSearch, SmartDiscovery, etc. Do NOT call multiple tools sequentially if they are independent — wrap them in ParallelToolCall instead."
     parameters = vol.Schema({
         vol.Required("tools"): list,
     })
@@ -1859,6 +1840,25 @@ class ParallelToolCallTool(llm.Tool):
         skipped_duplicates = 0
 
         for raw_spec in tools:
+            if isinstance(raw_spec, str):
+                raw_spec = raw_spec.strip()
+                if raw_spec.startswith("{"):
+                    try:
+                        raw_spec = json.loads(raw_spec)
+                    except (json.JSONDecodeError, ValueError):
+                        deduped_specs.append(("", {}))
+                        continue
+                elif ":" in raw_spec:
+                    colon_idx = raw_spec.index(":")
+                    _name = raw_spec[:colon_idx].strip()
+                    _rest = raw_spec[colon_idx + 1:].strip()
+                    try:
+                        _args = json.loads(_rest) if _rest.startswith("{") else {}
+                    except (json.JSONDecodeError, ValueError):
+                        _args = {}
+                    raw_spec = {"name": _name, "args": _args}
+                else:
+                    raw_spec = {"name": raw_spec, "args": {}}
             if not isinstance(raw_spec, dict):
                 deduped_specs.append(("", {}))
                 continue
@@ -2047,15 +2047,6 @@ class CameraCaptureTool(llm.Tool):
             from homeassistant.helpers.aiohttp_client import async_get_clientsession
             import base64
 
-            # Some camera platforms return frames that the in-process
-            # async_get_image path cannot decode (truncated JPEG, MJPEG-as-still
-            # streams, etc.) — the symptom is PIL raising
-            # UnidentifiedImageError or OSError("broken data stream when
-            # reading image file"). The HTTP /api/camera_proxy view goes
-            # through the standard CameraImageView and produces a clean still
-            # frame, so we try the in-process path first and silently fall
-            # back to the HTTP path when decoding fails. ``snapshot_url`` is
-            # already built above with the entity's access_token.
             primary_err: Exception | None = None
             raw_bytes: bytes = b""
             jpeg_bytes: bytes = b""

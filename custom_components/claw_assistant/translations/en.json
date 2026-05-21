@@ -89,6 +89,7 @@
           "save_and_exit": "Save and complete",
           "next_step": "Next step",
           "enable_sidebar_dock": "AI Sidebar",
+          "enable_tool_details": "Tool Call Details",
           "enable_tool_progress": "Tool Call Progress",
           "continuous_conversation": "Continuous Chat Window",
           "enable_sound_notifications": "Sound Notifications",
@@ -99,6 +100,7 @@
         },
         "data_description": {
           "enable_sidebar_dock": "When enabled, AI conversations are displayed as a fixed right sidebar alongside the main interface; when disabled, the default floating dialog is used.",
+          "enable_tool_details": "When enabled, shows full tool call cards (parameters, results, timing) in AI replies. When disabled, only concise progress text is shown.",
           "enable_tool_progress": "When enabled, shows live tool execution progress in the chat (e.g. querying devices, searching). When disabled, tools run silently — ideal for voice pipelines.",
           "continuous_conversation": "When enabled, reopening or activating the frontend chat keeps using the same conversation until /new is sent. Disabled keeps the current per-window behavior.",
           "enable_sound_notifications": "When enabled, plays notification sounds on key events like reply completion and errors. When disabled, all sounds are muted.",
@@ -140,10 +142,12 @@
             "name": "Advanced Diagnostics",
             "description": "Configure display of runtime, context, and diagnostic state.",
             "data": {
+              "enable_tool_details": "Tool Call Details",
               "enable_tool_progress": "Tool Call Progress",
               "enable_context_status_bar": "Context Status Bar"
             },
             "data_description": {
+              "enable_tool_details": "When enabled, shows full tool call cards (parameters, results, timing) in AI replies. When disabled, only concise progress text is shown.",
               "enable_tool_progress": "When enabled, shows live tool execution progress in the chat (e.g. querying devices, searching). When disabled, tools run silently — ideal for voice pipelines.",
               "enable_context_status_bar": "When enabled, shows context tokens, window age, and current reply elapsed time above the chat input."
             }

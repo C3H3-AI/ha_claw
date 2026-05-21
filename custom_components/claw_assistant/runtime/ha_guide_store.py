@@ -59,6 +59,7 @@ _GUIDE_STORE: dict[str, GuideStoreSnapshot] = {"snapshot": GuideStoreSnapshot()}
 _GUIDE_TOPIC_HINTS: dict[str, tuple[str, ...]] = {
     "automation": ("automation", "automations", "自动化", "脚本", "script", "trigger", "trace"),
     "dashboard": ("dashboard", "lovelace", "仪表盘", "卡片", "card", "视图", "view"),
+    "frontend": ("frontend", "screen", "屏幕", "页面", "点击", "click", "tap", "inspect", "snapshot", "看看", "界面"),
     "integration": ("integration", "integrations", "集成", "reload", "repair", "repairs", "修复"),
     "calendar": ("calendar", "calendars", "日历"),
     "todo": ("todo", "待办", "任务", "清单", "shopping list", "购物"),
@@ -82,6 +83,96 @@ _GUIDE_TOPIC_HINTS: dict[str, tuple[str, ...]] = {
     "custom component": ("custom_component", "hacs", "自定义组件", "第三方"),
     "area floor": ("area", "floor", "区域", "楼层", "房间", "label"),
 }
+
+_TOOL_GUIDE_MAP: dict[str, str] = {
+    "FrontendInspect": "60_frontend_inspect.md",
+    "DashboardCard": "61_dashboard_card.md",
+    "ConfigEntries": "62_config_entries.md",
+    "HAControl": "63_ha_control.md",
+    "Automation": "64_automation.md",
+    "Script": "64_automation.md",
+    "Registry": "65_registry.md",
+    "ConversationMemory": "66_memory_tools.md",
+    "MemoryGraph": "66_memory_tools.md",
+    "BatchControl": "67_batch_control.md",
+    "ConfigFile": "68_config_file.md",
+    "HACS": "69_hacs.md",
+    "ExecutePython": "70_execute_python.md",
+    "HelperManager": "71_helper_manager.md",
+    "CustomEntityManager": "77_entity_tools.md",
+    "GetLiveContext": "72_query_tools.md",
+    "EntityQuery": "72_query_tools.md",
+    "SmartDiscovery": "72_query_tools.md",
+    "AreaDevices": "72_query_tools.md",
+    "HistoryQuery": "72_query_tools.md",
+    "GetSystemIndex": "72_query_tools.md",
+    "ListServices": "72_query_tools.md",
+    "ServiceHelp": "72_query_tools.md",
+    "ValidateService": "72_query_tools.md",
+    "WebSearch": "73_web_search.md",
+    "UrlFetch": "73_web_search.md",
+    "WebReadChunk": "73_web_search.md",
+    "StockQuery": "73_web_search.md",
+    "InstallSkill": "74_skill_tools.md",
+    "ListInstalledSkills": "74_skill_tools.md",
+    "GetInstalledSkill": "74_skill_tools.md",
+    "DeleteSkill": "74_skill_tools.md",
+    "HomeAssistantGuide": "74_skill_tools.md",
+    "ListWorkspaceDocs": "74_skill_tools.md",
+    "GetWorkspaceDoc": "74_skill_tools.md",
+    "SetWorkspaceDoc": "74_skill_tools.md",
+    "GetMasterPrompt": "74_skill_tools.md",
+    "SetMasterPrompt": "74_skill_tools.md",
+    "ReviewSelfSkills": "75_self_edit_tools.md",
+    "ProposeSelfEdit": "75_self_edit_tools.md",
+    "ListProposals": "75_self_edit_tools.md",
+    "GetProposal": "75_self_edit_tools.md",
+    "ApplyProposal": "75_self_edit_tools.md",
+    "DiscardProposal": "75_self_edit_tools.md",
+    "GetSelfChangelog": "75_self_edit_tools.md",
+    "UpsertGuideDoc": "75_self_edit_tools.md",
+    "DeleteGuideDoc": "75_self_edit_tools.md",
+    "ParallelToolCall": "76_misc_tools.md",
+    "Notify": "76_misc_tools.md",
+    "AgentHandoff": "76_misc_tools.md",
+    "NextAgentHandoff": "76_misc_tools.md",
+    "SetConversationState": "76_misc_tools.md",
+    "HeartbeatManager": "76_misc_tools.md",
+    "ReadFile": "76_misc_tools.md",
+    "GetConversationHistory": "76_misc_tools.md",
+    "ExposeEntity": "77_entity_tools.md",
+    "IntentCall": "77_entity_tools.md",
+    "CameraCapture": "78_media_tools.md",
+    "MediaAnalyze": "78_media_tools.md",
+    "ServiceCall": "79_service_call.md",
+    "SystemControl": "80_system_control.md",
+}
+
+_TOOL_GUIDE_SEEN: set[str] = set()
+
+
+async def async_get_tool_guide(tool_name: str, *, force: bool = False) -> str | None:
+    """Get guide content for a tool. Returns None if already seen (unless force=True)."""
+    if not force and tool_name in _TOOL_GUIDE_SEEN:
+        return None
+    guide_file = _TOOL_GUIDE_MAP.get(tool_name)
+    if not guide_file:
+        return None
+    guide_path = _runtime_guide_dir() / guide_file
+    if not guide_path.exists():
+        return None
+    _TOOL_GUIDE_SEEN.add(tool_name)
+    try:
+        import aiofiles
+        async with aiofiles.open(guide_path, encoding="utf-8") as f:
+            return await f.read()
+    except Exception:
+        return None
+
+
+def reset_tool_guide_seen() -> None:
+    """Reset the seen set (call on new conversation)."""
+    _TOOL_GUIDE_SEEN.clear()
 
 
 def _slugify(value: str) -> str:

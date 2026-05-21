@@ -180,8 +180,6 @@ def _should_review(
         return False
     if is_continuation_prompt(original_text):
         return False
-    # Skip review when every tool succeeded — there is no failure or anomaly
-    # worth learning from, and the post-response LLM call wastes a slot.
     if tool_results:
         all_ok = True
         for entry in tool_results:

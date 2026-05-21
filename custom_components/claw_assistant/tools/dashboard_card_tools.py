@@ -615,34 +615,30 @@ class DashboardCardTool(llm.Tool):
                 import asyncio as _aio
                 from .frontend_tools import queue_frontend_exec, async_wait_frontend_exec_result
                 import time as _t
-                if nav_path:
-                    nav_id = f"ll_nav_{int(_t.time()*1000)}"
-                    nav_js = (
-                        "(function(){"
-                        "var target='" + nav_path + "';"
-                        "if(window.location.pathname===target){return {already:true}}"
-                        "history.pushState(null,'',target);"
-                        "window.dispatchEvent(new CustomEvent('location-changed'));"
-                        "return {navigated:true};"
-                        "})()"
-                    )
-                    queue_frontend_exec(hass, nav_id, nav_js)
-                    await _aio.sleep(1.5)
+                dash_url = dashboard_url or "lovelace"
+                target_path = nav_path or f"/{dash_url}"
+                nav_id = f"ll_nav_{int(_t.time()*1000)}"
+                nav_js = (
+                    "(function(){"
+                    "var orig=window.location.pathname;"
+                    "window.__clawNavOrig=orig;"
+                    "window.__clawDirtyDashboards=window.__clawDirtyDashboards||{};"
+                    "window.__clawDirtyDashboards['" + dash_url + "']=true;"
+                    "var target='" + target_path + "';"
+                    "if(orig===target||orig===target+'/'){return {already:true,orig:orig}}"
+                    "history.pushState(null,'',target);"
+                    "window.dispatchEvent(new CustomEvent('location-changed'));"
+                    "return {navigated:true,orig:orig};"
+                    "})()"
+                )
+                queue_frontend_exec(hass, nav_id, nav_js)
+                await _aio.sleep(1.8)
                 exec_id = f"ll_reload_{int(_t.time()*1000)}"
-                path_guard = "" if nav_path else (
-                    "var currentPath=window.location.pathname;"
-                )
-                path_restore = "" if nav_path else (
-                    "setTimeout(function(){if(window.location.pathname!==currentPath){"
-                    "history.pushState(null,'',currentPath);"
-                    "window.dispatchEvent(new CustomEvent('location-changed'))"
-                    "}},100);"
-                )
                 js = (
                     "(function(){"
-                    + path_guard +
                     "var ha=document.querySelector('home-assistant');"
-                    "var main=ha&&ha.shadowRoot&&ha.shadowRoot.querySelector('home-assistant-main');"
+                    "if(!ha)return {no_ha:true};"
+                    "var main=ha.shadowRoot&&ha.shadowRoot.querySelector('home-assistant-main');"
                     "var msr=main&&main.shadowRoot;"
                     "var drawer=msr&&msr.querySelector('ha-drawer');"
                     "var dsr=drawer&&drawer.shadowRoot;"
@@ -651,10 +647,10 @@ class DashboardCardTool(llm.Tool):
                     "var panel=pr&&pr.querySelector('ha-panel-lovelace');"
                     "if(!panel){return {no_panel:true}}"
                     "var ll=panel.lovelace||panel._lovelace||(panel.shadowRoot&&panel.shadowRoot.querySelector('hui-root')&&panel.shadowRoot.querySelector('hui-root').lovelace);"
-                    "if(ll&&ll.fetchConfig){ll.fetchConfig(true);" + path_restore + "return {reloaded:true}}"
-                    "if(ll&&ll.loadConfig){ll.loadConfig(true);" + path_restore + "return {reloaded:true}}"
+                    "if(ll&&ll.fetchConfig){ll.fetchConfig(true);return {reloaded:true}}"
+                    "if(ll&&ll.loadConfig){ll.loadConfig(true);return {reloaded:true}}"
                     "var conn=ha.hass&&ha.hass.connection;"
-                    "if(conn){conn.sendMessagePromise({type:'lovelace/config',url_path:'" + (dashboard_url or 'lovelace') + "',force:true}).then(function(c){if(ll)ll.config=c;});return {ws_reload:true}}"
+                    "if(conn){conn.sendMessagePromise({type:'lovelace/config',url_path:'" + dash_url + "',force:true}).then(function(c){if(ll)ll.config=c;});return {ws_reload:true}}"
                     "return {no_action:true}"
                     "})()"
                 )
@@ -682,6 +678,22 @@ class DashboardCardTool(llm.Tool):
                 )
                 queue_frontend_exec(hass, verify_id, verify_js)
                 verify_result = await async_wait_frontend_exec_result(hass, verify_id, timeout=8.0)
+                restore_id = f"ll_restore_{int(_t.time()*1000)}"
+                restore_js = (
+                    "(function(){"
+                    "var orig=window.__clawNavOrig;"
+                    "delete window.__clawNavOrig;"
+                    "if(!orig)return {no_orig:true};"
+                    "var cur=window.location.pathname;"
+                    "var target='" + target_path + "';"
+                    "if(cur!==target&&cur!==target+'/'){return {user_moved:true}}"
+                    "if(orig===target||orig===target+'/'){delete window.__clawDirtyDashboards['" + dash_url + "'];return {stayed:true}}"
+                    "history.pushState(null,'',orig);"
+                    "window.dispatchEvent(new CustomEvent('location-changed'));"
+                    "return {restored:true,to:orig};"
+                    "})()"
+                )
+                queue_frontend_exec(hass, restore_id, restore_js)
                 if isinstance(verify_result, dict) and verify_result.get("count", 0) > 0:
                     return {
                         "frontend_errors": verify_result.get("error_cards", []),
@@ -1357,18 +1369,18 @@ class DashboardCardTool(llm.Tool):
             dash_path = dashboard_url or "lovelace"
             vpath = views[view_index].get("path", str(view_index))
             target_path = f"/{dash_path}/{vpath}"
+            nav_id = f"cv_nav_{int(_t.time()*1000)}"
             nav_js = (
                 "(function(){"
+                "var orig=window.location.pathname;"
+                "window.__clawVerifyOrig=orig;"
                 "var target='" + target_path + "';"
-                "var cur=window.location.pathname;"
-                "if(cur===target||cur===target+'/'){return {already:true,path:cur}}"
-                "var from=cur;"
+                "if(orig===target||orig===target+'/'){return {already:true,orig:orig}}"
                 "history.pushState(null,'',target);"
                 "window.dispatchEvent(new CustomEvent('location-changed'));"
-                "return {navigated:true,from:from,to:target};"
+                "return {navigated:true,orig:orig};"
                 "})()"
             )
-            nav_id = f"cv_nav_{int(_t.time()*1000)}"
             queue_frontend_exec(hass, nav_id, nav_js)
             nav_result = await async_wait_frontend_exec_result(hass, nav_id, timeout=3.0)
             if isinstance(nav_result, dict) and nav_result.get("navigated"):
@@ -1415,6 +1427,22 @@ class DashboardCardTool(llm.Tool):
             )
             queue_frontend_exec(hass, verify_id, verify_js)
             verify_result = await async_wait_frontend_exec_result(hass, verify_id, timeout=6.0)
+            restore_id = f"cv_restore_{int(_t.time()*1000)}"
+            restore_js = (
+                "(function(){"
+                "var orig=window.__clawVerifyOrig;"
+                "delete window.__clawVerifyOrig;"
+                "if(!orig)return {no_orig:true};"
+                "var cur=window.location.pathname;"
+                "var target='" + target_path + "';"
+                "if(cur!==target&&cur!==target+'/'){return {user_moved:true}}"
+                "if(orig===target||orig===target+'/'){return {stayed:true}}"
+                "history.pushState(null,'',orig);"
+                "window.dispatchEvent(new CustomEvent('location-changed'));"
+                "return {restored:true,to:orig};"
+                "})()"
+            )
+            queue_frontend_exec(hass, restore_id, restore_js)
             if isinstance(verify_result, dict):
                 err_count = verify_result.get("count", 0)
                 if err_count > 0:

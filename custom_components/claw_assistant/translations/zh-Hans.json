@@ -89,6 +89,7 @@
           "save_and_exit": "保存并完成",
           "next_step": "下一步",
           "enable_sidebar_dock": "AI 侧边栏",
+          "enable_tool_details": "工具调用详情",
           "enable_tool_progress": "工具调用进度",
           "continuous_conversation": "连续聊天窗口",
           "enable_sound_notifications": "提示音",
@@ -99,6 +100,7 @@
         },
         "data_description": {
           "enable_sidebar_dock": "启用后，AI 对话将以右侧固定侧边栏形式展示，与主界面并排显示；关闭则使用默认浮动弹窗。",
+          "enable_tool_details": "启用后，AI 回复中显示完整的工具调用卡片（参数、返回值、耗时等）；关闭则仅显示简洁的执行进度文字。",
           "enable_tool_progress": "启用后，AI 调用工具时在聊天窗口实时显示执行进度（如正在查询设备、正在搜索等）；关闭则静默执行，适合语音管道等不需要进度展示的场景。",
           "continuous_conversation": "启用后，前端聊天框重新打开或激活仍沿用同一个对话，直到发送 /new 才切换新窗口；关闭则保持当前每个窗口独立上下文。",
           "enable_sound_notifications": "启用后，AI 回复完成、发生错误等关键时刻播放提示音；关闭则静音。",
@@ -140,10 +142,12 @@
             "name": "高级诊断",
             "description": "设置运行过程、上下文与调试状态的显示。",
             "data": {
+              "enable_tool_details": "工具调用详情",
               "enable_tool_progress": "工具调用进度",
               "enable_context_status_bar": "上下文状态栏"
             },
             "data_description": {
+              "enable_tool_details": "启用后，AI 回复中显示完整的工具调用卡片（参数、返回值、耗时等）；关闭则仅显示简洁的执行进度文字。",
               "enable_tool_progress": "启用后，AI 调用工具时在聊天窗口实时显示执行进度（如正在查询设备、正在搜索等）；关闭则静默执行，适合语音管道等不需要进度展示的场景。",
               "enable_context_status_bar": "启用后，在聊天输入框上方显示上下文 token、窗口时间与当前回复耗时。"
             }
