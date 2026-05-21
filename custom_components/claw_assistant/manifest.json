@@ -12,6 +12,7 @@
     "intent",
     "lovelace",
     "recorder",
+    "trace",
     "websocket_api"
   ],
   "documentation": "https://github.com/ha-china/ha_claw",
