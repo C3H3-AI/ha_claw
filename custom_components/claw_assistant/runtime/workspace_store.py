@@ -37,9 +37,6 @@ WORKSPACE_DOC_NAMES = (
     "TOOLS",
     "USER",
 )
-# Memory bullet detector: matches Markdown unordered (-, *, +) and ordered
-# (1. / 2) / 1)) list markers. Without this, memory rules written as
-# numbered lists are silently dropped from the prompt and personas leak.
 _MEMORY_LIST_PREFIX_RE = re.compile(r"^(?:[-*+]\s+|\d+[.)\u3001]\s*)")
 _HEARTBEAT_KEYWORDS = (
     "heartbeat",
@@ -613,29 +610,41 @@ def get_workspace_startup_doc_names(*, user_text: str = "") -> tuple[str, ...]:
     return tuple(name for name, _ in loaded_docs)
 
 
-def build_workspace_startup_bundle(*, user_text: str = "") -> str:
+def build_workspace_startup_bundle(*, user_text: str = "", index_only: bool = False) -> str:
 
     loaded_docs, skipped_docs = _build_workspace_startup_docs(user_text=user_text)
     sections: list[str] = []
 
     sections.append("## Workspace")
     sections.append(_workspace_governance_block())
-    for name, content in loaded_docs:
-        header = f"### {name}.md" if not name.startswith("memory/") else f"### {name}"
-        sections.append(f"{header}\n{content}")
-    if skipped_docs:
-        status_lines = [
-            "### Workspace Status",
-            "Not inlined; Get/SetWorkspaceDoc.",
-        ]
+
+    if index_only:
+        index_lines = ["### Workspace Index", "Use GetWorkspaceDoc(name) to read full content."]
+        for name, content in loaded_docs:
+            char_count = len(content)
+            first_line = content.split("\n", 1)[0][:80]
+            index_lines.append(f"- {name} ({char_count} chars): {first_line}...")
         for name, reason in skipped_docs:
-            status_lines.append(f"- {name}:{reason}")
-        sections.append("\n".join(status_lines))
+            index_lines.append(f"- {name}: [{reason}]")
+        sections.append("\n".join(index_lines))
+    else:
+        for name, content in loaded_docs:
+            header = f"### {name}.md" if not name.startswith("memory/") else f"### {name}"
+            sections.append(f"{header}\n{content}")
+        if skipped_docs:
+            status_lines = [
+                "### Workspace Status",
+                "Not inlined; Get/SetWorkspaceDoc.",
+            ]
+            for name, reason in skipped_docs:
+                status_lines.append(f"- {name}:{reason}")
+            sections.append("\n".join(status_lines))
 
     LOGGER.debug(
-        "Workspace startup loaded docs=%s skipped=%s",
+        "Workspace startup loaded docs=%s skipped=%s index_only=%s",
         [name for name, _ in loaded_docs],
         skipped_docs,
+        index_only,
     )
 
     return "\n\n".join(section for section in sections if section.strip())

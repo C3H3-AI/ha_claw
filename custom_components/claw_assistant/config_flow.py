@@ -32,6 +32,7 @@ from .const import (
     CONF_ENABLE_SIDEBAR_DOCK,
     CONF_ENABLE_SOUND_NOTIFICATIONS,
     CONF_ENABLE_STREAMING_EFFECT,
+    CONF_ENABLE_TOOL_DETAILS,
     CONF_ENABLE_TOOL_PROGRESS,
     CONF_ENABLE_WEB_SEARCH,
     CONF_ERROR_RESPONSES,
@@ -204,7 +205,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             current_options = dict(self._config_entry.options)
 
             agent_keys = [CONF_PRIMARY_AGENT, CONF_FALLBACK_AGENT, CONF_SECONDARY_FALLBACK_AGENT]
-            conversation_keys = [CONF_CONVERSATION_MODE, CONF_ENABLE_WEB_SEARCH, CONF_ENABLE_STREAMING_EFFECT, CONF_ENABLE_TOOL_PROGRESS, CONF_CONTINUOUS_CONVERSATION, CONF_ENABLE_SOUND_NOTIFICATIONS, CONF_ENABLE_CONTEXT_STATUS_BAR, CONF_ENABLE_FILE_UPLOAD, CONF_ENABLE_RICH_MARKDOWN, CONF_ENABLE_ACTIVITY_TRACKING, CONF_ENABLE_SIDEBAR_DOCK, CONF_MAX_TOOL_REPEAT, CONF_PIPELINE_TIMEOUT]
+            conversation_keys = [CONF_CONVERSATION_MODE, CONF_ENABLE_WEB_SEARCH, CONF_ENABLE_STREAMING_EFFECT, CONF_ENABLE_TOOL_DETAILS, CONF_ENABLE_TOOL_PROGRESS, CONF_CONTINUOUS_CONVERSATION, CONF_ENABLE_SOUND_NOTIFICATIONS, CONF_ENABLE_CONTEXT_STATUS_BAR, CONF_ENABLE_FILE_UPLOAD, CONF_ENABLE_RICH_MARKDOWN, CONF_ENABLE_ACTIVITY_TRACKING, CONF_ENABLE_SIDEBAR_DOCK, CONF_MAX_TOOL_REPEAT, CONF_PIPELINE_TIMEOUT]
 
             if not allow_agent_changes:
                 for key in agent_keys:
@@ -216,7 +217,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     if key in current_options:
                         self._user_input[key] = current_options[key]
 
-            bool_keys = [CONF_ENABLE_WEB_SEARCH, CONF_ENABLE_STREAMING_EFFECT, CONF_ENABLE_TOOL_PROGRESS, CONF_CONTINUOUS_CONVERSATION, CONF_ENABLE_SOUND_NOTIFICATIONS, CONF_ENABLE_CONTEXT_STATUS_BAR, CONF_ENABLE_FILE_UPLOAD, CONF_ENABLE_RICH_MARKDOWN, CONF_ENABLE_ACTIVITY_TRACKING, CONF_ENABLE_SIDEBAR_DOCK]
+            bool_keys = [CONF_ENABLE_WEB_SEARCH, CONF_ENABLE_STREAMING_EFFECT, CONF_ENABLE_TOOL_DETAILS, CONF_ENABLE_TOOL_PROGRESS, CONF_CONTINUOUS_CONVERSATION, CONF_ENABLE_SOUND_NOTIFICATIONS, CONF_ENABLE_CONTEXT_STATUS_BAR, CONF_ENABLE_FILE_UPLOAD, CONF_ENABLE_RICH_MARKDOWN, CONF_ENABLE_ACTIVITY_TRACKING, CONF_ENABLE_SIDEBAR_DOCK]
 
             for key, value in user_input.items():
                 if key not in exclude_keys:
@@ -565,6 +566,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             }
             return self._save_conversation_subform(user_input)
 
+        current_tool_details = self._config_entry.options.get(CONF_ENABLE_TOOL_DETAILS, False)
         current_tool_progress = self._config_entry.options.get(CONF_ENABLE_TOOL_PROGRESS, True)
         current_continuous_conversation = self._config_entry.options.get(CONF_CONTINUOUS_CONVERSATION, False)
         current_sound_notifications = self._config_entry.options.get(CONF_ENABLE_SOUND_NOTIFICATIONS, True)
@@ -593,6 +595,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             ),
             vol.Required("diagnostics"): section(
                 vol.Schema({
+                    vol.Optional(CONF_ENABLE_TOOL_DETAILS, default=current_tool_details): BooleanSelector(),
                     vol.Optional(CONF_ENABLE_TOOL_PROGRESS, default=current_tool_progress): BooleanSelector(),
                     vol.Optional(CONF_ENABLE_CONTEXT_STATUS_BAR, default=current_context_status_bar): BooleanSelector(),
                 }),

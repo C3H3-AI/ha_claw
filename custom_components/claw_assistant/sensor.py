@@ -12,7 +12,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
+from .const import DOMAIN, VERSION
 from .runtime.custom_entity_store import get_custom_entities_by_platform
 from .runtime.heartbeat_store import async_list_heartbeat_tasks, _next_due_seconds
 
@@ -105,8 +105,9 @@ class HeartbeatSensor(TextEntity):
         return DeviceInfo(
             identifiers={(DOMAIN, self._entry.entry_id)},
             name=self._entry.title or DOMAIN,
-            manufacturer="claw_assistant",
-            model="AI Assistant",
+            manufacturer="Claw Assistant",
+            model="Home Assistant AI",
+            sw_version=VERSION,
         )
 
     @property
@@ -193,8 +194,9 @@ class DynamicSensor(SensorEntity):
         return DeviceInfo(
             identifiers={(DOMAIN, self._entry.entry_id)},
             name=self._entry.title or DOMAIN,
-            manufacturer="claw_assistant",
-            model="AI Assistant",
+            manufacturer="Claw Assistant",
+            model="Home Assistant AI",
+            sw_version=VERSION,
         )
 
     @property

@@ -290,6 +290,33 @@ def _build_required_prompt(
     return _join_prompt_sections(prefix_prompt, required_suffix_prompt)
 
 
+def _extract_section_name(section: str) -> str:
+    for line in section.split("\n", 3):
+        stripped = line.strip().lstrip("#").strip()
+        if stripped:
+            return stripped[:50]
+    return "(unnamed)"
+
+
+def _log_prompt_sections(
+    label: str,
+    head: list[str],
+    prefix: list[str],
+    suffix: list[str],
+    tail: list[str],
+    total_chars: int,
+    budget: int,
+) -> None:
+    parts = []
+    for tag, sections in [("S", head), ("P", prefix), ("D", suffix), ("T", tail)]:
+        for s in sections:
+            parts.append(f"{tag}:{_extract_section_name(s)}={len(s)}")
+    LOGGER.debug(
+        "Prompt[%s] %d/%d chars | %s",
+        label, total_chars, budget, " | ".join(parts),
+    )
+
+
 def _build_budgeted_prompt(
     *,
     head_sections: list[str],
@@ -297,6 +324,7 @@ def _build_budgeted_prompt(
     required_suffix_sections: list[str],
     optional_tail_sections: list[str],
     max_chars: int = _MAX_SYSTEM_PROMPT_CHARS,
+    label: str = "",
 ) -> str:
 
     kept_heads = [section for section in head_sections if section.strip()]
@@ -306,6 +334,12 @@ def _build_budgeted_prompt(
     kept_required = [*kept_required_prefix, *kept_required_suffix]
 
     prompt = _join_prompt_sections(*kept_heads, *kept_required, *kept_tail)
+    if LOGGER.isEnabledFor(logging.DEBUG):
+        _log_prompt_sections(
+            label or "budget",
+            kept_heads, kept_required_prefix, kept_required_suffix, kept_tail,
+            len(prompt), max_chars,
+        )
     if len(prompt) <= max_chars:
         return prompt
 
@@ -362,12 +396,12 @@ _PER_TURN_HINT = (
 )
 
 
-def build_internal_llm_prompt(user_text: str = "", *, full: bool = True) -> str:
+def build_internal_llm_prompt(user_text: str = "", *, full: bool = True, index_only: bool = False) -> str:
 
     if not full:
         return _PER_TURN_HINT
 
-    workspace_block = build_workspace_startup_bundle(user_text=user_text)
+    workspace_block = build_workspace_startup_bundle(user_text=user_text, index_only=index_only)
     loaded_workspace_docs = set(get_workspace_startup_doc_names(user_text=user_text))
     selective_workspace_sections = list(
         build_workspace_prompt_sections(
@@ -385,20 +419,22 @@ def build_internal_llm_prompt(user_text: str = "", *, full: bool = True) -> str:
     ):
         optional_tail_sections.append(master_sections.pop())
 
-    return _build_budgeted_prompt(
-        head_sections=[workspace_block, *selective_workspace_sections],
-        required_prefix_sections=[runtime_context, skill_mode],
-        required_suffix_sections=master_sections,
-        optional_tail_sections=optional_tail_sections,
+    prompt = _build_budgeted_prompt(
+        head_sections=[workspace_block, *master_sections, skill_mode, runtime_context, *optional_tail_sections],
+        required_prefix_sections=[*selective_workspace_sections],
+        required_suffix_sections=[],
+        optional_tail_sections=[],
+        label="internal",
     )
+    return prompt
 
 
-def build_native_tool_prompt(user_text: str = "", *, full: bool = True) -> str:
+def build_native_tool_prompt(user_text: str = "", *, full: bool = True, index_only: bool = False) -> str:
 
     if not full:
         return _PER_TURN_HINT
 
-    workspace_block = build_workspace_startup_bundle(user_text=user_text)
+    workspace_block = build_workspace_startup_bundle(user_text=user_text, index_only=index_only)
     loaded_workspace_docs = set(get_workspace_startup_doc_names(user_text=user_text))
     selective_workspace_sections = list(
         build_workspace_prompt_sections(
@@ -416,12 +452,14 @@ def build_native_tool_prompt(user_text: str = "", *, full: bool = True) -> str:
     ):
         optional_tail_sections.append(master_sections.pop())
 
-    return _build_budgeted_prompt(
-        head_sections=[workspace_block, *selective_workspace_sections],
-        required_prefix_sections=[runtime_context, native_mode],
-        required_suffix_sections=master_sections,
-        optional_tail_sections=optional_tail_sections,
+    prompt = _build_budgeted_prompt(
+        head_sections=[workspace_block, *master_sections, native_mode, runtime_context, *optional_tail_sections],
+        required_prefix_sections=[*selective_workspace_sections],
+        required_suffix_sections=[],
+        optional_tail_sections=[],
+        label="native",
     )
+    return prompt
 
 
 def use_native_tool_surface(hass: HomeAssistant) -> bool:
@@ -450,6 +488,8 @@ def build_assist_api_tools(
 
     if _TOOL_MODE.get() == "kernel":
         return []
+    if _TOOL_MODE.get() == "minimal":
+        return build_minimal_tool_list()
     if use_native_tool_surface(hass):
         return merge_tool_lists(original_tools, build_runtime_tool_list())
 
@@ -457,6 +497,48 @@ def build_assist_api_tools(
 
 
 _CACHED_RUNTIME_TOOLS: list[llm.Tool] | None = None
+_CACHED_MINIMAL_TOOLS: list[llm.Tool] | None = None
+_MINIMAL_TOOL_NAMES = {
+    "HAControl",
+    "ExecutePython",
+    "HomeAssistantGuide",
+    "GetSystemIndex",
+    "FrontendInspect",
+    "GetLiveContext",
+    "ListServices",
+    "ListInstalledSkills",
+    "ConversationMemory",
+    "ParallelToolCall",
+    "GetWorkspaceDoc",
+    "ConfigEntries",
+    "Registry",
+    "ListWorkspaceDocs",
+    "GetConversationHistory",
+    "DashboardCard",
+    "SmartDiscovery",
+    "ServiceHelp",
+    "HeartbeatManager",
+    "GetInstalledSkill",
+    "StockQuery",
+    "WebSearch",
+    "MemoryGraph",
+    "IntentCall",
+    "HelperManager",
+    "EntityQuery",
+    "Automation",
+    "Script",
+    "ServiceCall",
+    "UrlFetch",
+    "WebReadChunk",
+    "ReadFile",
+    "Notify",
+    "HistoryQuery",
+    "BatchControl",
+    "ConfigFile",
+    "CameraCapture",
+    "MediaAnalyze",
+    "ExposeEntity",
+}
 
 
 def build_runtime_tool_list() -> list[llm.Tool]:
@@ -469,14 +551,19 @@ def build_runtime_tool_list() -> list[llm.Tool]:
         _CACHED_RUNTIME_TOOLS = merge_tool_lists(
             build_tool_list(), build_skill_tool_list()
         )
+        LOGGER.debug(
+            "Built full runtime tool surface: %s tools",
+            len(_CACHED_RUNTIME_TOOLS),
+        )
     return _CACHED_RUNTIME_TOOLS
 
 
 def invalidate_runtime_tool_cache() -> None:
     """Drop the memoized runtime tool list (call after dynamic tool edits)."""
 
-    global _CACHED_RUNTIME_TOOLS
+    global _CACHED_RUNTIME_TOOLS, _CACHED_MINIMAL_TOOLS
     _CACHED_RUNTIME_TOOLS = None
+    _CACHED_MINIMAL_TOOLS = None
 
 
 def build_minimal_tool_list(
@@ -486,8 +573,19 @@ def build_minimal_tool_list(
 ) -> list[llm.Tool]:
 
     del live_context_tools
-    del include_live_context
-    return build_runtime_tool_list()
+    global _CACHED_MINIMAL_TOOLS
+    if _CACHED_MINIMAL_TOOLS is None:
+        from ..tools.registry import build_tool_list
+
+        include_names = set(_MINIMAL_TOOL_NAMES)
+        if not include_live_context:
+            include_names.discard("GetLiveContext")
+        _CACHED_MINIMAL_TOOLS = build_tool_list(include_names=include_names)
+        LOGGER.debug(
+            "Built minimal runtime tool surface: %s tools",
+            len(_CACHED_MINIMAL_TOOLS),
+        )
+    return _CACHED_MINIMAL_TOOLS
 
 
 def merge_tool_lists(*tool_groups: list[llm.Tool]) -> list[llm.Tool]:
@@ -579,8 +677,6 @@ def _patch_assist_api_prompt(hass: HomeAssistant) -> None:
         return final_tools
 
     async def patched_get_api_instance(self, llm_context):
-        # claw kernel ignores exposed_entities entirely; skip the expensive
-        # _get_exposed_entities full-state walk that blocks the event loop.
         return APIInstance(
             api=self,
             api_prompt=self._async_get_api_prompt(llm_context, None),
@@ -635,6 +731,8 @@ def _patch_tool_call_tracking(hass: HomeAssistant) -> None:
     original_async_call_tool = llm_module.APIInstance.async_call_tool
 
     async def tracked_async_call_tool(self, tool_input):
+        from .ha_guide_store import async_get_tool_guide
+
         tool_results = get_tool_results_state(hass)
         tool_calls = get_tool_calls_state(hass)
         conv_id_before = get_active_conversation_state(hass).get("id")
@@ -650,6 +748,10 @@ def _patch_tool_call_tracking(hass: HomeAssistant) -> None:
                     transient_err,
                 )
                 result = await original_async_call_tool(self, tool_input)
+
+            guide_content = await async_get_tool_guide(tool_input.tool_name)
+            if guide_content and isinstance(result, dict):
+                result["TOOL_USAGE_GUIDE"] = guide_content
 
             conv_id_after = get_active_conversation_state(hass).get("id")
             if conv_id_before and conv_id_after and conv_id_before != conv_id_after:
@@ -728,16 +830,16 @@ def patch_chatlog_tools(hass: HomeAssistant) -> None:
     if hasattr(chat_log_module.ChatLog, _PATCH_KEY):
         return
 
-    original_async_update_llm_data = chat_log_module.ChatLog.async_update_llm_data
+    original_async_provide_llm_data = chat_log_module.ChatLog.async_provide_llm_data
 
-    async def patched_async_update_llm_data(
+    async def patched_async_provide_llm_data(
         self,
         llm_context,
-        user_llm_hass_api,
-        user_llm_prompt,
+        user_llm_hass_api=None,
+        user_llm_prompt=None,
         user_extra_system_prompt=None,
     ):
-        await original_async_update_llm_data(
+        await original_async_provide_llm_data(
             self,
             llm_context,
             user_llm_hass_api,
@@ -752,8 +854,16 @@ def patch_chatlog_tools(hass: HomeAssistant) -> None:
             LOGGER.debug("Internal LLM mode: keep native tools and do not inject enhanced tools")
             return
 
+        tool_mode = _TOOL_MODE.get()
         original_count = len(self.llm_api.tools)
-        filtered_tools = build_runtime_tool_list()
+        if tool_mode == "kernel":
+            filtered_tools = []
+        elif tool_mode == "minimal":
+            filtered_tools = build_minimal_tool_list()
+        elif tool_mode == "native":
+            filtered_tools = merge_tool_lists(self.llm_api.tools, build_runtime_tool_list())
+        else:
+            filtered_tools = build_runtime_tool_list()
         self.llm_api = llm.APIInstance(
             api=self.llm_api.api,
             api_prompt=self.llm_api.api_prompt,
@@ -762,16 +872,17 @@ def patch_chatlog_tools(hass: HomeAssistant) -> None:
             custom_serializer=self.llm_api.custom_serializer,
         )
         LOGGER.debug(
-            "External AI tool list switched to the registry-driven tool surface: %s -> %s",
+            "External AI tool list switched to %s tool surface: %s -> %s",
+            tool_mode,
             original_count,
             len(filtered_tools),
         )
 
-    chat_log_module.ChatLog.async_update_llm_data = patched_async_update_llm_data
+    chat_log_module.ChatLog.async_provide_llm_data = patched_async_provide_llm_data
     setattr(
         chat_log_module.ChatLog,
         _CHATLOG_TOOLS_ORIGINAL_KEY,
-        original_async_update_llm_data,
+        original_async_provide_llm_data,
     )
     setattr(chat_log_module.ChatLog, _PATCH_KEY, True)
     LOGGER.debug("ChatLog switched to the centralized internal LLM tool surface")
@@ -781,13 +892,13 @@ def _unpatch_chatlog_tools() -> None:
 
     from homeassistant.components.conversation import chat_log as chat_log_module
 
-    original_async_update_llm_data = getattr(
+    original_async_provide_llm_data = getattr(
         chat_log_module.ChatLog, _CHATLOG_TOOLS_ORIGINAL_KEY, None
     )
-    if original_async_update_llm_data is None:
+    if original_async_provide_llm_data is None:
         return
 
-    chat_log_module.ChatLog.async_update_llm_data = original_async_update_llm_data
+    chat_log_module.ChatLog.async_provide_llm_data = original_async_provide_llm_data
     delattr(chat_log_module.ChatLog, _CHATLOG_TOOLS_ORIGINAL_KEY)
     if hasattr(chat_log_module.ChatLog, _PATCH_KEY):
         delattr(chat_log_module.ChatLog, _PATCH_KEY)

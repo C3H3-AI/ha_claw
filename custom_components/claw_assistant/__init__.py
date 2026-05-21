@@ -15,6 +15,10 @@ from .runtime.im_approval_bridge import (
     async_setup_im_approval_bridge,
     async_unload_im_approval_bridge,
 )
+from .runtime.user_activity import (
+    async_setup_event_listener,
+    async_unload_event_listener,
+)
 
 LOGGER = logging.getLogger(__name__)
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -39,6 +43,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await _async_ensure_bootstrap_on_first_install(hass)
     async_setup_heartbeat_ticker(hass)
     async_setup_im_approval_bridge(hass)
+    async_setup_event_listener(hass)
     from .services.update_handler import async_setup_update_handler
     async_setup_update_handler(hass)
     from .runtime.custom_entity_store import async_load_custom_entities
@@ -76,6 +81,7 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
             "enable_file_upload": file_upload_enabled(hass),
             "enable_sidebar_dock": sidebar_dock_enabled(hass),
             "enable_sound_notifications": entry.options.get("enable_sound_notifications", True),
+            "enable_tool_details": entry.options.get("enable_tool_details", False),
         },
     )
 
@@ -87,6 +93,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not hass.data[DOMAIN]:
         async_unload_heartbeat_ticker(hass)
         async_unload_im_approval_bridge(hass)
+        async_unload_event_listener(hass)
         from .services.update_handler import async_unload_update_handler
         async_unload_update_handler(hass)
         from .conversation_utils import async_flush_history_store

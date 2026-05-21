@@ -37,7 +37,7 @@ SUMMARY_PREFIX = (
     "that appears AFTER this summary."
 )
 
-_CHARS_PER_TOKEN = 4
+_CHARS_PER_TOKEN = 3
 _MIN_SUMMARY_TOKENS = 1500
 _SUMMARY_RATIO = 0.20
 _SUMMARY_TOKENS_CEILING = 8000
@@ -93,13 +93,7 @@ def _content_length(msg: Any) -> int:
     if role == "assistant":
         text = getattr(msg, "content", "") or ""
         thinking = getattr(msg, "thinking_content", "") or ""
-        tool_calls = getattr(msg, "tool_calls", None) or []
-        tc_len = 0
-        for tc in tool_calls:
-            tc_len += len(getattr(tc, "tool_name", "") or "") + 20
-            tc_len += len(str(getattr(tc, "tool_args", "") or ""))
-            tc_len += len(getattr(tc, "id", "") or getattr(tc, "tool_call_id", "") or "")
-        return len(text) + len(thinking) + tc_len
+        return len(text) + len(thinking)
     if role == "tool_result":
         return len(str(getattr(msg, "tool_result", "") or "")) + len(getattr(msg, "tool_name", "") or "") + 20
     return 0
@@ -122,6 +116,54 @@ def _get_text(msg: Any) -> str:
     if role == "tool_result":
         return str(getattr(msg, "tool_result", "") or "")
     return ""
+
+
+_PRESERVE_TOOLS = frozenset({
+    "ExecutePython",
+    "execute_python",
+    "ConfigFile",
+    "ReadFile",
+    "WriteFile",
+    "ShellCommand",
+    "BashTool",
+})
+
+_PRESERVE_KEYWORDS = (
+    "password",
+    "secret",
+    "token",
+    "api_key",
+    "apikey",
+    "credential",
+    "auth",
+    "ssh",
+    "private_key",
+    "access_key",
+    "bearer",
+    "jwt",
+    "oauth",
+    "client_secret",
+    "database_url",
+    "connection_string",
+    "error:",
+    "exception:",
+    "traceback",
+    "failed",
+    "permission denied",
+    "exit_code",
+    "stderr",
+)
+
+
+def _should_preserve_tool_result(tool_name: str, result_text: str) -> bool:
+    """Check if tool result contains critical info that must be preserved."""
+    if tool_name in _PRESERVE_TOOLS:
+        return True
+    text_lower = result_text.lower()
+    for kw in _PRESERVE_KEYWORDS:
+        if kw in text_lower:
+            return True
+    return False
 
 
 def _summarize_tool_result_line(msg: Any) -> str:
@@ -317,9 +359,6 @@ class ContextCompressor:
             return False
         return _estimate_total_tokens(content) >= self.threshold_tokens
 
-    # ------------------------------------------------------------------
-    # Phase 1: Prune old tool results + dedup + truncate args
-    # ------------------------------------------------------------------
 
     def _prune_old_tool_results(self, content: list) -> tuple[list, int]:
         import hashlib
@@ -368,6 +407,18 @@ class ContextCompressor:
                 continue
             if raw == _PRUNED_TOOL_PLACEHOLDER or raw.startswith("[Duplicate tool"):
                 continue
+            tool_name = getattr(msg, "tool_name", "") or ""
+            if _should_preserve_tool_result(tool_name, raw):
+                if len(raw) > 4000:
+                    truncated = raw[:3000] + "\n...[truncated, preserved critical content]...\n" + raw[-800:]
+                    result[i] = ToolResultContent(
+                        agent_id=msg.agent_id,
+                        tool_call_id=msg.tool_call_id,
+                        tool_name=msg.tool_name,
+                        tool_result=truncated,
+                    )
+                    pruned += 1
+                continue
             summary_line = _summarize_tool_result_line(msg)
             result[i] = ToolResultContent(
                 agent_id=msg.agent_id,
@@ -404,9 +455,6 @@ class ContextCompressor:
 
         return result, pruned
 
-    # ------------------------------------------------------------------
-    # Phase 2: Boundary alignment
-    # ------------------------------------------------------------------
 
     def _align_boundary_forward(self, content: list, idx: int) -> int:
         while idx < len(content) and getattr(content[idx], "role", "") == "tool_result":
@@ -460,9 +508,6 @@ class ContextCompressor:
 
         return max(cut_idx, head_end + 1)
 
-    # ------------------------------------------------------------------
-    # Phase 3: Summary generation
-    # ------------------------------------------------------------------
 
     def _serialize_for_summary(self, turns: list) -> str:
         parts = []
@@ -514,38 +559,27 @@ class ContextCompressor:
 [Copy the user's most recent request verbatim. If multiple tasks were requested
 and only some are done, list only the ones NOT yet completed.]
 
-## Goal
 [What the user is trying to accomplish overall]
 
-## Constraints & Preferences
 [User preferences, style, constraints, important decisions]
 
-## Completed Actions
 [Numbered list of concrete actions taken — include tool used, target, and outcome.
 Format: N. ACTION target — outcome [tool: name]]
 
-## Active State
 [Current state: modified files, test status, running processes]
 
-## In Progress
 [Work underway when compaction fired]
 
-## Blocked
 [Blockers, errors, unresolved issues with exact error messages]
 
-## Key Decisions
 [Important technical decisions and WHY]
 
-## Resolved Questions
 [Questions already answered — include the answer]
 
-## Pending User Asks
 [Questions or requests NOT yet fulfilled. If none, write "None."]
 
-## Relevant Files
 [Files read, modified, or created with brief note on each]
 
-## Remaining Work
 [What remains — framed as context, not instructions]
 
 Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command outputs,
@@ -673,9 +707,6 @@ Write only the summary body."""
             f"Continue based on recent messages below and current state."
         )
 
-    # ------------------------------------------------------------------
-    # Phase 4: Assembly
-    # ------------------------------------------------------------------
 
     def _assemble(self, content: list, compress_start: int, compress_end: int, summary: str | None) -> list:
         from homeassistant.components.conversation.chat_log import (
@@ -740,9 +771,6 @@ Write only the summary body."""
 
         return compressed
 
-    # ------------------------------------------------------------------
-    # Sanitize orphaned tool call/result pairs
-    # ------------------------------------------------------------------
 
     def _sanitize_tool_pairs(self, content: list) -> list:
         from homeassistant.components.conversation.chat_log import ToolResultContent
@@ -855,6 +883,10 @@ def sanitize_tool_pairs(content: list) -> list:
     return content
 
 
+_PENDING_COMPRESSIONS: dict[str, bool] = {}
+_COMPRESSION_RESULTS: dict[str, list] = {}
+
+
 async def compress_chat_log(hass: HomeAssistant, conversation_id: str, *, summary_agent_id: str = "", force: bool = False, focus_topic: str = "") -> bool:
     from homeassistant.util.hass_dict import HassKey
     DATA_CHAT_LOGS: HassKey = HassKey("conversation_chat_log")
@@ -882,3 +914,128 @@ async def compress_chat_log(hass: HomeAssistant, conversation_id: str, *, summar
         )
         return True
     return False
+
+
+async def _background_compress_task(
+    hass: HomeAssistant,
+    conversation_id: str,
+    content_snapshot: list,
+    summary_agent_id: str,
+    focus_topic: str,
+) -> None:
+    """Background compression task - runs async without blocking main conversation."""
+    try:
+        compressor = get_compressor()
+        compressed = await compressor.compress(
+            hass, content_snapshot,
+            summary_agent_id=summary_agent_id,
+            focus_topic=focus_topic,
+        )
+        if compressed is not content_snapshot:
+            _COMPRESSION_RESULTS[conversation_id] = compressed
+            LOGGER.info(
+                "Background compression ready for %s (compression #%d)",
+                conversation_id[:20], compressor.compression_count,
+            )
+    except Exception as err:
+        LOGGER.warning("Background compression failed for %s: %s", conversation_id[:20], err)
+    finally:
+        _PENDING_COMPRESSIONS.pop(conversation_id, None)
+
+
+_DEFERRED_COMPRESSIONS: dict[str, dict] = {}
+
+
+def schedule_background_compression(
+    hass: HomeAssistant,
+    conversation_id: str,
+    *,
+    summary_agent_id: str = "",
+    focus_topic: str = "",
+) -> bool:
+    """Mark conversation for compression on next user turn. Returns True if marked."""
+    if conversation_id in _PENDING_COMPRESSIONS:
+        return False
+    if conversation_id in _DEFERRED_COMPRESSIONS:
+        return False
+
+    from homeassistant.util.hass_dict import HassKey
+    DATA_CHAT_LOGS: HassKey = HassKey("conversation_chat_log")
+    all_chat_logs = hass.data.get(DATA_CHAT_LOGS)
+    if not all_chat_logs:
+        return False
+    chat_log = all_chat_logs.get(conversation_id)
+    if chat_log is None:
+        return False
+
+    compressor = get_compressor()
+    content = chat_log.content
+
+    if not compressor.should_compress(content):
+        return False
+
+    _DEFERRED_COMPRESSIONS[conversation_id] = {
+        "summary_agent_id": summary_agent_id,
+        "focus_topic": focus_topic,
+    }
+    LOGGER.debug("Marked compression for next turn: %s", conversation_id[:20])
+    return True
+
+
+def run_deferred_compression(hass: HomeAssistant, conversation_id: str) -> bool:
+    """Start deferred compression if marked. Call at start of new user turn."""
+    deferred = _DEFERRED_COMPRESSIONS.pop(conversation_id, None)
+    if not deferred:
+        return False
+    if conversation_id in _PENDING_COMPRESSIONS:
+        return False
+
+    from homeassistant.util.hass_dict import HassKey
+    DATA_CHAT_LOGS: HassKey = HassKey("conversation_chat_log")
+    all_chat_logs = hass.data.get(DATA_CHAT_LOGS)
+    if not all_chat_logs:
+        return False
+    chat_log = all_chat_logs.get(conversation_id)
+    if chat_log is None:
+        return False
+
+    content_snapshot = list(chat_log.content)
+    _PENDING_COMPRESSIONS[conversation_id] = True
+
+    import asyncio
+    asyncio.create_task(
+        _background_compress_task(
+            hass, conversation_id, content_snapshot,
+            deferred.get("summary_agent_id", ""),
+            deferred.get("focus_topic", ""),
+        )
+    )
+    LOGGER.debug("Started deferred compression for %s", conversation_id[:20])
+    return True
+
+
+def apply_pending_compression(hass: HomeAssistant, conversation_id: str) -> bool:
+    """Apply pending compression result if available. Returns True if applied."""
+    compressed = _COMPRESSION_RESULTS.pop(conversation_id, None)
+    if compressed is None:
+        return False
+
+    from homeassistant.util.hass_dict import HassKey
+    DATA_CHAT_LOGS: HassKey = HassKey("conversation_chat_log")
+    all_chat_logs = hass.data.get(DATA_CHAT_LOGS)
+    if not all_chat_logs:
+        return False
+    chat_log = all_chat_logs.get(conversation_id)
+    if chat_log is None:
+        return False
+
+    content = chat_log.content
+    content.clear()
+    content.extend(compressed)
+    LOGGER.info("Applied pending background compression for %s", conversation_id[:20])
+    return True
+
+
+def has_pending_compression(conversation_id: str) -> bool:
+    """Check if compression is pending or result is ready."""
+    return conversation_id in _PENDING_COMPRESSIONS or conversation_id in _COMPRESSION_RESULTS

@@ -9,10 +9,14 @@ from typing import Any
 from homeassistant.helpers import intent
 
 from .internal_llm import reset_runtime_tool_mode, set_runtime_tool_mode
+from .kernel_sidechain import (
+    create_kernel_sidechain,
+    close_kernel_sidechain,
+    get_current_kernel_sidechain,
+)
 from .loop_controller import check_tool_repeat, finalize_kernel_step, record_kernel_step
 from .native_chatlog_bridge import (
     append_final_message_and_pause,
-    append_step_message_and_pause,
     discard_last_planner_message,
 )
 from .prompting import _fit_base_prompt
@@ -30,13 +34,47 @@ def _append_prompt(base: str | None, extra: str) -> str:
     return _fit_base_prompt(base or "", [extra])
 
 
+def _build_kernel_planner_prompt(
+    *,
+    user_text: str,
+    steps: list[dict[str, Any]],
+    step_index: int,
+) -> str:
+    """Build an independent kernel planner prompt.
+    
+    This is a standalone protocol prompt, NOT appended to the main conversation prompt.
+    The kernel planner only needs:
+    1. Step contract (output format)
+    2. Tool catalog (what tools are available)
+    3. Completed steps (what has been done)
+    4. Planner rules (current goal and constraints)
+    """
+    sections = [
+        "# Kernel Planner Mode",
+        "You are a step-by-step planner. Your job is to decide the next action to achieve the user's goal.",
+        "You do NOT have access to conversation history or workspace documents in this mode.",
+        "Focus only on the current goal and available tools.",
+        "",
+        render_step_contract(),
+        "",
+        _render_tool_catalog(full=(step_index == 1)),
+        "",
+        _render_completed_steps(steps),
+        "",
+        _render_planner_rules(user_text=user_text, steps=steps),
+    ]
+    return "\n".join(sections)
+
+
 def _step_fingerprint(step: AgentStep) -> str:
     if step.kind != "call_tool":
         return step.kind
     return f"{step.tool_name}:{json.dumps(step.tool_args, ensure_ascii=False, sort_keys=True)}"
 
 
-def _render_tool_catalog() -> str:
+def _render_tool_catalog(*, full: bool = True) -> str:
+    if not full:
+        return "## Allowed Runtime Tools\nSee step 1 for the full tool list."
     lines = ["## Allowed Runtime Tools"]
     for spec in list_kernel_tool_specs():
         lines.append(
@@ -151,22 +189,20 @@ async def execute_kernel_turn(
     tool_calls_state.clear()
     tool_results_state.clear()
 
+    sidechain = create_kernel_sidechain(
+        conversation_id=str(conversation_id or "default"),
+        user_text=user_text,
+    )
     steps: list[dict[str, Any]] = []
     last_result = None
     get_conversation_status(hass)["kernel_mode_active"] = True
 
     try:
         for step_index in range(1, _MAX_KERNEL_STEPS + 1):
-            kernel_prompt = _append_prompt(
-                extra_system_prompt,
-                "\n\n".join(
-                    [
-                        render_step_contract(),
-                        _render_tool_catalog(),
-                        _render_completed_steps(steps),
-                        _render_planner_rules(user_text=user_text, steps=steps),
-                    ]
-                ),
+            kernel_prompt = _build_kernel_planner_prompt(
+                user_text=user_text,
+                steps=steps,
+                step_index=step_index,
             )
 
             try:
@@ -184,6 +220,16 @@ async def execute_kernel_turn(
                 pass
 
             tool_mode_token = set_runtime_tool_mode("kernel")
+            chat_log_len_before = 0
+            try:
+                from homeassistant.util.hass_dict import HassKey
+                _DK: HassKey = HassKey("conversation_chat_log")
+                _all = hass.data.get(_DK)
+                _cl = _all.get(conversation_id) if _all else None
+                if _cl and hasattr(_cl, "content"):
+                    chat_log_len_before = len(_cl.content)
+            except Exception:
+                pass
             try:
                 import asyncio as _aio
                 result = await _aio.wait_for(
@@ -212,10 +258,20 @@ async def execute_kernel_turn(
                 return None
             finally:
                 reset_runtime_tool_mode(tool_mode_token)
+                try:
+                    _all = hass.data.get(_DK)
+                    _cl = _all.get(conversation_id) if _all else None
+                    if _cl and hasattr(_cl, "content") and len(_cl.content) > chat_log_len_before:
+                        del _cl.content[chat_log_len_before:]
+                        LOGGER.debug(
+                            "Kernel sidechain: trimmed %d entries from main chat log",
+                            len(_cl.content) - chat_log_len_before,
+                        )
+                except Exception:
+                    pass
 
             last_result = result
             planner_text = get_response_text(result)
-            discard_last_planner_message(agent_id=agent_id, content=planner_text)
             try:
                 step = parse_agent_step(planner_text)
             except StepProtocolError as err:
@@ -298,11 +354,15 @@ async def execute_kernel_turn(
             )
             record["expected_output"] = step.expected_output
             record["fingerprint"] = fingerprint
-            await append_step_message_and_pause(
-                agent_id=agent_id,
-                step_index=step_index,
-                phase="start",
-                content=_render_step_message(step, step_index),
+            sidechain.add_step(
+                index=step_index,
+                kind=step.kind,
+                title=step.step_title,
+                explanation=step.step_explanation,
+                tool_name=step.tool_name,
+                tool_args=step.tool_args,
+                expected_output=step.expected_output,
+                fingerprint=fingerprint,
             )
 
             tool_result = await execute_kernel_tool(
@@ -343,11 +403,9 @@ async def execute_kernel_turn(
             )
             record["status"] = "done" if tool_result.get("success", False) else "failed"
             record["observation"] = observation
-            await append_step_message_and_pause(
-                agent_id=agent_id,
-                step_index=step_index,
-                phase="observation",
-                content=_render_observation_message(step_index, step.step_title, observation),
+            sidechain.finalize_step(
+                success=bool(tool_result.get("success", False)),
+                observation=observation,
             )
             steps.append(record)
 
@@ -361,4 +419,5 @@ async def execute_kernel_turn(
         await append_final_message_and_pause(agent_id=agent_id, content=final_text)
         return _finalize_result(last_result, final_text)
     finally:
+        close_kernel_sidechain()
         get_conversation_status(hass)["kernel_mode_active"] = False

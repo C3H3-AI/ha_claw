@@ -161,15 +161,7 @@ async def async_bridge_native_chatlog_turn(
     if _turn_has_assistant_text(turn_contents, response_text):
         return False
     if _turn_has_native_steps(turn_contents):
-        if not response_text or _turn_has_final_assistant_content(turn_contents):
-            return False
-
-        async for _ in chat_log.async_add_delta_content_stream(
-            agent_id,
-            _final_content_stream(response_text),
-        ):
-            pass
-        return True
+        return False
 
     tool_results = copy.deepcopy(get_tool_results_state(hass))
     thought = str(get_conversation_status(hass).get("current_thought") or "").strip()

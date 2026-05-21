@@ -187,8 +187,7 @@ async def websocket_chat_history_get(
     for dt in display_turns:
         dt["tool_calls"] = dt["tool_calls"][:MAX_TOOL_CALLS_DISPLAY]
 
-    display_chars = sum(len(t["user"]) + len(t["assistant"]) for t in display_turns)
-    tokens_estimate = int(display_chars / 3.5) + 500 if display_chars else 0
+    tokens_estimate = total_chars // 3 + len(turns) * 10 if total_chars else 0
 
     connection.send_result(msg["id"], {
         "conversation_id": conv_id,

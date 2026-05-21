@@ -30,7 +30,9 @@ def reset_loop_for_conversation(
     conversation_id: str | None,
     max_iterations: int = 50,
 ) -> dict[str, Any]:
+    from .ha_guide_store import reset_tool_guide_seen
 
+    reset_tool_guide_seen()
     task_loop = get_task_loop_state(hass)
     task_loop.clear()
     task_loop.update(

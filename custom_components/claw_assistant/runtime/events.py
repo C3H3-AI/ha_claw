@@ -58,6 +58,8 @@ def fire_live_progress(
     text: str,
     tool_name: str = "",
     display_text: str = "",
+    tokens_used: int = 0,
+    context_window: int = 0,
 ) -> None:
 
     hass.bus.async_fire(
@@ -68,5 +70,7 @@ def fire_live_progress(
             "text": text,
             "tool_name": tool_name,
             "display_text": display_text,
+            "tokens_used": tokens_used,
+            "context_window": context_window,
         },
     )

@@ -447,6 +447,8 @@ async def _execute_conversation_turn_inner(
         LOGGER.info("New conversation detected: %s...", conversation_id[:20])
         task_loop["waiting_choice"] = False
         active_conv["id"] = conversation_id
+        from .ha_guide_store import reset_tool_guide_seen
+        reset_tool_guide_seen()
 
     if int(task_loop.get("turn_count", 0) or 0) > 1:
         user_prefix = get_user_context_prefix()
@@ -480,10 +482,13 @@ async def _execute_conversation_turn_inner(
         _act_enabled = _e.options.get(CONF_ENABLE_ACTIVITY_TRACKING, True)
         break
     if _act_enabled:
-        from .user_activity import build_activity_prompt_section
+        from .user_activity import build_activity_prompt_section, build_system_events_prompt_section
         _act_section = build_activity_prompt_section(hass)
         if _act_section:
             text = f"<activity-context>\n{_act_section}\n</activity-context>\n\n{text}"
+        _events_section = build_system_events_prompt_section(hass)
+        if _events_section:
+            text = f"<system-events>\n{_events_section}\n</system-events>\n\n{text}"
 
     runtime_config = build_conversation_runtime_config_for_hass(entry, hass)
     fallback_agents = runtime_config.fallback_agents
@@ -741,6 +746,7 @@ async def _execute_conversation_turn_inner(
             device_id=device_id,
             satellite_id=satellite_id,
             conv_history=get_conversation_history(),
+            is_first_turn=is_first_turn,
         )
     finally:
         if attachment_token is not None:

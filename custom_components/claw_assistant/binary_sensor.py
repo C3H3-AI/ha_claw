@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
+from .const import DOMAIN, VERSION
 from .runtime.custom_entity_store import get_custom_entities_by_platform
 
 SCAN_INTERVAL = timedelta(seconds=30)
@@ -66,8 +66,9 @@ class DynamicBinarySensor(BinarySensorEntity):
         return DeviceInfo(
             identifiers={(DOMAIN, self._entry.entry_id)},
             name=self._entry.title or DOMAIN,
-            manufacturer="claw_assistant",
-            model="AI Assistant",
+            manufacturer="Claw Assistant",
+            model="Home Assistant AI",
+            sw_version=VERSION,
         )
 
     @property

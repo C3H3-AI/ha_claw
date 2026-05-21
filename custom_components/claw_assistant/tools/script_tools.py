@@ -39,7 +39,7 @@ class ScriptTool(llm.Tool):
     name = "Script"
     description = (
         "Manage Home Assistant scripts via official APIs. "
-        "Actions: list, get, create, update, patch, delete, run. "
+        "Actions: list, get, create, update, patch, delete, run, traces, trace_get. "
         "PATCH-FIRST RULE: For any surgical change (add one step, tweak one service call, fix a template), "
         "YOU MUST use action=patch with anchor-based ops instead of re-emitting the whole config. "
         "patch params: patches=[{op, anchor, new_text, occurrence?, regex?, count?}, ...], dry_run=true/false. "
@@ -77,8 +77,9 @@ class ScriptTool(llm.Tool):
     parameters = vol.Schema(
         {
             vol.Required("action"): vol.In(
-                ["list", "get", "create", "update", "patch", "delete", "run"]
+                ["list", "get", "create", "update", "patch", "delete", "run", "traces", "trace_get"]
             ),
+            vol.Optional("run_id", default=""): str,
             vol.Optional("entity_id", default=""): str,
             vol.Optional("script_id", default=""): str,
             vol.Optional("config", default={}): vol.Any(dict, str),
@@ -148,6 +149,13 @@ class ScriptTool(llm.Tool):
 
             if action == "delete":
                 return await self._delete_script(hass, entity_id, script_id)
+
+            if action == "traces":
+                return await self._get_traces(hass, entity_id, script_id)
+
+            if action == "trace_get":
+                run_id = str(tool_input.tool_args.get("run_id", "")).strip()
+                return await self._get_trace_detail(hass, entity_id, script_id, run_id)
 
             return {"success": False, "error": "Invalid action or missing required parameters"}
         except Exception as err:
@@ -623,3 +631,54 @@ class ScriptTool(llm.Tool):
             "script_id": object_id,
             "entity_id": f"script.{object_id}",
         }
+
+    async def _get_traces(
+        self, hass: HomeAssistant, entity_id: str, script_id: str
+    ) -> JsonObjectType:
+        """List execution traces for a script."""
+        from homeassistant.components.trace.util import async_list_traces
+
+        object_id = self._resolve_script_id(entity_id, script_id)
+        if not object_id:
+            return {"success": False, "error": "script_id or entity_id required"}
+
+        key = f"script.{object_id}"
+        traces = await async_list_traces(hass, "script", key)
+        if not traces:
+            all_traces = await async_list_traces(hass, "script", None)
+            if not all_traces:
+                return {"success": True, "traces": [], "message": "No traces stored for any script"}
+            return {"success": True, "traces": [], "message": f"No traces for {key}. {len(all_traces)} traces exist for other scripts."}
+
+        result = []
+        for t in traces:
+            entry = {
+                "run_id": t.get("run_id", ""),
+                "state": t.get("state", ""),
+                "timestamp": t.get("timestamp", {}).get("start", ""),
+            }
+            if t.get("error"):
+                entry["error"] = t["error"]
+            result.append(entry)
+
+        return {"success": True, "script_id": object_id, "traces": result}
+
+    async def _get_trace_detail(
+        self, hass: HomeAssistant, entity_id: str, script_id: str, run_id: str
+    ) -> JsonObjectType:
+        """Get detailed trace for a specific run."""
+        from homeassistant.components.trace.util import async_get_trace
+
+        object_id = self._resolve_script_id(entity_id, script_id)
+        if not object_id:
+            return {"success": False, "error": "script_id or entity_id required"}
+        if not run_id:
+            return {"success": False, "error": "run_id required"}
+
+        key = f"script.{object_id}"
+        try:
+            trace = await async_get_trace(hass, key, run_id)
+        except KeyError:
+            return {"success": False, "error": f"Trace {run_id} not found for {key}"}
+
+        return {"success": True, "script_id": object_id, "run_id": run_id, "trace": trace}

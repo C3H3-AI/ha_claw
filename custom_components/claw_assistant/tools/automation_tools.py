@@ -32,7 +32,7 @@ class AutomationTool(llm.Tool):
     name = "Automation"
     description = (
         "Manage Home Assistant automations via official APIs. "
-        "Actions: list, get, create, update, patch, delete, trigger, enable, disable, confirm_draft. "
+        "Actions: list, get, create, update, patch, delete, trigger, enable, disable, confirm_draft, traces, trace_get. "
         "PATCH-FIRST RULE: For any surgical change (tweaking one trigger, swapping one service, fixing a template), "
         "YOU MUST use action=patch with anchor-based ops instead of re-emitting the whole config. "
         "patch params: patches=[{op, anchor, new_text, occurrence?, regex?, count?}, ...], dry_run=true/false. "
@@ -69,8 +69,9 @@ class AutomationTool(llm.Tool):
     parameters = vol.Schema(
         {
             vol.Required("action"): vol.In(
-                ["list", "get", "trigger", "enable", "disable", "create", "update", "patch", "confirm_draft", "delete"]
+                ["list", "get", "trigger", "enable", "disable", "create", "update", "patch", "confirm_draft", "delete", "traces", "trace_get"]
             ),
+            vol.Optional("run_id", default=""): str,
             vol.Optional("entity_id", default=""): str,
             vol.Optional("config", default={}): vol.Any(dict, str),
             vol.Optional("automation_id", default=""): str,
@@ -157,6 +158,13 @@ class AutomationTool(llm.Tool):
 
             if action == "delete":
                 return await self._delete_automation(hass, entity_id, automation_id)
+
+            if action == "traces":
+                return await self._get_traces(hass, entity_id, automation_id)
+
+            if action == "trace_get":
+                run_id = str(tool_input.tool_args.get("run_id", "")).strip()
+                return await self._get_trace_detail(hass, entity_id, automation_id, run_id)
 
             return {"success": False, "error": "Invalid action or missing required parameters"}
         except Exception as err:
@@ -777,3 +785,55 @@ class AutomationTool(llm.Tool):
             }
         except Exception as err:
             return {"success": False, "error": f"Failed to delete automation: {err}"}
+
+    async def _get_traces(
+        self, hass: HomeAssistant, entity_id: str, automation_id: str
+    ) -> JsonObjectType:
+        """List execution traces for an automation."""
+        from homeassistant.components.trace.util import async_list_traces
+
+        _, config_id = self._resolve_config_id(hass, entity_id, automation_id)
+        if not config_id:
+            return {"success": False, "error": "automation_id or entity_id required"}
+
+        key = f"automation.{config_id}"
+        traces = await async_list_traces(hass, "automation", key)
+        if not traces:
+            all_traces = await async_list_traces(hass, "automation", None)
+            if not all_traces:
+                return {"success": True, "traces": [], "message": "No traces stored for any automation"}
+            return {"success": True, "traces": [], "message": f"No traces for {key}. {len(all_traces)} traces exist for other automations."}
+
+        result = []
+        for t in traces:
+            entry = {
+                "run_id": t.get("run_id", ""),
+                "state": t.get("state", ""),
+                "timestamp": t.get("timestamp", {}).get("start", ""),
+                "trigger": t.get("trigger", ""),
+            }
+            if t.get("error"):
+                entry["error"] = t["error"]
+            result.append(entry)
+
+        return {"success": True, "automation_id": config_id, "traces": result}
+
+    async def _get_trace_detail(
+        self, hass: HomeAssistant, entity_id: str, automation_id: str, run_id: str
+    ) -> JsonObjectType:
+        """Get detailed trace for a specific run."""
+        from homeassistant.components.trace.util import async_get_trace
+
+        _, config_id = self._resolve_config_id(hass, entity_id, automation_id)
+        if not config_id:
+            return {"success": False, "error": "automation_id or entity_id required"}
+        if not run_id:
+            return {"success": False, "error": "run_id required"}
+
+        key = f"automation.{config_id}"
+        try:
+            trace = await async_get_trace(hass, key, run_id)
+        except KeyError:
+            return {"success": False, "error": f"Trace {run_id} not found for {key}"}
+
+        return {"success": True, "automation_id": config_id, "run_id": run_id, "trace": trace}

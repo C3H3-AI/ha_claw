@@ -825,10 +825,7 @@ def _clear_conversation_runtime(hass, conversation_id: str | None) -> None:
     active_conv["id"] = conversation_id
 
     status = get_conversation_status(hass)
-    preserve_keys = {"hook_installed", "llm_api_id", "user_language", "history_continuation_id"}
-    if old_conv_id and old_conv_id != conversation_id:
-        existing_cont_id = status.get("history_continuation_id") or old_conv_id
-        status["history_continuation_id"] = existing_cont_id
+    preserve_keys = {"hook_installed", "llm_api_id", "user_language"}
     preserved = {k: status[k] for k in preserve_keys if k in status}
     status.clear()
     status.update(preserved)
@@ -895,7 +892,10 @@ async def async_handle_chat_command(
         return ChatCommandOutcome(result=_build_result(user_input, _build_command_catalog_message(lang)))
 
     if command.name == "new":
+        old_continuous_id = None
         if continuous_conversation_enabled(hass):
+            from .runtime.continuous_conversation import _state as _cc_state
+            old_continuous_id = _cc_state(hass).get("conversation_id")
             conversation_id = start_new_conversation(hass, conversation_id)
             user_input = conversation.ConversationInput(
                 text=user_input.text,
@@ -907,7 +907,17 @@ async def async_handle_chat_command(
                 satellite_id=getattr(user_input, "satellite_id", None),
                 extra_system_prompt=getattr(user_input, "extra_system_prompt", None),
             )
+        if old_continuous_id:
+            _purge_native_chat_log(hass, old_continuous_id)
+            get_conversation_history().clear(old_continuous_id)
         _clear_conversation_runtime(hass, conversation_id)
+        status = get_conversation_status(hass)
+        status.pop("history_continuation_id", None)
+        try:
+            from .runtime.user_activity import _ring
+            _ring(hass).clear()
+        except Exception:
+            pass
         return ChatCommandOutcome(result=_build_result(user_input, t("cmd_new_done", lang)))
 
     if command.name == "reset":

@@ -62,7 +62,8 @@ class FallbackConversationAgent(
             identifiers={(DOMAIN, entry.entry_id)},
             name=entry.title or DOMAIN,
             manufacturer="Claw Assistant",
-            model=f"AI Agent v{VERSION}",
+            model="Home Assistant AI",
+            sw_version=VERSION,
         )
         self._last_active = datetime.now(UTC)
 

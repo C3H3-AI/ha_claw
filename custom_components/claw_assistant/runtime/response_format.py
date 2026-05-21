@@ -29,16 +29,9 @@ _LINK_REWRITE_RE = re.compile(
     re.IGNORECASE,
 )
 _HA_RICH_MEDIA_TAG_RE = re.compile(r"\[(IMAGE|GIF|VIDEO|FILE):(.+?)\]")
-# Bare claw_assistant media paths the AI may embed verbatim. Both the backend
-# absolute form (``/config/www/claw_assistant/...``) and the public HA URL form
-# (``/local/claw_assistant/...`` — what ``output_url()`` returns) are accepted
-# so the renderer no longer depends on the AI sticking to a single style.
 _HA_LOCAL_PATH_RE = re.compile(
     r"(?<![\w/(])((?:/config/www|/local)/claw_assistant/[^\s<>\"\[\]()]+)"
 )
-# Full http(s) URL pointing at a frontend-served claw_assistant media file
-# (e.g. ``http://192.168.x.x:8123/local/claw_assistant/foo.mp4`` produced by
-# ``absolute_output_url``). Captured in group(1).
 _HA_LOCAL_FULL_URL_RE = re.compile(
     r"(?<![\w/(])(https?://[^\s<>\"\[\]()]*?/local/claw_assistant/[^\s<>\"\[\]()]+)",
     re.IGNORECASE,
@@ -88,16 +81,10 @@ def _normalize_response_links(text: str) -> str:
         return f"__CLAW_IMAGE_{len(image_tokens) - 1}__"
 
     def _stash_claw_media(match: "re.Match[str]") -> str:
-        # Protect claw_assistant media references (full URL or bare /local/
-        # path) from being rewritten into ``<a>`` tags by ``_LINK_REWRITE_RE``.
-        # They will be re-expanded into ``<video>``/``![img]`` later by
-        # ``_expand_ha_frontend_local_paths`` / ``_expand_ha_frontend_full_urls``.
         media_tokens.append(match.group(0))
         return f"__CLAW_MEDIA_{len(media_tokens) - 1}__"
 
     protected = _IMAGE_MARKDOWN_RE.sub(_stash_image, text)
-    # Order matters: full URL first (it contains a ``/local/...`` substring
-    # that the bare-path regex would otherwise match inside the URL).
     protected = _HA_LOCAL_FULL_URL_RE.sub(_stash_claw_media, protected)
     protected = _HA_LOCAL_PATH_RE.sub(_stash_claw_media, protected)
     spaced = _URL_CJK_BOUNDARY_RE.sub(r"\1 ", protected)
@@ -214,9 +201,6 @@ def _restore_existing_html_media(
 def _expand_ha_frontend_local_paths(text: str) -> str:
     def _replace(match: "re.Match[str]") -> str:
         source = match.group(1).strip()
-        # Normalise both ``/config/www/...`` and ``/local/...`` to the public
-        # frontend-served URL form so the resulting markdown / video tag works
-        # in the HA frontend. ``/local/...`` is already in the right form.
         if source.startswith("/config/www/"):
             url = "/local/" + source.removeprefix("/config/www/").lstrip("/")
         else:
@@ -280,7 +264,6 @@ def _route_claw_text_url(url: str) -> str:
     prefix = "/local/claw_assistant/"
     if url.startswith(prefix):
         return "/claw_file/" + url[len(prefix):]
-    # Full URL form: ``http(s)://host/local/claw_assistant/<name>``.
     if "://" in url and "/local/claw_assistant/" in url:
         return url.replace("/local/claw_assistant/", "/claw_file/", 1)
     return url
@@ -303,9 +286,6 @@ def _render_ha_frontend_blank_link(url: str, label: str) -> str:
     )
 
 
-# Markdown link the LLM may already have produced (``[label](/local/claw_assistant/x.md)``
-# or full URL form). Converted in-place to ``<a target="_blank">`` so it opens
-# in a new browser window rather than navigating away from the HA chat view.
 _LOCAL_MD_LINK_RE = re.compile(
     r"(?<!\!)\[([^\]\n]{1,500})\]\("
     r"((?:https?://[^\s)]{0,2000}?)?(?:/local|/config/www)/claw_assistant/[^\s)]{1,2000})"
@@ -1013,30 +993,11 @@ def apply_agent_response_format(
     channel_type = get_channel_type(conversation_id)
     if hass and channel_type == "ha":
         response_text = _expand_ha_frontend_media_tags(hass, response_text)
-        # Convert any LLM-emitted ``[label](/local/claw_assistant/x.md)`` style
-        # markdown links into ``<a target="_blank">`` HTML so they open in a
-        # new browser window. Must run before ``_stash_existing_html_media`` so
-        # the freshly emitted ``<a>`` tags are protected from URL/path
-        # expansion in the subsequent passes.
         response_text = _convert_local_md_links_to_new_window(response_text)
-        # Hide already-formed HTML media tags (``<video>``, ``<a>``, ``<img>``,
-        # …) before the URL/path expanders run, otherwise the expanders will
-        # match URLs *inside* a tag's ``src``/``href`` attribute and emit a
-        # nested ``<video src="<video ...></video>">`` mess.
         response_text, _stashed_html, _prefix_a = _stash_existing_html_media(
             response_text, prefix="CLAW_HTML_A"
         )
-        # Full URL must run before bare-path expansion: the bare regex would
-        # otherwise match the ``/local/claw_assistant/...`` substring inside a
-        # full URL and emit a half-rewritten string.
         response_text = _expand_ha_frontend_full_urls(response_text)
-        # Re-stash: ``_expand_ha_frontend_full_urls`` may have just emitted
-        # new ``<video>`` tags whose ``src="/local/claw_assistant/..."`` would
-        # be matched a second time by the bare-path expander, producing the
-        # same nested-tag corruption. Hiding them between the two passes is
-        # the simplest way to keep each expander idempotent. Use a distinct
-        # prefix so the second pass's ``__CLAW_HTML_0__`` does not collide
-        # with the first pass's during restore.
         response_text, _stashed_emitted, _prefix_b = _stash_existing_html_media(
             response_text, prefix="CLAW_HTML_B"
         )
