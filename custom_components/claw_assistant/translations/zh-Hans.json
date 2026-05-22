@@ -42,7 +42,8 @@
           "agent_settings": "配置智能代理 ｜ 首要、后备、总结链路",
           "conversation_settings": "调整对话风格 ｜ 显示、流式与维度",
           "workspace_editor": "编辑工作文档 ｜ 主提示词与技能资料",
-          "skill_editor": "管理安装技能 ｜ 动态查看与编辑"
+          "skill_editor": "管理安装技能 ｜ 动态查看与编辑",
+          "plugin_manager": "管理安装插件 ｜ Hermes 兼容插件"
         }
       },
       "agent_settings": {
@@ -249,16 +250,44 @@
           "delete": "删除该技能",
           "back": "返回技能列表"
         }
+      },
+      "plugin_manager": {
+        "title": "已安装插件",
+        "description": "感谢 [Hermes Agent](https://github.com/nousresearch/hermes-agent) 项目，本功能特别支持 **Hermes 兼容的扩展模块**。您可以到 GitHub 或其他平台寻找任何兼容的插件，为 AI 提供额外工具能力（如代码分析、文档检索、外部 API 调用等）。插件支持**热加载**，启用/禁用无需重启 Home Assistant。部分插件可能缺少描述或者不工作，可在 **AI 辅助**下查看和修改，激发更多能力。\n\n---\n**当前共 {plugin_count} 个已安装插件。**\n选择一个插件查看详情，或直接在下一步进行启用/禁用/删除。\n列表实时从 `.storage/claw_assistant/plugins/` 读取，新装/卸载插件即刻反映。",
+        "data": {
+          "plugin_key": "选择插件",
+          "back": "返回主菜单"
+        }
+      },
+      "plugin_detail": {
+        "title": "插件详情：{plugin_name}",
+        "description": "**版本：** {plugin_version}\n**状态：** {plugin_status}\n**工具数：** {plugin_tools}\n**路径：** `{plugin_path}`\n\n{plugin_description}\n\n",
+        "data": {
+          "enable": "启用该插件",
+          "disable": "禁用该插件",
+          "delete": "删除该插件",
+          "back": "返回插件列表"
+        }
+      },
+      "plugin_delete_confirm": {
+        "title": "删除插件：{plugin_name}",
+        "description": "确定要删除该插件吗？此操作无法撤销。",
+        "data": {
+          "confirm_delete": "是的，删除该插件",
+          "back": "返回插件列表"
+        }
       }
     },
     "error": {
       "invalid_conversation_mode": "对话模式选择无效",
       "invalid_agent": "请选择有效的对话代理实体",
       "no_agents_available": "未找到有效的对话代理，请确保至少有一个对话代理可用",
-      "no_installed_skills": "当前没有已安装的技能，可通过 AI 工具 InstallSkill 添加"
+      "no_installed_skills": "当前没有已安装的技能，可通过 AI 工具 InstallSkill 添加",
+      "no_installed_plugins": "当前没有已安装的插件，可将 Hermes 兼容插件复制到插件目录"
     },
     "abort": {
-      "workspace_doc_saved": "文档已保存并生效"
+      "workspace_doc_saved": "文档已保存并生效",
+      "plugin_load_failed": "插件加载失败"
     }
   }
 }

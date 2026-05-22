@@ -266,6 +266,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 "conversation_settings",
                 "workspace_editor",
                 "skill_editor",
+                "plugin_manager",
             ],
             description_placeholders={"integration_title": "integration_title", "current_config": "current_config"},
         )
@@ -460,6 +461,167 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 "skill_file": str(meta.get("file") or f"{slug}.md"),
                 "skill_chars": str(meta.get("chars") or len(current_content)),
                 "skill_description": str(meta.get("description") or ""),
+            },
+        )
+
+    async def async_step_plugin_manager(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Plugin manager - list installed plugins."""
+        from .runtime.plugin_store import list_installed_plugins, plugins_dir
+
+        if user_input is not None:
+            if user_input.get("back"):
+                return await self.async_step_init()
+            plugin_key = str(user_input.get("plugin_key") or "").strip()
+            if plugin_key:
+                self._plugin_editor_target = plugin_key
+                return await self.async_step_plugin_detail()
+
+        plugins = await self.hass.async_add_executor_job(list_installed_plugins)
+        plugins_path = str(plugins_dir())
+
+        options = []
+        for p in plugins:
+            name = str(p.get("name") or "")
+            key = str(p.get("key") or name)
+            version = str(p.get("version") or "")
+            loaded = p.get("loaded", False)
+            valid = p.get("valid", True)
+            load_error = p.get("load_error")
+
+            if not valid:
+                status = "INVALID"
+            elif loaded:
+                status = "RUNNING"
+            elif load_error:
+                status = "FAILED"
+            else:
+                status = "STOPPED"
+
+            ver_str = f" v{version}" if version else ""
+            label = f"[{status}] {name}{ver_str}"
+            options.append({"value": key, "label": label})
+
+        if not options:
+            return self.async_show_form(
+                step_id="plugin_manager",
+                data_schema=vol.Schema({vol.Optional("back", default=True): bool}),
+                description_placeholders={"plugin_count": "0", "plugins_path": plugins_path},
+                errors={"base": "no_installed_plugins"},
+            )
+
+        schema = vol.Schema({
+            vol.Required("plugin_key"): SelectSelector(
+                SelectSelectorConfig(options=options, mode=SelectSelectorMode.DROPDOWN)
+            ),
+            vol.Optional("back", default=False): bool,
+        })
+        return self.async_show_form(
+            step_id="plugin_manager",
+            data_schema=schema,
+            description_placeholders={
+                "plugin_count": str(len(options)),
+                "plugins_path": plugins_path,
+            },
+        )
+
+    async def async_step_plugin_detail(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Plugin detail - show info and actions."""
+        from .runtime.plugin_store import (
+            get_plugin_install_guide,
+            hot_load_plugin,
+            hot_unload_plugin,
+            list_installed_plugins,
+            plugins_dir,
+        )
+
+        plugin_key = getattr(self, "_plugin_editor_target", "") or ""
+        if not plugin_key:
+            return await self.async_step_plugin_manager()
+
+        if user_input is not None:
+            if user_input.get("back"):
+                self._plugin_editor_target = ""
+                return await self.async_step_plugin_manager()
+            if user_input.get("delete"):
+                return await self.async_step_plugin_delete_confirm()
+            if user_input.get("enable"):
+                await self.hass.async_add_executor_job(hot_load_plugin, self.hass, plugin_key)
+                self._plugin_editor_target = ""
+                return await self.async_step_plugin_manager()
+            if user_input.get("disable"):
+                await self.hass.async_add_executor_job(hot_unload_plugin, self.hass, plugin_key)
+                self._plugin_editor_target = ""
+                return await self.async_step_plugin_manager()
+
+        guide = await self.hass.async_add_executor_job(get_plugin_install_guide, plugin_key)
+        plugins = await self.hass.async_add_executor_job(list_installed_plugins)
+        plugin_info = next((p for p in plugins if p.get("key") == plugin_key), {})
+        is_loaded = plugin_info.get("loaded", False)
+        tools_count = plugin_info.get("tools_count", 0)
+
+        desc_parts = []
+        if guide.get("description"):
+            desc_parts.append(guide["description"])
+        if guide.get("pip_dependencies"):
+            desc_parts.append(f"Dependencies: {', '.join(guide['pip_dependencies'])}")
+        if guide.get("provides_tools"):
+            desc_parts.append(f"Tools: {', '.join(guide['provides_tools'])}")
+        if guide.get("errors"):
+            desc_parts.append(f"Errors: {'; '.join(guide['errors'])}")
+
+        description = "\n".join(desc_parts) if desc_parts else ""
+
+        toggle_label = "disable" if is_loaded else "enable"
+        schema = vol.Schema({
+            vol.Optional(toggle_label, default=False): bool,
+            vol.Optional("delete", default=False): bool,
+            vol.Optional("back", default=False): bool,
+        })
+        return self.async_show_form(
+            step_id="plugin_detail",
+            data_schema=schema,
+            description_placeholders={
+                "plugin_name": guide.get("name", plugin_key),
+                "plugin_version": guide.get("version", ""),
+                "plugin_status": "ENABLED" if is_loaded else "DISABLED",
+                "plugin_tools": str(tools_count),
+                "plugin_path": guide.get("path", ""),
+                "plugin_description": description,
+            },
+        )
+
+    async def async_step_plugin_delete_confirm(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Confirm plugin deletion."""
+        from .runtime.plugin_store import (
+            hot_unload_plugin,
+            plugins_dir,
+        )
+        import shutil
+
+        plugin_key = getattr(self, "_plugin_editor_target", "") or ""
+        if not plugin_key:
+            return await self.async_step_plugin_manager()
+
+        if user_input is not None:
+            if user_input.get("back"):
+                return await self.async_step_plugin_detail()
+            if user_input.get("confirm_delete"):
+                plugin_path = plugins_dir() / plugin_key
+                if plugin_path.exists():
+                    await self.hass.async_add_executor_job(hot_unload_plugin, self.hass, plugin_key)
+                    await self.hass.async_add_executor_job(shutil.rmtree, str(plugin_path))
+                self._plugin_editor_target = ""
+                return await self.async_step_plugin_manager()
+
+        schema = vol.Schema({
+            vol.Optional("confirm_delete", default=False): bool,
+            vol.Optional("back", default=False): bool,
+        })
+        return self.async_show_form(
+            step_id="plugin_delete_confirm",
+            data_schema=schema,
+            description_placeholders={
+                "plugin_name": plugin_key,
             },
         )
 
