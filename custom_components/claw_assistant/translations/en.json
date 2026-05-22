@@ -263,7 +263,7 @@
       },
       "plugin_manager": {
         "title": "Installed Plugins",
-        "description": "Thanks to the [Hermes Agent](https://github.com/nousresearch/hermes-agent) project, this feature specially supports **Hermes-compatible extension modules**. You can find any compatible plugins on GitHub or other platforms to provide AI with additional tool capabilities (e.g., code analysis, document retrieval, external API calls). Plugins support **hot loading**—enable/disable without restarting Home Assistant. Some plugins may lack descriptions or may not work; use **AI assistance** to explore and modify them, unlocking more capabilities.\n\n---\n**{plugin_count} installed plugins.**\nSelect a plugin to view details, or enable/disable/delete in the next step.\nList reads from `.storage/claw_assistant/plugins/` in real-time.",
+        "description": "Thanks to the Hermes Agent project, this feature specially supports **Hermes-compatible extension modules**. You can find any compatible plugins on GitHub or other platforms to provide AI with additional tool capabilities (e.g., code analysis, document retrieval, external API calls). Plugins support **hot loading**—enable/disable without restarting Home Assistant. Some plugins may lack descriptions or may not work; use **AI assistance** to explore and modify them, unlocking more capabilities.\n\n---\n**{plugin_count} installed plugins.**\nSelect a plugin to view details, or enable/disable/delete in the next step.\nList reads from `.storage/claw_assistant/plugins/` in real-time.",
         "data": {
           "plugin_key": "Select plugin",
           "back": "Back to main menu"
