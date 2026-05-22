@@ -42,7 +42,8 @@
           "agent_settings": "Configure AI Agents | Primary, fallback, summarizer chain",
           "conversation_settings": "Tune Conversation Style | Display, streaming & dimensions",
           "workspace_editor": "Edit Workspace Docs | Master prompt & skill library",
-          "skill_editor": "Manage Installed Skills | Live view & edit"
+          "skill_editor": "Manage Installed Skills | Live view & edit",
+          "plugin_manager": "Manage Plugins | Hermes compatible plugins"
         }
       },
       "agent_settings": {
@@ -259,16 +260,44 @@
           "delete": "Delete this skill",
           "back": "Back to skill list"
         }
+      },
+      "plugin_manager": {
+        "title": "Installed Plugins",
+        "description": "Thanks to the [Hermes Agent](https://github.com/nousresearch/hermes-agent) project, this feature specially supports **Hermes-compatible extension modules**. You can find any compatible plugins on GitHub or other platforms to provide AI with additional tool capabilities (e.g., code analysis, document retrieval, external API calls). Plugins support **hot loading**—enable/disable without restarting Home Assistant. Some plugins may lack descriptions or may not work; use **AI assistance** to explore and modify them, unlocking more capabilities.\n\n---\n**{plugin_count} installed plugins.**\nSelect a plugin to view details, or enable/disable/delete in the next step.\nList reads from `.storage/claw_assistant/plugins/` in real-time.",
+        "data": {
+          "plugin_key": "Select plugin",
+          "back": "Back to main menu"
+        }
+      },
+      "plugin_detail": {
+        "title": "Plugin: {plugin_name}",
+        "description": "**Version:** {plugin_version}\n**Status:** {plugin_status}\n**Tools:** {plugin_tools}\n**Path:** `{plugin_path}`\n\n{plugin_description}",
+        "data": {
+          "enable": "Enable this plugin",
+          "disable": "Disable this plugin",
+          "delete": "Delete this plugin",
+          "back": "Back to plugin list"
+        }
+      },
+      "plugin_delete_confirm": {
+        "title": "Delete Plugin: {plugin_name}",
+        "description": "Are you sure you want to delete this plugin? This action cannot be undone.",
+        "data": {
+          "confirm_delete": "Yes, delete this plugin",
+          "back": "Back to plugin list"
+        }
       }
     },
     "error": {
       "invalid_conversation_mode": "Dialogue mode selection is invalid",
       "invalid_agent": "Please select a valid dialogue proxy entity",
       "no_agents_available": "No valid conversation proxy was found, make sure at least one conversation proxy is available",
-      "no_installed_skills": "No installed skills yet. Install one via the InstallSkill AI tool."
+      "no_installed_skills": "No installed skills yet. Install one via the InstallSkill AI tool.",
+      "no_installed_plugins": "No installed plugins yet. Copy Hermes-compatible plugins to the plugins directory."
     },
     "abort": {
-      "workspace_doc_saved": "Document saved and applied"
+      "workspace_doc_saved": "Document saved and applied",
+      "plugin_load_failed": "Plugin load failed"
     }
   }
 }
