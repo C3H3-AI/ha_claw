@@ -253,7 +253,7 @@
       },
       "plugin_manager": {
         "title": "已安装插件",
-        "description": "感谢 [Hermes Agent](https://github.com/nousresearch/hermes-agent) 项目，本功能特别支持 **Hermes 兼容的扩展模块**。您可以到 GitHub 或其他平台寻找任何兼容的插件，为 AI 提供额外工具能力（如代码分析、文档检索、外部 API 调用等）。插件支持**热加载**，启用/禁用无需重启 Home Assistant。部分插件可能缺少描述或者不工作，可在 **AI 辅助**下查看和修改，激发更多能力。\n\n---\n**当前共 {plugin_count} 个已安装插件。**\n选择一个插件查看详情，或直接在下一步进行启用/禁用/删除。\n列表实时从 `.storage/claw_assistant/plugins/` 读取，新装/卸载插件即刻反映。",
+        "description": "感谢 Hermes Agent 项目，本功能特别支持 **Hermes 兼容的扩展模块**。您可以到 GitHub 或其他平台寻找任何兼容的插件，为 AI 提供额外工具能力（如代码分析、文档检索、外部 API 调用等）。插件支持**热加载**，启用/禁用无需重启 Home Assistant。部分插件可能缺少描述或者不工作，可在 **AI 辅助**下查看和修改，激发更多能力。\n\n---\n**当前共 {plugin_count} 个已安装插件。**\n选择一个插件查看详情，或直接在下一步进行启用/禁用/删除。\n列表实时从 `.storage/claw_assistant/plugins/` 读取，新装/卸载插件即刻反映。",
         "data": {
           "plugin_key": "选择插件",
           "back": "返回主菜单"
