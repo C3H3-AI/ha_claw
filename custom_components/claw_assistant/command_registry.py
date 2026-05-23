@@ -110,13 +110,18 @@ CORE_COMMAND_REGISTRY: tuple[CommandSpec, ...] = (
     CommandSpec(
         name="plugin",
         usage="/plugin",
-        description="Manage installed plugins. AI handles plugin tools internally.",
-        description_zh="管理已安装插件。插件工具由 AI 内部处理。",
-        category="System",
+        description="Manage installed plugins: list, load, unload, install, uninstall, reload.",
+        description_zh="管理插件：列出、加载、卸载、安装、删除、重载。",
+        category="Plugin",
         aliases=("plugins",),
         subcommands=(
             ("/plugin list", "List installed plugins.", "列出已安装插件。"),
-            ("/plugin status", "Check plugin status.", "检查插件状态。"),
+            ("/plugin status", "Show active plugins and their tools.", "显示活跃插件及其工具。"),
+            ("/plugin load <name>", "Hot-load a plugin by name.", "热加载指定插件。"),
+            ("/plugin unload <name>", "Unload a plugin from memory.", "从内存中卸载插件。"),
+            ("/plugin reload <name>", "Hot-reload a plugin.", "热重载指定插件。"),
+            ("/plugin install <git_url>", "Clone and load a plugin from GitHub.", "从 GitHub 克隆并加载插件。"),
+            ("/plugin uninstall <name>", "Unload and delete a plugin from disk.", "卸载并从磁盘删除插件。"),
         ),
     ),
 )

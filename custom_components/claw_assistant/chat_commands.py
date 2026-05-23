@@ -1168,7 +1168,12 @@ def _build_plugin_usage_message() -> str:
     return (
         "Usage:\n"
         "/plugin list\n"
-        "/plugin status"
+        "/plugin status\n"
+        "/plugin load <name>\n"
+        "/plugin unload <name>\n"
+        "/plugin reload <name>\n"
+        "/plugin install <git_url>\n"
+        "/plugin uninstall <name>"
     )
 
 
@@ -1197,11 +1202,21 @@ async def _handle_plugin_command(
     user_input: conversation.ConversationInput,
     args: str,
 ) -> ChatCommandOutcome:
-    from .runtime.plugin_store import get_loaded_plugins, list_installed_plugins
+    from .runtime.plugin_store import (
+        get_loaded_plugins,
+        hot_load_plugin,
+        hot_reload_plugin,
+        hot_unload_plugin,
+        list_installed_plugins,
+    )
 
-    raw = (args or "").strip().lower()
+    raw = (args or "").strip()
+    lowered = raw.lower()
+    parts = raw.split(None, 1)
+    subcommand = parts[0].lower() if parts else ""
+    remainder = parts[1].strip() if len(parts) > 1 else ""
 
-    if not raw or raw in ("list", "ls", "installed"):
+    if not raw or lowered in ("list", "ls", "installed"):
         plugins = await hass.async_add_executor_job(list_installed_plugins)
         message = _build_plugin_usage_message()
         if plugins:
@@ -1210,7 +1225,7 @@ async def _handle_plugin_command(
             message += "\n\nNo plugins installed."
         return ChatCommandOutcome(result=_build_result(user_input, message))
 
-    if raw in ("status", "loaded", "active"):
+    if lowered in ("status", "loaded", "active"):
         loaded = get_loaded_plugins()
         if not loaded:
             return ChatCommandOutcome(result=_build_result(user_input, "No active plugins."))
@@ -1219,9 +1234,89 @@ async def _handle_plugin_command(
             name = p.get("name", "?")
             tools = p.get("tools", [])
             lines.append(f"- {name}: {len(tools)} tools")
-        lines.append("")
-        lines.append("Plugin tools are invoked internally by AI via PluginManager.")
         return ChatCommandOutcome(result=_build_result(user_input, "\n".join(lines)))
+
+    if subcommand == "load":
+        if not remainder:
+            return ChatCommandOutcome(result=_build_result(user_input, "Usage: /plugin load <name>"))
+        result = hot_load_plugin(hass, remainder)
+        if result.get("success"):
+            tools = result.get("tools", [])
+            return ChatCommandOutcome(result=_build_result(
+                user_input, f"Plugin '{remainder}' loaded. Tools: {', '.join(tools) if tools else 'none'}"
+            ))
+        return ChatCommandOutcome(result=_build_result(user_input, f"Failed to load: {result.get('error', 'unknown')}"))
+
+    if subcommand == "unload":
+        if not remainder:
+            return ChatCommandOutcome(result=_build_result(user_input, "Usage: /plugin unload <name>"))
+        result = hot_unload_plugin(hass, remainder)
+        if result.get("success"):
+            return ChatCommandOutcome(result=_build_result(user_input, f"Plugin '{remainder}' unloaded."))
+        return ChatCommandOutcome(result=_build_result(user_input, f"Failed to unload: {result.get('error', 'unknown')}"))
+
+    if subcommand == "reload":
+        if not remainder:
+            return ChatCommandOutcome(result=_build_result(user_input, "Usage: /plugin reload <name>"))
+        result = hot_reload_plugin(hass, remainder)
+        if result.get("success"):
+            tools = result.get("tools", [])
+            return ChatCommandOutcome(result=_build_result(
+                user_input, f"Plugin '{remainder}' reloaded. Tools: {', '.join(tools) if tools else 'none'}"
+            ))
+        return ChatCommandOutcome(result=_build_result(user_input, f"Failed to reload: {result.get('error', 'unknown')}"))
+
+    if subcommand == "install":
+        if not remainder:
+            return ChatCommandOutcome(result=_build_result(user_input, "Usage: /plugin install <git_url>"))
+        import re as _re
+        import subprocess
+        from pathlib import Path
+        match = _re.match(r"https://github\.com/([^/]+)/([^/\s]+)", remainder)
+        if not match:
+            return ChatCommandOutcome(result=_build_result(user_input, "Invalid GitHub URL."))
+        repo_name = match.group(2).replace(".git", "")
+        plugins_path = Path(hass.config.config_dir) / ".storage/claw_assistant/plugins"
+        target_dir = plugins_path / repo_name
+        plugins_path.mkdir(parents=True, exist_ok=True)
+        if target_dir.exists():
+            return ChatCommandOutcome(result=_build_result(
+                user_input, f"Plugin '{repo_name}' already exists. Use /plugin reload {repo_name}"
+            ))
+        try:
+            proc = await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    ["git", "clone", "--depth", "1", remainder, str(target_dir)],
+                    capture_output=True, text=True, timeout=60,
+                ),
+            )
+            if proc.returncode != 0:
+                return ChatCommandOutcome(result=_build_result(user_input, f"Git clone failed: {proc.stderr[:300]}"))
+            load_result = hot_load_plugin(hass, repo_name)
+            tools = load_result.get("tools", [])
+            return ChatCommandOutcome(result=_build_result(
+                user_input,
+                f"Plugin '{repo_name}' installed and loaded. Tools: {', '.join(tools) if tools else 'none'}",
+            ))
+        except Exception as e:
+            return ChatCommandOutcome(result=_build_result(user_input, f"Install failed: {e}"))
+
+    if subcommand == "uninstall":
+        if not remainder:
+            return ChatCommandOutcome(result=_build_result(user_input, "Usage: /plugin uninstall <name>"))
+        import shutil
+        from pathlib import Path
+        plugins_path = Path(hass.config.config_dir) / ".storage/claw_assistant/plugins"
+        target_dir = plugins_path / remainder
+        if not target_dir.exists():
+            return ChatCommandOutcome(result=_build_result(user_input, f"Plugin '{remainder}' not found."))
+        hot_unload_plugin(hass, remainder)
+        try:
+            await hass.async_add_executor_job(shutil.rmtree, str(target_dir))
+            return ChatCommandOutcome(result=_build_result(user_input, f"Plugin '{remainder}' uninstalled."))
+        except Exception as e:
+            return ChatCommandOutcome(result=_build_result(user_input, f"Unloaded but delete failed: {e}"))
 
     return ChatCommandOutcome(result=_build_result(user_input, _build_plugin_usage_message()))
 
