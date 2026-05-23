@@ -538,6 +538,8 @@ _MINIMAL_TOOL_NAMES = {
     "CameraCapture",
     "MediaAnalyze",
     "ExposeEntity",
+    "PluginManager",
+    
 }
 
 
