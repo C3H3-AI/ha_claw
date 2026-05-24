@@ -65,6 +65,11 @@ from .interactive_tools import (
     AskUserSelectTool,
     MultiStepWizardTool,
 )
+from .thinking_tools import (
+    FinishThinkingTool,
+    StartThinkingTool,
+    UpdateThinkingStatusTool,
+)
 from .search_tools import StockQueryTool, UrlFetchTool, WebReadChunkTool, WebSearchTool
 from .self_edit_tools import (
     ApplyProposalTool,
@@ -148,6 +153,9 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
     "AskUserSelect": {"category": "interaction", "desc": "Ask user to select from multiple options. Use when there are multiple valid choices. Params: message (question/prompt), id (unique identifier), options (list of {id, label, style?}). Returns interactive markup with option buttons.", "priority": 1},
     "AskUserInput": {"category": "interaction", "desc": "Ask user for text or number input. Use when you need specific information from the user. Params: message (prompt), id (unique identifier), hint (optional input hint), unit (optional unit like °C). Returns interactive markup with input prompt.", "priority": 1},
     "MultiStepWizard": {"category": "interaction", "desc": "Present a multi-step wizard for complex workflows. Use for multi-step setup or configuration. Params: message (step prompt), id (unique identifier), step (current step number), total (total steps), options (list of {id, label}). Returns interactive markup with progress and options.", "priority": 2},
+    "UpdateThinkingStatus": {"category": "thinking", "desc": "Update real-time thinking status for display in IM channels. Use to show users what you're currently doing during long operations. Actions: start (begin session), update (change status), finish (complete). Status examples: '🧠 正在分析...', '🔍 正在搜索...', '🛠️ 正在调用工具...'", "priority": 1},
+    "StartThinking": {"category": "thinking", "desc": "Quick start a thinking session. Convenience tool equivalent to UpdateThinkingStatus with action=start. Use at the beginning of complex operations.", "priority": 1},
+    "FinishThinking": {"category": "thinking", "desc": "Quick finish a thinking session. Convenience tool equivalent to UpdateThinkingStatus with action=finish. Use when your thinking process is complete.", "priority": 1},
 }
 
 CORE_TOOLS = [
@@ -232,6 +240,9 @@ def build_tool_map() -> dict[str, type]:
         "AskUserSelect": AskUserSelectTool,
         "AskUserInput": AskUserInputTool,
         "MultiStepWizard": MultiStepWizardTool,
+        "UpdateThinkingStatus": UpdateThinkingStatusTool,
+        "StartThinking": StartThinkingTool,
+        "FinishThinking": FinishThinkingTool,
     }
 
 
