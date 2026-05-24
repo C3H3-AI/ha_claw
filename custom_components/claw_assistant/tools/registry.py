@@ -59,6 +59,12 @@ from .misc_tools import (
     ThinkContinueTool,
 )
 from .frontend_tools import FrontendInspectTool
+from .interactive_tools import (
+    AskUserConfirmTool,
+    AskUserInputTool,
+    AskUserSelectTool,
+    MultiStepWizardTool,
+)
 from .search_tools import StockQueryTool, UrlFetchTool, WebReadChunkTool, WebSearchTool
 from .self_edit_tools import (
     ApplyProposalTool,
@@ -138,6 +144,10 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
     "DashboardCard": {"category": "system", "desc": "Create/manage Lovelace dashboard views and cards. Supports masonry and sections view types. html-card-pro cards use content; other cards use card_config or card_yaml. Workflow: list_dashboards→get_dashboard→get_card/add_view/add_card/update_card. Run check_dependency only before creating custom:html-pro-card. Params: action, dashboard_url, view_index, card_index, section_index(-1=auto for sections views), title, icon, content(HTML/CSS/JS), card_config, card_yaml. Returns mandatory _action_required instructions.", "priority": 2},
     "ExposeEntity": {"category": "system", "desc": "Expose or unexpose entities to the conversation assistant. ⚠️ PRIVACY: Before exposing, inform user: 'I need to expose [entity] to control it. Data stays local, not sent externally. Proceed?' action=list: list unexposed. action=expose: expose entity. Params: action(expose/list), entity_id, expose(bool), domain", "priority": 1},
     "PluginManager": {"category": "system", "desc": "Stable bridge for Hermes-compatible Claw plugins. Use this first for plugin-related requests. action=loaded/list inspect plugins and available plugin tools; action=call_tool executes a loaded plugin tool by tool_name with tool_args; load/unload/hot_reload/reload_all manage hot loading; install/validate/guide handle plugin installation. Do NOT use IntentCall for Claw plugins.", "priority": 2},
+    "AskUserConfirm": {"category": "interaction", "desc": "Ask user for confirmation before taking action. Use for destructive operations or important decisions. Params: message (confirmation question), id (unique identifier). Returns interactive markup with confirm/cancel buttons.", "priority": 1},
+    "AskUserSelect": {"category": "interaction", "desc": "Ask user to select from multiple options. Use when there are multiple valid choices. Params: message (question/prompt), id (unique identifier), options (list of {id, label, style?}). Returns interactive markup with option buttons.", "priority": 1},
+    "AskUserInput": {"category": "interaction", "desc": "Ask user for text or number input. Use when you need specific information from the user. Params: message (prompt), id (unique identifier), hint (optional input hint), unit (optional unit like °C). Returns interactive markup with input prompt.", "priority": 1},
+    "MultiStepWizard": {"category": "interaction", "desc": "Present a multi-step wizard for complex workflows. Use for multi-step setup or configuration. Params: message (step prompt), id (unique identifier), step (current step number), total (total steps), options (list of {id, label}). Returns interactive markup with progress and options.", "priority": 2},
 }
 
 CORE_TOOLS = [
@@ -218,6 +228,10 @@ def build_tool_map() -> dict[str, type]:
         "FrontendInspect": FrontendInspectTool,
         "ExposeEntity": ExposeEntityTool,
         "PluginManager": PluginManagerTool,
+        "AskUserConfirm": AskUserConfirmTool,
+        "AskUserSelect": AskUserSelectTool,
+        "AskUserInput": AskUserInputTool,
+        "MultiStepWizard": MultiStepWizardTool,
     }
 
 
