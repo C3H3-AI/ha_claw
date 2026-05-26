@@ -23,9 +23,9 @@ from .runtime import (
     get_default_agent,
     get_runtime_store,
 )
-from .runtime.orchestrator import execute_conversation_turn
-from .runtime.i18n import t
-from .runtime.response_format import sanitize_response_text
+from .runtime.agent.orchestrator import execute_conversation_turn
+from .runtime.utils.i18n import t
+from .runtime.llm.response_format import sanitize_response_text
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -270,8 +270,8 @@ class FallbackConversationAgent(
     def _salvage_partial_turn(self, user_input: conversation.ConversationInput) -> None:
         try:
             from .conversation_utils import get_conversation_history
-            from .runtime.state import get_conversation_status
-            from .runtime.agent_fallback import _get_chat_log_content
+            from .runtime.core.state import get_conversation_status
+            from .runtime.agent.agent_fallback import _get_chat_log_content
 
             conv_id = user_input.conversation_id
             if not conv_id:

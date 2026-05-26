@@ -1,7 +1,11 @@
 (function() {
     'use strict';
+
+    window.addEventListener('unhandledrejection', e => {
+        if (e.reason?.message?.includes('nextSibling')) e.preventDefault();
+    });
     
-    const HACRACK_VERSION = '8.6.0';
+    const HACRACK_VERSION = '8.7.0';
     if (window.__hacrackVersion && window.__hacrackVersion !== HACRACK_VERSION) {
         const reloadKey = '__hacrackReloadCount';
         const reloads = parseInt(sessionStorage.getItem(reloadKey) || '0', 10);
@@ -1133,6 +1137,8 @@
         .claw-ta-card.collapsed .claw-ta-chevron { transform: rotate(-90deg); }
         .claw-ta-error .claw-ta-icon, .claw-ta-error .claw-ta-name b { color: #e53935; }
         .claw-ta-error .claw-ta-icon svg { fill: #e53935; }
+        .claw-ta-warning .claw-ta-icon, .claw-ta-warning .claw-ta-name b { color: #f9a825; }
+        .claw-ta-warning .claw-ta-icon svg { fill: #f9a825; }
         
         .claw-ta-name {
             flex: 1; min-width: 0;
@@ -1902,7 +1908,8 @@
                 : _renderToolResultBody(act.result);
         }
         const hasError = !!act.error;
-        const headerClass = hasError ? 'claw-ta-header claw-ta-error' : 'claw-ta-header';
+        const hasWarning = !!act.warning;
+        const headerClass = hasError ? 'claw-ta-header claw-ta-error' : hasWarning ? 'claw-ta-header claw-ta-warning' : 'claw-ta-header';
         return { taId, collapsed, html:
             '<div class="' + headerClass + '">' +
                 '<span class="claw-ta-icon">' + iconSvg + '</span>' +
@@ -1923,6 +1930,8 @@
         const header = card.querySelector('.claw-ta-header');
         if (act.error && header) {
             header.classList.add('claw-ta-error');
+        } else if (act.warning && header) {
+            header.classList.add('claw-ta-warning');
         }
         const bodyInner = card.querySelector('.claw-ta-body-inner');
         if (bodyInner && !act.error) {
@@ -1988,8 +1997,6 @@
         if (_mdStreamActive && el && marked && parts.length) {
             if (!el.__clawRenderBlocked) {
                 el.__clawRenderBlocked = true;
-                el.__clawOriginalRender = el._render;
-                el._render = function() {};
             }
             let html = '';
             for (let idx = 0; idx < parts.length; idx++) {
@@ -2207,7 +2214,13 @@
         if (!act) return null;
         act.result = parsed;
         act._endTime = Date.now();
-        if (typeof parsed === 'object' && parsed && parsed.success === false) act.error = parsed.error || 'Failed';
+        if (typeof parsed === 'object' && parsed && parsed.success === false) {
+            if (parsed.success_count > 0) {
+                act.warning = true;
+            } else {
+                act.error = parsed.error || 'Failed';
+            }
+        }
         return act;
     };
 
@@ -2569,19 +2582,30 @@
         _injectOnce(sr, 'claw-chat-font', `
             #message-input::part(wa-input) { font-size: 16px !important; }
             .message { font-size: 16px !important; }
-            .message-container { padding: 0 12px !important; }
-            .message.user {
+            .message-container { padding: 0 12px !important; max-width: 100% !important; box-sizing: border-box !important; }
+            .message.user, .message.hass {
                 min-width: 0 !important;
                 max-width: 100% !important;
+                overflow-x: hidden !important;
                 overflow-wrap: anywhere !important;
                 word-break: break-word !important;
+                box-sizing: border-box !important;
             }
-            .message.user ha-markdown {
+            .message.user ha-markdown, .message.hass ha-markdown {
                 min-width: 0 !important;
                 max-width: 100% !important;
-                overflow: hidden !important;
+                overflow-x: hidden !important;
                 overflow-wrap: anywhere !important;
                 word-break: break-word !important;
+                display: block !important;
+            }
+            .message.hass .claw-tool-activities,
+            .message.hass .claw-ta-card,
+            .message.hass .claw-ta-panel {
+                max-width: 100% !important;
+                min-width: 0 !important;
+                overflow-x: hidden !important;
+                box-sizing: border-box !important;
             }
         `);
         _scheduleRender();
@@ -2626,10 +2650,8 @@
             el.__clawMixedSig = '';
             el.__clawMixedSeqSig = '';
             el.__clawMdSig = '';
-            if (el.__clawRenderBlocked && el.__clawOriginalRender) {
-                el._render = el.__clawOriginalRender;
-                el.__clawRenderBlocked = false;
-            }
+            el.__clawRenderBlocked = false;
+            delete el.__clawOriginalRender;
         }
         delete window.__clawThinkingText;
         const thinkEl = lastMd?.shadowRoot?.querySelector('.claw-thinking-text');
@@ -2962,7 +2984,30 @@
                         white-space: nowrap;
                         overflow: hidden;
                         text-overflow: ellipsis;
+                        display: flex;
+                        align-items: center;
+                        gap: 8px;
                     }
+                    #${DOCK_ID} .dock-history-panel .hist-channel-tag {
+                        flex-shrink: 0;
+                        font-size: 10px;
+                        font-weight: 500;
+                        padding: 2px 6px;
+                        border-radius: 4px;
+                        border: 1px solid currentColor;
+                        background: transparent;
+                        opacity: 0.8;
+                    }
+                    #${DOCK_ID} .dock-history-panel .hist-channel-tag[data-channel="WeChat"] { color: #07c160; }
+                    #${DOCK_ID} .dock-history-panel .hist-channel-tag[data-channel="Feishu"] { color: #3370ff; }
+                    #${DOCK_ID} .dock-history-panel .hist-channel-tag[data-channel="QQ"] { color: #12b7f5; }
+                    #${DOCK_ID} .dock-history-panel .hist-channel-tag[data-channel="DingTalk"] { color: #0089ff; }
+                    #${DOCK_ID} .dock-history-panel .hist-channel-tag[data-channel="WeCom"] { color: #0082ef; }
+                    #${DOCK_ID} .dock-history-panel .hist-channel-tag[data-channel="XiaoYi"] { color: #ff6a00; }
+                    #${DOCK_ID} .dock-history-panel .hist-channel-tag[data-channel="Voice"] { color: #18bcf2; }
+                    #${DOCK_ID} .dock-history-panel .hist-channel-tag[data-channel="Desktop"] { color: #18bcf2; }
+                    #${DOCK_ID} .dock-history-panel .hist-channel-tag[data-channel="Mobile"] { color: #18bcf2; }
+                    #${DOCK_ID} .dock-history-panel .hist-channel-tag[data-channel="Legacy"] { color: #9e9e9e; }
                     #${DOCK_ID} .dock-history-panel .hist-item.active .hist-item-title {
                         color: var(--sidebar-selected-text-color, var(--primary-text-color));
                     }
@@ -3417,6 +3462,8 @@
         const _getDateLabel = (timestamp) => {
             const d = new Date(timestamp * 1000);
             const now = new Date();
+            const lang = getFrontendLanguage();
+            const isZh = lang.startsWith('zh');
             const isToday = d.toDateString() === now.toDateString();
             const yesterday = new Date(now);
             yesterday.setDate(yesterday.getDate() - 1);
@@ -3431,16 +3478,15 @@
             }
             if (isYesterday) return { key: 'yesterday', label: historyText('yesterday'), order: 10 };
             
-            const diffDays = Math.floor((now - d) / 86400000);
-            if (diffDays < 7) return { key: 'week', label: historyText('this_week'), order: 20 };
-            if (diffDays < 30) return { key: 'month', label: historyText('this_month'), order: 30 };
-            
-            const lang = getFrontendLanguage();
-            const isZh = lang.startsWith('zh');
-            const monthNamesEn = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-            const monthKey = `${d.getFullYear()}_${d.getMonth()}`;
-            const label = isZh ? `${d.getFullYear()}年${d.getMonth() + 1}月` : `${monthNamesEn[d.getMonth()]} ${d.getFullYear()}`;
-            return { key: monthKey, label, order: 100 + (2100 - d.getFullYear()) * 12 + (11 - d.getMonth()) };
+            const diffDays = Math.floor((now.setHours(0,0,0,0) - d.setHours(0,0,0,0)) / 86400000);
+            const weekdayNamesZh = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+            const weekdayNamesEn = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+            const dateKey = `day_${d.getFullYear()}_${d.getMonth()}_${d.getDate()}`;
+            const weekday = isZh ? weekdayNamesZh[d.getDay()] : weekdayNamesEn[d.getDay()];
+            const dateLabel = isZh 
+                ? `${d.getMonth() + 1}月${d.getDate()}日 ${weekday}`
+                : `${weekday}, ${d.getMonth() + 1}/${d.getDate()}`;
+            return { key: dateKey, label: dateLabel, order: 10 + diffDays };
         };
 
         const _groupConversationsByDate = (convs) => {
@@ -3488,10 +3534,14 @@
             const renderItem = (c, isPinned) => {
                 const activeClass = showActiveSelection && c.conversation_id === _historySelectedConversationId ? ' active' : '';
                 const pinnedClass = isPinned ? ' pinned' : '';
+                const channelTag = c.channel ? '<span class="hist-channel-tag" data-channel="' + c.channel + '">' + c.channel + '</span>' : '';
+                const rawTitle = (c.summary || historyText('conversation')).replace(/</g, '&lt;');
+                const cleanTitle = rawTitle.replace(/^[\s\p{P}\p{S}]+/u, '').replace(/[\s\p{P}\p{S}]+$/u, '');
+                const truncTitle = cleanTitle.length > 10 ? cleanTitle.slice(0, 10).replace(/[\s\p{P}\p{S}]+$/u, '') + '…' : cleanTitle;
                 return '<div class="hist-item' + activeClass + pinnedClass + '" data-conv-id="' + c.conversation_id + '">'
                     + '<div class="hist-item-icon">' + chatIcon + '</div>'
                     + '<div class="hist-item-content">'
-                    + '<div class="hist-item-title">' + (c.summary || historyText('conversation')).replace(/</g, '&lt;') + '</div>'
+                    + '<div class="hist-item-title">' + truncTitle + channelTag + '</div>'
                     + '<div class="hist-item-meta">' + c.turn_count + ' ' + historyText('messages') + ' · ' + _formatTimeAgo(c.seconds_ago) + '</div>'
                     + '</div>'
                     + '<div class="hist-item-actions">'
@@ -4684,7 +4734,7 @@
                         } else if (t === 'run-start') {
                             phase = S_THINKING;
                             render();
-                        } else if (t === 'intent-end' || t === 'run-end' || t === 'error') {
+                        } else if (t === 'intent-end' || t === 'run-end' || t === 'error' || t === 'stream_end') {
                             if (!this.__clawSoundPlayed) {
                                 let isError = (t === 'error');
                                 if (!isError && t === 'intent-end' && d?.intent_output?.response?.response_type === 'error') {
@@ -4693,12 +4743,12 @@
                                 if (isError) {
                                     this.__clawSoundPlayed = true;
                                     if (typeof window.__clawPlaySound === 'function') window.__clawPlaySound('error');
-                                } else if (t === 'intent-end' || t === 'run-end') {
+                                } else if (t === 'intent-end' || t === 'run-end' || t === 'stream_end') {
                                     this.__clawSoundPlayed = true;
                                     if (typeof window.__clawOnStreamEnd === 'function') window.__clawOnStreamEnd();
                                 }
                             }
-                            if (t === 'run-end' || t === 'error') {
+                            if (t === 'run-end' || t === 'error' || t === 'stream_end') {
                                 this.__clawSoundPlayed = false;
                                 endTurn();
                             }

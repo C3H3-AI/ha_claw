@@ -1,4 +1,4 @@
-<!-- version: 2 -->
+<!-- version: 3 -->
 # FrontendInspect Tool Guide
 
 Control and inspect the Home Assistant frontend like a real user. This is for UI interaction — NOT for device control or entity state queries.
@@ -65,10 +65,12 @@ This is for dynamic/temporary effects. For persistent Lovelace cards, use Dashbo
 
 ## exec_js Best Practices
 
+**DO NOT truncate results with slice/substring!** The backend automatically chunks large results. Return full text and let the system handle it.
+
 **DO NOT manually traverse shadow DOM!** Use these helper patterns:
 
 ```javascript
-// Get all visible text on page (recommended)
+// Get all visible text on page (recommended) - NO truncation needed
 (() => {
   const roots = [document];
   const texts = [];
@@ -83,10 +85,10 @@ This is for dynamic/temporary effects. For persistent Lovelace cards, use Dashbo
       if (t && t.length < 500) texts.push(t);
     });
   }
-  return [...new Set(texts)].join('\n').substring(0, 3000);
+  return [...new Set(texts)].join('\n');
 })()
 
-// Get specific element by visible text
+// Get specific element by visible text - NO truncation needed
 (() => {
   const roots = [document];
   const seen = new Set();
@@ -96,7 +98,7 @@ This is for dynamic/temporary effects. For persistent Lovelace cards, use Dashbo
     seen.add(r);
     for (const el of r.querySelectorAll('*')) {
       if (el.shadowRoot) roots.push(el.shadowRoot);
-      if (el.textContent?.includes('TARGET_TEXT')) return el.outerHTML.substring(0, 1000);
+      if (el.textContent?.includes('TARGET_TEXT')) return el.outerHTML;
     }
   }
   return 'not found';

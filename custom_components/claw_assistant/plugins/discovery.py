@@ -79,12 +79,20 @@ def discover_plugins() -> list[PluginManifest]:
     ensure_plugin_store()
     pdir = plugins_dir()
     manifests = []
-    for plugin_path in pdir.iterdir():
-        if not plugin_path.is_dir():
-            continue
-        if plugin_path.name.startswith(".") or plugin_path.name.startswith("_"):
-            continue
-        manifest = parse_plugin_manifest(plugin_path)
-        if manifest:
-            manifests.append(manifest)
+    try:
+        entries = list(pdir.iterdir())
+    except Exception as e:
+        LOGGER.warning("Failed to list plugins directory %s: %s", pdir, e)
+        return manifests
+    for plugin_path in entries:
+        try:
+            if not plugin_path.is_dir():
+                continue
+            if plugin_path.name.startswith(".") or plugin_path.name.startswith("_"):
+                continue
+            manifest = parse_plugin_manifest(plugin_path)
+            if manifest:
+                manifests.append(manifest)
+        except Exception as e:
+            LOGGER.warning("Failed to parse plugin %s: %s", plugin_path, e)
     return manifests

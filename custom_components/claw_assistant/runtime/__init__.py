@@ -2,7 +2,7 @@
 
 
 
-from .state import (
+from .core.state import (
     consume_agent_handoff,
     consume_next_agent_handoff,
     consume_tool_called,
@@ -23,15 +23,15 @@ from .state import (
     set_conversation_state,
     set_current_thought,
 )
-from .agent_catalog import convert_agent_info_to_dict, get_default_agent
-from .agent_execution import build_error_result, process_agent_turn
-from .agent_fallback import (
+from .agent.agent_catalog import convert_agent_info_to_dict, get_default_agent
+from .agent.agent_execution import build_error_result, process_agent_turn
+from .agent.agent_fallback import (
     get_agent_name,
     is_error_response,
     run_agent_fallback_chain,
 )
-from .config import DEFAULT_THRESHOLDS, RuntimeThresholds
-from .events import (
+from .core.config import DEFAULT_THRESHOLDS, RuntimeThresholds
+from .core.events import (
     EVENT_AI_RESPONSE,
     EVENT_SHOULD_END,
     EVENT_THOUGHT,
@@ -39,24 +39,24 @@ from .events import (
     fire_should_end,
     fire_thought,
 )
-from .ha_guide_store import async_setup_homeassistant_guide_store
-from .hook import install_conversation_hook
-from .lifecycle import async_setup_runtime, async_unload_runtime
-from .options import (
+from .storage.ha_guide_store import async_setup_homeassistant_guide_store
+from .hooks.hook import install_conversation_hook
+from .core.lifecycle import async_setup_runtime, async_unload_runtime
+from .core.options import (
     ConversationRuntimeConfig,
     build_conversation_runtime_config,
     build_conversation_runtime_config_for_hass,
 )
-from .orchestrator import execute_conversation_turn
-from .prompting import build_base_prompt
-from .response_format import (
+from .agent.orchestrator import execute_conversation_turn
+from .llm.prompting import build_base_prompt
+from .llm.response_format import (
     apply_agent_response_format,
     ensure_response_data,
     get_response_text,
 )
-from .response_policy import analyze_response_state, is_user_done_text
-from .skill_store import async_refresh_prompt_store, async_setup_prompt_store
-from .summary import process_ai_summary
+from .output.response_policy import analyze_response_state, is_user_done_text
+from .storage.skill_store import async_refresh_prompt_store, async_setup_prompt_store
+from .output.summary import process_ai_summary
 
 __all__ = [
     "ConversationRuntimeConfig",

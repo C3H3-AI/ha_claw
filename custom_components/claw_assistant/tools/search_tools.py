@@ -9,9 +9,9 @@ from homeassistant.helpers import llm
 from homeassistant.util.json import JsonObjectType
 
 from ..runtime import mark_tool_called
-from ..services.web_formatter import format_search_results_text, prepare_web_text_for_ai
-from ..services.web_search import WebSearch
-from ..services.stock_api import StockAPI, format_stock_data
+from ..scrapers.web_formatter import format_search_results_text, prepare_web_text_for_ai
+from ..scrapers.web_search import WebSearch
+from ..scrapers.stock_api import StockAPI, format_stock_data
 
 _LOGGER = logging.getLogger(__name__)
 

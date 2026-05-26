@@ -9,8 +9,8 @@ import voluptuous as vol
 
 from homeassistant.helpers import llm
 
-from ..runtime.route_hints import build_route_envelope, build_route_hint
-from ..runtime.skill_store import filter_installed_skills
+from ..runtime.utils.route_hints import build_route_envelope, build_route_hint
+from ..runtime.storage.skill_store import filter_installed_skills
 
 _BUILTIN_SKILL_SPECS: tuple[dict[str, Any], ...] = (
     {

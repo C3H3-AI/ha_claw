@@ -33,7 +33,7 @@ _HA_TOKEN_RE = re.compile(r"ha_token\s*[:：]\s*`?([A-Za-z0-9._\-]+)`?")
 
 
 def _read_ha_token_from_tools() -> str | None:
-    from ..runtime.workspace_store import get_workspace_doc
+    from ..runtime.storage.workspace_store import get_workspace_doc
     try:
         doc = get_workspace_doc("TOOLS")
         text = doc.get("markdown", "")
@@ -86,7 +86,7 @@ async def _run_shell(hass: HomeAssistant, params: dict) -> JsonObjectType:
     try:
         if "\n" in command or "<<" in command:
             import uuid as _uuid
-            from ..runtime.data_path import tmp_dir_path
+            from ..runtime.utils.data_path import tmp_dir_path
             _sh_tmp = tmp_dir_path(hass)
             _sh_file = _sh_tmp / f"shell_{_uuid.uuid4().hex[:12]}.sh"
             await hass.async_add_executor_job(
@@ -812,9 +812,12 @@ Available actions:
                 "reload_automations": ("automation", "reload"),
             }
             domain, service = service_map[action]
+            ha_services = hass.services.async_services_for_domain(domain)
+            if service not in ha_services:
+                return {"success": True, "message": f"{domain}.{service} not available, skipped"}
             await hass.services.async_call(domain, service, {}, blocking=True)
             if action == "reload_resources":
-                from ..runtime.official_websocket_hook import queue_frontend_js
+                from ..runtime.hooks.official_websocket_hook import queue_frontend_js
                 queue_frontend_js(hass, (
                     "(()=>{"
                     "try{"

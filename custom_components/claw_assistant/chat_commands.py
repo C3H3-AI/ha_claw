@@ -16,9 +16,9 @@ from .command_registry import (
     resolve_core_command,
 )
 from .conversation_utils import get_conversation_history
-from .runtime.state import get_channel_type
-from .runtime.i18n import t
-from .runtime.skill_store import (
+from .runtime.core.state import get_channel_type
+from .runtime.utils.i18n import t
+from .runtime.storage.skill_store import (
     filter_visible_installed_skills,
     get_installed_skill,
     get_missing_required_environment_variables,
@@ -26,12 +26,12 @@ from .runtime.skill_store import (
     match_installed_skills,
     skill_matches_visibility,
 )
-from .runtime.loop_controller import reset_loop_for_conversation
-from .runtime.continuous_conversation import (
+from .runtime.agent.loop_controller import reset_loop_for_conversation
+from .runtime.history.continuous_conversation import (
     continuous_conversation_enabled,
     start_new_conversation,
 )
-from .runtime.state import (
+from .runtime.core.state import (
     get_active_conversation_state,
     get_conversation_status,
     get_should_end_flag,
@@ -79,13 +79,14 @@ def _strip_wrapper_prefix(text: str) -> str:
 
 
 def _resolve_command_name(name: str) -> tuple[str, str] | None:
-    from .runtime.plugin_store import get_plugin_tool_registry
+    from .runtime.storage.plugin_store import get_plugin_tool_registry
+    from .plugins.context import _REGISTERED_COMMANDS
     lowered = name.lower()
     core_spec = resolve_core_command(lowered)
     if core_spec is not None:
-        if core_spec.category == "Plugin":
-            return "plugin_invoke", lowered
         return core_spec.name, lowered
+    if lowered in _REGISTERED_COMMANDS:
+        return "plugin_invoke", lowered
     if _skill_command_registry().get(lowered) is not None:
         return "skill_invoke", lowered
     plugin_registry = get_plugin_tool_registry()
@@ -133,8 +134,9 @@ def _build_result(
     message: str,
 ) -> conversation.ConversationResult:
     response = intent.IntentResponse(language=user_input.language)
-    formatted = f"\u200b\n\n{message}" if message and not message.startswith("\u200b") else message
-    response.async_set_speech(formatted)
+    if message and len(message) > 80 and not message.startswith("\u200b"):
+        message = f"\u200b\n\n{message}"
+    response.async_set_speech(message)
     return conversation.ConversationResult(
         conversation_id=user_input.conversation_id,
         response=response,
@@ -221,7 +223,7 @@ def _conflicting_skill_commands() -> list[dict[str, Any]]:
 
 
 def _spec_desc(spec: CommandSpec, lang: str | None) -> str:
-    from .runtime.reply_formatter import is_chinese
+    from .runtime.output.reply_formatter import is_chinese
     if is_chinese(lang) and spec.description_zh:
         return spec.description_zh
     return spec.description
@@ -257,7 +259,7 @@ def _build_command_catalog_message(language: str | None = None) -> str:
         lines.append("")
         for spec in specs:
             if spec.subcommands:
-                from .runtime.reply_formatter import is_chinese
+                from .runtime.output.reply_formatter import is_chinese
                 zh = is_chinese(language)
                 for i, (sub_usage, sub_desc_en, sub_desc_zh) in enumerate(spec.subcommands):
                     sub_usage_esc = _escape_md_angles(sub_usage)
@@ -295,7 +297,7 @@ def _build_help_message(command_name: str = "", language: str | None = None) -> 
             _spec_desc(spec, language),
         ]
         if spec.subcommands:
-            from .runtime.reply_formatter import is_chinese
+            from .runtime.output.reply_formatter import is_chinese
             zh = is_chinese(language)
             lines.append("")
             for sub_usage, sub_desc_en, sub_desc_zh in spec.subcommands:
@@ -446,7 +448,7 @@ def _resolve_skill_invocation(argument_text: str) -> tuple[dict[str, str], str] 
 
 
 def _build_skill_invocation_message(skill: dict[str, str], user_instruction: str) -> str:
-    from .runtime.skill_store import _resolve_skill_path
+    from .runtime.storage.skill_store import _resolve_skill_path
     name = skill["name"]
     slug = skill["slug"]
     description = skill.get("description", "").strip()
@@ -799,7 +801,7 @@ def _clear_conversation_runtime(hass, conversation_id: str | None) -> None:
         if task is not None and not task.done():
             task.cancel("Cancelled by /new")
     try:
-        from .runtime.goals import get_goal_manager
+        from .runtime.storage.goals import get_goal_manager
         for cid in (conversation_id, old_conv_id, "default"):
             if not cid:
                 continue
@@ -897,7 +899,7 @@ async def async_handle_chat_command(
     if command.name == "new":
         old_continuous_id = None
         if continuous_conversation_enabled(hass):
-            from .runtime.continuous_conversation import _state as _cc_state
+            from .runtime.history.continuous_conversation import _state as _cc_state
             old_continuous_id = _cc_state(hass).get("conversation_id")
             conversation_id = start_new_conversation(hass, conversation_id)
             user_input = conversation.ConversationInput(
@@ -917,7 +919,7 @@ async def async_handle_chat_command(
         status = get_conversation_status(hass)
         status.pop("history_continuation_id", None)
         try:
-            from .runtime.user_activity import _ring
+            from .runtime.storage.user_activity import _ring
             _ring(hass).clear()
         except Exception:
             pass
@@ -929,6 +931,7 @@ async def async_handle_chat_command(
 
     if command.name == "stop":
         stopped = _stop_conversation_runtime(hass, conversation_id)
+        get_should_end_flag(hass)["value"] = False
         if stopped:
             return ChatCommandOutcome(result=_build_result(user_input, t("cmd_stop_done", lang)))
         return ChatCommandOutcome(result=_build_result(user_input, t("cmd_stop_none", lang)))
@@ -1001,7 +1004,7 @@ async def _handle_goal_command(
     user_input: conversation.ConversationInput,
     args: str,
 ) -> ChatCommandOutcome:
-    from .runtime.goals import get_goal_manager, localised_message
+    from .runtime.storage.goals import get_goal_manager, localised_message
 
     conversation_id = user_input.conversation_id or "default"
     mgr = get_goal_manager(hass, conversation_id)
@@ -1012,7 +1015,7 @@ async def _handle_goal_command(
 
     if not raw or lowered in ("status", "info", "show", "?"):
         if not mgr.has_goal():
-            from .runtime.state import get_runtime_store
+            from .runtime.core.state import get_runtime_store
             runtime_store = get_runtime_store(hass)
             cache = runtime_store.get("goal_managers")
             if isinstance(cache, dict):
@@ -1177,24 +1180,61 @@ def _build_plugin_usage_message() -> str:
     )
 
 
-def _format_plugin_brief(plugin: dict[str, Any]) -> str:
+def _format_plugin_detail(plugin: dict[str, Any], zh: bool = True) -> str:
+    import time as _time
     name = str(plugin.get("name", "")).strip() or "unknown"
     version = str(plugin.get("version", "")).strip()
     loaded = plugin.get("loaded", False)
-    tools_count = plugin.get("tools_count", 0)
-    status = "loaded" if loaded else "not loaded"
-    ver_str = f" v{version}" if version else ""
-    return f"- {name}{ver_str} | {status} | {tools_count} tools"
+    description = str(plugin.get("description", "")).strip()
+    author = str(plugin.get("author", "")).strip()
+    kind = str(plugin.get("kind", "")).strip()
+    install_time = plugin.get("install_time")
+    tools_with_desc = plugin.get("tools_with_desc") or []
+
+    status = "✓ 已加载" if loaded else "○ 未加载" if zh else "✓ Loaded" if loaded else "○ Not loaded"
+    ver_str = f"v{version}" if version else ""
+
+    lines = [f"**{name}** {ver_str} {status}"]
+    lines.append("")
+
+    meta_parts = []
+    if kind:
+        meta_parts.append(f"{'类型' if zh else 'Type'}: {kind}")
+    if author:
+        meta_parts.append(f"{'作者' if zh else 'Author'}: {author}")
+    if install_time:
+        time_str = _time.strftime("%Y-%m-%d %H:%M", _time.localtime(install_time))
+        meta_parts.append(f"{'安装时间' if zh else 'Installed'}: {time_str}")
+    if meta_parts:
+        lines.append(" | ".join(meta_parts))
+        lines.append("")
+
+    if description:
+        lines.append(description)
+        lines.append("")
+
+    if tools_with_desc:
+        lines.append(f"**{'工具' if zh else 'Tools'}:**")
+        for tool in tools_with_desc:
+            tool_name = tool.get("name", "")
+            tool_desc = tool.get("description", "")
+            if tool_desc:
+                lines.append(f"\u200b`{tool_name}` — {tool_desc}")
+            else:
+                lines.append(f"\u200b`{tool_name}`")
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
 
 
-def _format_plugin_list(plugins: list[dict[str, Any]], *, limit: int = 12) -> str:
+def _format_plugin_list(plugins: list[dict[str, Any]], *, limit: int = 10, zh: bool = True) -> str:
     if not plugins:
-        return "No installed plugins."
-    lines = [_format_plugin_brief(p) for p in plugins[: max(limit, 0)]]
-    remaining = len(plugins) - len(lines)
+        return "暂无已安装插件。" if zh else "No plugins installed."
+    parts = [_format_plugin_detail(p, zh=zh) for p in plugins[:max(limit, 0)]]
+    remaining = len(plugins) - len(parts)
     if remaining > 0:
-        lines.append(f"... and {remaining} more")
-    return "\n".join(lines)
+        parts.append(f"... 还有 {remaining} 个" if zh else f"... and {remaining} more")
+    return "\n\n---\n\n".join(parts)
 
 
 async def _handle_plugin_command(
@@ -1202,13 +1242,16 @@ async def _handle_plugin_command(
     user_input: conversation.ConversationInput,
     args: str,
 ) -> ChatCommandOutcome:
-    from .runtime.plugin_store import (
+    from .runtime.storage.plugin_store import (
         get_loaded_plugins,
         hot_load_plugin,
         hot_reload_plugin,
         hot_unload_plugin,
         list_installed_plugins,
     )
+
+    from .runtime.output.reply_formatter import is_chinese
+    zh = is_chinese(user_input.language)
 
     raw = (args or "").strip()
     lowered = raw.lower()
@@ -1217,29 +1260,35 @@ async def _handle_plugin_command(
     remainder = parts[1].strip() if len(parts) > 1 else ""
 
     if not raw or lowered in ("list", "ls", "installed"):
-        plugins = await hass.async_add_executor_job(list_installed_plugins)
-        message = _build_plugin_usage_message()
-        if plugins:
-            message += "\n\nInstalled plugins:\n" + _format_plugin_list(plugins)
-        else:
-            message += "\n\nNo plugins installed."
+        def _list_and_format():
+            plugins = list_installed_plugins()
+            if not plugins:
+                return "暂无已安装插件。" if zh else "No plugins installed."
+            header = "已安装插件：" if zh else "Installed plugins:"
+            return f"{header}\n\n{_format_plugin_list(plugins, zh=zh)}"
+        message = await hass.async_add_executor_job(_list_and_format)
         return ChatCommandOutcome(result=_build_result(user_input, message))
 
     if lowered in ("status", "loaded", "active"):
         loaded = get_loaded_plugins()
         if not loaded:
-            return ChatCommandOutcome(result=_build_result(user_input, "No active plugins."))
-        lines = ["Active plugins:"]
+            return ChatCommandOutcome(result=_build_result(user_input, "暂无活跃插件。" if zh else "No active plugins."))
+        lines = ["活跃插件：" if zh else "Active Plugins:"]
         for p in loaded:
             name = p.get("name", "?")
             tools = p.get("tools", [])
-            lines.append(f"- {name}: {len(tools)} tools")
+            tools_str = ", ".join(tools[:8]) if tools else ("无" if zh else "none")
+            if len(tools) > 8:
+                tools_str += f" (+{len(tools) - 8})"
+            tool_label = "工具" if zh else "tools"
+            lines.append(f"\n**{name}** ({len(tools)} {tool_label})")
+            lines.append(f"  {tools_str}")
         return ChatCommandOutcome(result=_build_result(user_input, "\n".join(lines)))
 
     if subcommand == "load":
         if not remainder:
             return ChatCommandOutcome(result=_build_result(user_input, "Usage: /plugin load <name>"))
-        result = hot_load_plugin(hass, remainder)
+        result = await hass.async_add_executor_job(hot_load_plugin, hass, remainder)
         if result.get("success"):
             tools = result.get("tools", [])
             return ChatCommandOutcome(result=_build_result(
@@ -1250,7 +1299,7 @@ async def _handle_plugin_command(
     if subcommand == "unload":
         if not remainder:
             return ChatCommandOutcome(result=_build_result(user_input, "Usage: /plugin unload <name>"))
-        result = hot_unload_plugin(hass, remainder)
+        result = await hass.async_add_executor_job(hot_unload_plugin, hass, remainder)
         if result.get("success"):
             return ChatCommandOutcome(result=_build_result(user_input, f"Plugin '{remainder}' unloaded."))
         return ChatCommandOutcome(result=_build_result(user_input, f"Failed to unload: {result.get('error', 'unknown')}"))
@@ -1258,7 +1307,7 @@ async def _handle_plugin_command(
     if subcommand == "reload":
         if not remainder:
             return ChatCommandOutcome(result=_build_result(user_input, "Usage: /plugin reload <name>"))
-        result = hot_reload_plugin(hass, remainder)
+        result = await hass.async_add_executor_job(hot_reload_plugin, hass, remainder)
         if result.get("success"):
             tools = result.get("tools", [])
             return ChatCommandOutcome(result=_build_result(
@@ -1293,7 +1342,7 @@ async def _handle_plugin_command(
             )
             if proc.returncode != 0:
                 return ChatCommandOutcome(result=_build_result(user_input, f"Git clone failed: {proc.stderr[:300]}"))
-            load_result = hot_load_plugin(hass, repo_name)
+            load_result = await hass.async_add_executor_job(hot_load_plugin, hass, repo_name)
             tools = load_result.get("tools", [])
             return ChatCommandOutcome(result=_build_result(
                 user_input,
@@ -1311,7 +1360,7 @@ async def _handle_plugin_command(
         target_dir = plugins_path / remainder
         if not target_dir.exists():
             return ChatCommandOutcome(result=_build_result(user_input, f"Plugin '{remainder}' not found."))
-        hot_unload_plugin(hass, remainder)
+        await hass.async_add_executor_job(hot_unload_plugin, hass, remainder)
         try:
             await hass.async_add_executor_job(shutil.rmtree, str(target_dir))
             return ChatCommandOutcome(result=_build_result(user_input, f"Plugin '{remainder}' uninstalled."))
@@ -1327,8 +1376,8 @@ async def _handle_plugin_tool_invoke(
     tool_name: str,
     args: str,
 ) -> ChatCommandOutcome:
-    from .runtime.plugin_store import get_plugin_tool_registry
-    from .runtime.tool_executor import execute_kernel_tool
+    from .runtime.storage.plugin_store import get_plugin_tool_registry
+    from .runtime.tools.tool_executor import execute_kernel_tool
     import json
 
     plugin_registry = get_plugin_tool_registry()

@@ -10,7 +10,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN, VERSION
-from .runtime.custom_entity_store import get_custom_entities_by_platform
+from .runtime.storage.custom_entity_store import get_custom_entities_by_platform
 
 _PLATFORM = "button"
 _ADD_KEY = "_custom_button_add"

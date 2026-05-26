@@ -74,7 +74,7 @@ from .self_edit_tools import (
 )
 
 TOOL_REGISTRY: dict[str, dict[str, Any]] = {
-    "ServiceCall": {"category": "device", "desc": "Call any HA service. Params may be data dict or flat fields. entity_id required/fuzzy-matched. Use real service parameter names, not boolean word keys: light.turn_on uses color_name='white' or rgb_color=[r,g,b] or color_temp_kelvin, brightness/brightness_pct; climate uses temperature/hvac_mode; fan uses percentage; media volume uses volume_level(0-1). Service auto-routed per domain.", "priority": 2},
+    "ServiceCall": {"category": "device", "desc": "Call a HA entity service. Params may be data dict or flat fields. entity_id required/fuzzy-matched. Only for services that target entities ([entity] in ListServices); system services (reload/restart/purge) are auto-bridged to HAControl. Use real service parameter names, not boolean word keys: light.turn_on uses color_name='white' or rgb_color=[r,g,b] or color_temp_kelvin, brightness/brightness_pct; climate uses temperature/hvac_mode; fan uses percentage; media volume uses volume_level(0-1). Service auto-routed per domain.", "priority": 2},
     "EntityQuery": {"category": "query", "desc": "Query a single entity state. Params: entity_id (supports fuzzy matching such as 'living room light')", "priority": 1},
     "GetLiveContext": {"category": "query", "desc": "Get the real-time state list of all exposed entities. No parameters required.", "priority": 1},
     "CameraCapture": {"category": "device", "desc": "Camera tool: capture snapshots or analyze live camera frames. camera_entity='list'/empty enumerates cameras. mode=snapshot returns snapshot_url+markdown_hint; mode=analyze returns base64 JPEG for vision. For uploaded images/GIFs/videos use MediaAnalyze. Params: camera_entity, mode(snapshot|analyze), max_dim(default 640), target_kb(default 40)", "priority": 1},
@@ -239,7 +239,7 @@ def build_tool_list(
     
     # Add plugin tools
     if include_plugins:
-        from ..runtime.plugin_store import get_plugin_tools
+        from ..runtime.storage.plugin_store import get_plugin_tools
         plugin_tools = get_plugin_tools()
         for tool in plugin_tools:
             if include_names is not None and tool.name not in include_names:
@@ -252,7 +252,7 @@ def build_tool_list(
 
 
 def get_full_tool_registry() -> dict[str, dict[str, Any]]:
-    from ..runtime.plugin_store import get_plugin_tool_registry
+    from ..runtime.storage.plugin_store import get_plugin_tool_registry
     
     registry = dict(TOOL_REGISTRY)
     registry.update(get_plugin_tool_registry())

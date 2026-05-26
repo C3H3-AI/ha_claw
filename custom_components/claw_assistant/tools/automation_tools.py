@@ -20,7 +20,7 @@ from homeassistant.util.file import write_utf8_file_atomic
 from homeassistant.util.json import JsonObjectType
 from homeassistant.util.yaml import dump, load_yaml, parse_yaml
 
-from ..runtime.text_patch import PatchError, apply_patches
+from ..runtime.utils.text_patch import PatchError, apply_patches
 from ..entity_privacy import entity_is_exposed
 
 _LOGGER = logging.getLogger(__name__)

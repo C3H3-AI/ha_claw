@@ -11,7 +11,7 @@ from homeassistant.helpers import llm
 from homeassistant.util.json import JsonObjectType
 from homeassistant.util.yaml import dump as yaml_dump, parse_yaml
 
-from ..runtime.text_patch import PatchError, apply_patches
+from ..runtime.utils.text_patch import PatchError, apply_patches
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -346,7 +346,7 @@ class DashboardCardTool(llm.Tool):
 
     @staticmethod
     def _should_send_instructions(hass: HomeAssistant) -> bool:
-        from ..runtime.state import get_conversation_status
+        from ..runtime.core.state import get_conversation_status
         status = get_conversation_status(hass)
         if status.get(_INSTRUCTIONS_SENT_KEY):
             return False
@@ -519,7 +519,7 @@ class DashboardCardTool(llm.Tool):
 
     @staticmethod
     def _docs_read(hass: HomeAssistant) -> set:
-        from ..runtime.state import get_conversation_status
+        from ..runtime.core.state import get_conversation_status
         status = get_conversation_status(hass)
         return status.setdefault("_docs_read", set())
 

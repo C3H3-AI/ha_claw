@@ -16,7 +16,7 @@ from homeassistant.util.json import JsonObjectType
 from ..runtime import (
     set_conversation_state,
 )
-from ..runtime.config_file_store import (
+from ..runtime.storage.config_file_store import (
     async_apply_staged_operation,
     async_list_config_entries,
     async_read_config_file,
@@ -24,9 +24,9 @@ from ..runtime.config_file_store import (
     list_pending_operations,
     stage_config_operation,
 )
-from ..runtime.text_patch import PatchError, apply_patches
-from ..runtime.data_path import output_dir_path, tmp_dir_path
-from ..runtime.im_transport import async_send_im_payload
+from ..runtime.utils.text_patch import PatchError, apply_patches
+from ..runtime.utils.data_path import output_dir_path, tmp_dir_path
+from ..runtime.utils.im_transport import async_send_im_payload
 from ..entity_privacy import entity_is_exposed, privacy_blocked_response, domain_unexposed_response
 
 _LOGGER = logging.getLogger(__name__)
@@ -385,7 +385,7 @@ The index is cached for 5 minutes and refreshes automatically when state changes
         self, hass: HomeAssistant, tool_input: llm.ToolInput, llm_context: llm.LLMContext
     ) -> JsonObjectType:
         from ..index_manager import get_index_manager
-        from ..runtime.data_path import get_ha_base_url
+        from ..runtime.utils.data_path import get_ha_base_url
 
         force_refresh = tool_input.tool_args.get("force_refresh", False)
         manager = await get_index_manager(hass, llm_context.assistant)
@@ -430,13 +430,13 @@ DO NOT call this for simple tasks like device control, queries, or single-action
 
 
 def _get_current_agent_id(hass: HomeAssistant) -> str:
-    from ..runtime.state import get_conversation_status
+    from ..runtime.core.state import get_conversation_status
     return str(get_conversation_status(hass).get("current_agent_id", "") or "")
 
 
 def _resolve_peer_agents(hass: HomeAssistant) -> list[dict[str, str]]:
     """Get configured conversation agents with names and is_you flag."""
-    from ..runtime.state import get_runtime_store
+    from ..runtime.core.state import get_runtime_store
     from homeassistant.helpers import entity_registry as er
 
     runtime_store = get_runtime_store(hass)
@@ -885,13 +885,13 @@ automation edits. Reading these files is always fine."""
             if action == "list":
                 result = await async_list_config_entries(hass, path, include_hidden)
                 if path:
-                    from ..runtime.blueprint_bridge import notify_blueprint_studio
+                    from ..runtime.utils.blueprint_bridge import notify_blueprint_studio
                     notify_blueprint_studio(hass, action="navigate", path=path)
                 return {"success": True, **result}
 
             if action == "read":
                 result = await async_read_config_file(hass, path)
-                from ..runtime.blueprint_bridge import notify_blueprint_studio
+                from ..runtime.utils.blueprint_bridge import notify_blueprint_studio
                 notify_blueprint_studio(hass, action="navigate", path=path)
                 return {"success": True, **result}
 
@@ -1189,7 +1189,8 @@ class EntityQueryTool(llm.Tool):
 
 class ServiceCallTool(llm.Tool):
     name = "ServiceCall"
-    description = """Call any Home Assistant service. Params: domain, service, data (dict), or flat service fields.
+    description = """Call a Home Assistant entity service. Params: domain, service, data (dict), or flat service fields.
+Only for services that target entities (marked [entity] in ListServices). System services (reload/restart/purge) are auto-bridged to HAControl.
 RULES:
 1. entity_id MUST be provided. User device names are fuzzy-matched automatically.
 2. Put service parameters as real fields, not boolean words. Correct: color_name="white"; wrong: white=true.
@@ -1254,6 +1255,23 @@ Use ListServices/ServiceHelp to discover available services and parameters."""
             resolved = fuzzy_resolve_service(domain, service)
             if resolved and resolved in ha_services:
                 service = resolved
+        if service not in ha_services:
+            available = sorted(ha_services.keys()) if ha_services else []
+            _LOGGER.info(
+                "ServiceCall bridge: %s.%s not registered, available=%s",
+                domain, service, available[:10],
+            )
+            return {
+                "success": False,
+                "error": f"Service {domain}.{service} does not exist",
+                "domain": domain,
+                "available_services": available[:20] if available else f"Domain '{domain}' has no registered services",
+            }
+
+        bridged = await self._try_bridge(hass, domain, service, data, tool_input, llm_context)
+        if bridged is not None:
+            return bridged
+
         if domain == "light" and service in {"turn_on", "toggle"}:
             bad_color_keys = [
                 key for key, value in data.items()
@@ -1449,6 +1467,32 @@ Use ListServices/ServiceHelp to discover available services and parameters."""
             _LOGGER.error("ServiceCall failed: %s.%s - %s", domain, service, err)
             return {"success": False, "error": str(err)}
 
+    async def _try_bridge(
+        self,
+        hass: HomeAssistant,
+        domain: str,
+        service: str,
+        data: dict,
+        tool_input: llm.ToolInput,
+        llm_context: llm.LLMContext,
+    ) -> JsonObjectType | None:
+        if service == "reload":
+            entries = hass.config_entries.async_entries(domain)
+            if entries:
+                _LOGGER.info(
+                    "ServiceCall bridge: %s.reload → reload_integration (config entry)",
+                    domain,
+                )
+                from .ha_tools import HAControlTool
+                ctrl = HAControlTool()
+                proxy = llm.ToolInput(
+                    id=tool_input.id,
+                    tool_name="HAControl",
+                    tool_args={"action": "reload_integration", "params": {"domain": domain}},
+                )
+                return await ctrl.async_call(hass, proxy, llm_context)
+        return None
+
     def _get_exposed_entities_list(self, domain: str, exposed_entities: dict) -> list:
         entities = exposed_entities.get("entities", {}) if exposed_entities else {}
         result = []
@@ -1524,7 +1568,7 @@ Parameters:
 
 class ListServicesTool(llm.Tool):
     name = "ListServices"
-    description = "List all available services for a domain. Use this to inspect what can be called on a given domain."
+    description = "List available services for a domain. Use this to inspect what can be called on a given domain."
     parameters = vol.Schema({vol.Required("domain"): str})
 
     async def async_call(
@@ -1532,26 +1576,37 @@ class ListServicesTool(llm.Tool):
     ) -> JsonObjectType:
         domain = tool_input.tool_args.get("domain", "")
         services = hass.services.async_services().get(domain, {})
-        if services:
-            service_list = []
-            for name, service_obj in services.items():
-                description = (
-                    getattr(service_obj, "description", "")
-                    if hasattr(service_obj, "description")
-                    else ""
-                )
-                service_list.append(
-                    f"- {domain}.{name}: {description[:100]}"
-                    if description
-                    else f"- {domain}.{name}"
-                )
-            return {
-                "success": True,
-                "domain": domain,
-                "services": service_list,
-                "count": len(service_list),
-            }
-        return {"success": False, "error": f"Domain {domain} does not exist or has no services"}
+        if not services:
+            return {"success": False, "error": f"Domain {domain} does not exist or has no services"}
+
+        from homeassistant.helpers.service import async_get_all_descriptions
+
+        descriptions = await async_get_all_descriptions(hass)
+        domain_desc = descriptions.get(domain, {})
+
+        service_list = []
+        for name in services:
+            svc_meta = domain_desc.get(name, {})
+            desc = svc_meta.get("description", "")
+            has_target = bool(svc_meta.get("target"))
+            fields = svc_meta.get("fields", {})
+            entry = f"- {domain}.{name}"
+            if desc:
+                entry += f": {desc[:100]}"
+            if has_target:
+                entry += " [entity]"
+            elif fields:
+                entry += " [params]"
+            else:
+                entry += " [system]"
+            service_list.append(entry)
+
+        return {
+            "success": True,
+            "domain": domain,
+            "services": service_list,
+            "count": len(service_list),
+        }
 
 
 class RegistryTool(llm.Tool):
@@ -1957,8 +2012,14 @@ class RegistryTool(llm.Tool):
         entity_id = tool_input.tool_args.get("entity_id", "") or params.get("entity_id", "")
 
         if action == "list":
+            domain_filter = params.get("domain", "")
+            area_filter = params.get("area_id", "")
             entities = []
-            for entry in list(registry.entities.values())[:100]:
+            for entry in registry.entities.values():
+                if domain_filter and not entry.entity_id.startswith(f"{domain_filter}."):
+                    continue
+                if area_filter and entry.area_id != area_filter:
+                    continue
                 entities.append({
                     "entity_id": entry.entity_id,
                     "name": entry.name or entry.original_name,
@@ -1966,7 +2027,9 @@ class RegistryTool(llm.Tool):
                     "labels": list(entry.labels),
                     "disabled_by": entry.disabled_by.value if entry.disabled_by else None,
                 })
-            return {"success": True, "entities": entities, "count": len(registry.entities), "shown": len(entities)}
+                if len(entities) >= 100:
+                    break
+            return {"success": True, "entities": entities, "count": len(entities), "total": len(registry.entities)}
 
         if action == "get":
             if not entity_id:
@@ -2276,7 +2339,7 @@ class AreaDevicesTool(llm.Tool):
 
 class BatchControlTool(llm.Tool):
     name = "BatchControl"
-    description = "Control multiple devices in one batch. Use entity_ids when known. Otherwise use discovery filters domain/area/state/name_contains. Domain-aware actions are normalized internally: for vacuum, turn_on means start cleaning and turn_off means return to base; for cover, turn_on/open means open and turn_off means close; for lock, turn_on means unlock and turn_off means lock. For 'turn off all lights', use domain='light', state='on', action='turn_off'. For 'open/start all vacuums', use domain='vacuum', action='turn_on'. Do not ask the user to list entities when domain/filter is enough."
+    description = "Control multiple devices in one batch. Use entity_ids when known. Otherwise use discovery filters domain/area/state/name_contains. Domain-aware actions are normalized internally: for vacuum, turn_on means start cleaning and turn_off means return to base; for cover, turn_on/open means open and turn_off means close; for lock, turn_on means unlock and turn_off means lock. For 'turn off all lights', use domain='light', state='on', action='turn_off'. For 'open/start all vacuums', use domain='vacuum', action='turn_on'. Use target_state='on'/'off' to set devices to a specific state (skips if already in that state). Do not ask the user to list entities when domain/filter is enough."
     parameters = vol.Schema(
         {
             vol.Optional("entity_ids", default=[]): list,
@@ -2286,6 +2349,7 @@ class BatchControlTool(llm.Tool):
             vol.Optional("area", default=""): str,
             vol.Optional("state", default=""): str,
             vol.Optional("name_contains", default=""): str,
+            vol.Optional("target_state", default=""): str,
         }
     )
 
@@ -2295,6 +2359,7 @@ class BatchControlTool(llm.Tool):
         entity_ids = tool_input.tool_args.get("entity_ids", [])
         action = tool_input.tool_args.get("action", "turn_on")
         data = tool_input.tool_args.get("data", {})
+        target_state = str(tool_input.tool_args.get("target_state", "") or "").strip().lower()
         entity_ids = [str(entity_id) for entity_id in entity_ids if isinstance(entity_id, str)]
         if not entity_ids:
             domain = str(tool_input.tool_args.get("domain", "") or "").strip()
@@ -2339,8 +2404,19 @@ class BatchControlTool(llm.Tool):
         }
         results = []
         called_services: dict[str, str] = {}
+        skipped_count = 0
         for entity_id in entity_ids:
             try:
+                current_state = before_states.get(entity_id)
+                if target_state:
+                    if target_state in ("on", "open", "unlocked") and current_state in ("on", "open", "unlocked"):
+                        results.append({"entity_id": entity_id, "skipped": True, "reason": f"already {current_state}"})
+                        skipped_count += 1
+                        continue
+                    if target_state in ("off", "closed", "locked") and current_state in ("off", "closed", "locked"):
+                        results.append({"entity_id": entity_id, "skipped": True, "reason": f"already {current_state}"})
+                        skipped_count += 1
+                        continue
                 domain = entity_id.split(".")[0]
                 from ..domain_registry import get_action_service, normalize_service_data, fuzzy_resolve_service
                 service = get_action_service(domain, action)

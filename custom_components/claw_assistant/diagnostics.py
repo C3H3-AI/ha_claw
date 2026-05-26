@@ -29,10 +29,10 @@ def _redact_sensitive(data: dict) -> dict:
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: ConfigEntry
 ) -> dict[str, Any]:
-    from .runtime.state import get_conversation_status, get_active_conversation_state
-    from .runtime.loop_controller import get_loop_status
-    from .runtime.continuous_conversation import continuous_conversation_enabled
-    from .runtime.official_websocket_hook import (
+    from .runtime.core.state import get_conversation_status, get_active_conversation_state
+    from .runtime.agent.loop_controller import get_loop_status
+    from .runtime.history.continuous_conversation import continuous_conversation_enabled
+    from .runtime.hooks.official_websocket_hook import (
         context_status_bar_enabled,
         file_upload_enabled,
         sidebar_dock_enabled,
@@ -83,7 +83,7 @@ async def async_get_config_entry_diagnostics(
 
     tool_activities = []
     try:
-        from .runtime.state import _domain_data
+        from .runtime.core.state import _domain_data
         dd = _domain_data(hass)
         tool_activities = dd.get("tool_activities", [])[-10:]
     except Exception:

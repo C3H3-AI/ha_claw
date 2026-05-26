@@ -5,17 +5,19 @@ from homeassistant.core import HomeAssistant
 from homeassistant.const import Platform
 from homeassistant.helpers import config_validation as cv
 from .const import DOMAIN
+from .runtime.hooks.patches import early_patch_intents
+early_patch_intents()
 from .runtime import (
     async_setup_runtime,
     async_unload_runtime,
     prime_runtime_state,
 )
-from .runtime.heartbeat_ticker import async_setup_heartbeat_ticker, async_unload_heartbeat_ticker
-from .runtime.im_approval_bridge import (
+from .runtime.storage.heartbeat_ticker import async_setup_heartbeat_ticker, async_unload_heartbeat_ticker
+from .runtime.utils.im_approval_bridge import (
     async_setup_im_approval_bridge,
     async_unload_im_approval_bridge,
 )
-from .runtime.user_activity import (
+from .runtime.storage.user_activity import (
     async_setup_event_listener,
     async_unload_event_listener,
 )
@@ -44,15 +46,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async_setup_heartbeat_ticker(hass)
     async_setup_im_approval_bridge(hass)
     async_setup_event_listener(hass)
-    from .services.update_handler import async_setup_update_handler
+    from .runtime.utils.update_handler import async_setup_update_handler
     async_setup_update_handler(hass)
-    from .runtime.custom_entity_store import async_load_custom_entities
+    from .runtime.storage.custom_entity_store import async_load_custom_entities
     await async_load_custom_entities(hass)
     from .conversation_utils import async_setup_history_store
     await async_setup_history_store(hass)
     await async_setup_runtime(hass, entry)
-    from .runtime.plugin_store import load_all_plugins
-    from .runtime.internal_llm import invalidate_runtime_tool_cache
+    from .runtime.storage.plugin_store import load_all_plugins
+    from .runtime.llm.internal_llm import invalidate_runtime_tool_cache
     loaded_plugins = await hass.async_add_executor_job(load_all_plugins, hass)
     if loaded_plugins:
         enabled = [p.manifest.name for p in loaded_plugins if p.enabled]
@@ -66,9 +68,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    from .runtime.patches import patch_pipeline_timeout, patch_aihub_markdown_filter
-    from .runtime.continuous_conversation import continuous_conversation_enabled
-    from .runtime.official_websocket_hook import context_status_bar_enabled, file_upload_enabled, sidebar_dock_enabled
+    from .runtime.hooks.patches import patch_pipeline_timeout, patch_aihub_markdown_filter
+    from .runtime.history.continuous_conversation import continuous_conversation_enabled
+    from .runtime.hooks.official_websocket_hook import context_status_bar_enabled, file_upload_enabled, sidebar_dock_enabled
     patch_pipeline_timeout(hass)
     patch_aihub_markdown_filter(hass)
 
@@ -76,7 +78,7 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
     prev_cc = hass.data.get(f"{DOMAIN}_prev_continuous_conversation")
     if prev_cc is not None and prev_cc != cc_enabled:
         from .chat_commands import _clear_conversation_runtime
-        from .runtime.state import get_active_conversation_state
+        from .runtime.core.state import get_active_conversation_state
         conv_id = get_active_conversation_state(hass).get("id")
         _clear_conversation_runtime(hass, conv_id)
     hass.data[f"{DOMAIN}_prev_continuous_conversation"] = cc_enabled
@@ -102,7 +104,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async_unload_heartbeat_ticker(hass)
         async_unload_im_approval_bridge(hass)
         async_unload_event_listener(hass)
-        from .services.update_handler import async_unload_update_handler
+        from .runtime.utils.update_handler import async_unload_update_handler
         async_unload_update_handler(hass)
         from .conversation_utils import async_flush_history_store
         await async_flush_history_store(hass)
@@ -117,7 +119,7 @@ async def _async_ensure_bootstrap_on_first_install(hass: HomeAssistant) -> None:
     consumers that read the file directly see stale data.
     """
     import json
-    from .runtime.data_path import get_data_dir
+    from .runtime.utils.data_path import get_data_dir
 
     state_path = get_data_dir() / "workspace" / ".workspace_state.json"
 
@@ -143,7 +145,7 @@ async def _async_ensure_bootstrap_on_first_install(hass: HomeAssistant) -> None:
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reset bootstrap flag so the next install re-runs first-run setup."""
     import json
-    from .runtime.data_path import get_data_dir
+    from .runtime.utils.data_path import get_data_dir
 
     state_path = get_data_dir() / "workspace" / ".workspace_state.json"
 

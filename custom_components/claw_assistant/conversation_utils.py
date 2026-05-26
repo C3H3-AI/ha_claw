@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, TYPE_CHECKING
 
-from .runtime.response_format import sanitize_response_text
+from .runtime.llm.response_format import sanitize_response_text
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -71,6 +71,23 @@ def detect_user_ending_intent(text: str, end_words: List[str] = None, agent_name
     return len(non_stop_words) <= 1
 
 
+_IM_PREFIXES = {
+    "wechat:": "WeChat",
+    "feishu:": "Feishu",
+    "dingtalk:": "DingTalk",
+    "qq:": "QQ",
+    "wecom:": "WeCom",
+    "xiaoyi:": "XiaoYi",
+}
+
+
+def _tag_im_user_message(conversation_id: str, user_message: str) -> str:
+    for prefix, name in _IM_PREFIXES.items():
+        if conversation_id.startswith(prefix):
+            return f"[IM:{name}] {user_message}"
+    return user_message
+
+
 @dataclass
 class ConversationTurn:
 
@@ -87,7 +104,7 @@ class ConversationHistory:
     def __init__(
         self,
         max_turns: int = 30,
-        max_age_hours: float = 24.0,
+        max_age_hours: float = 360.0,
     ):
         self._histories: Dict[str, List[ConversationTurn]] = {}
         self._last_touched: Dict[str, float] = {}
@@ -115,8 +132,12 @@ class ConversationHistory:
         if conversation_id not in self._histories:
             self._histories[conversation_id] = []
 
+        tagged_user_message = user_message
+        if self._histories[conversation_id]:
+            tagged_user_message = _tag_im_user_message(conversation_id, user_message)
+
         turn = ConversationTurn(
-            user_message=user_message,
+            user_message=tagged_user_message,
             assistant_response=sanitize_response_text(assistant_response),
             tool_calls=tool_calls or [],
             metadata=metadata or {},
@@ -402,7 +423,7 @@ async def async_setup_history_store(hass: "HomeAssistant") -> ConversationHistor
     if data:
         loaded = history.load_from_dict(data)
         _LOGGER.info(
-            "Restored %d conversation turns from storage (24h retention)", loaded
+            "Restored %d conversation turns from storage (15d retention)", loaded
         )
     history.attach_store(store)
     history.cleanup_all()

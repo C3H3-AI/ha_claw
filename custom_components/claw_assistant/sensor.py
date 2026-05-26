@@ -13,8 +13,8 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN, VERSION
-from .runtime.custom_entity_store import get_custom_entities_by_platform
-from .runtime.heartbeat_store import async_list_heartbeat_tasks, _next_due_seconds
+from .runtime.storage.custom_entity_store import get_custom_entities_by_platform
+from .runtime.storage.heartbeat_store import async_list_heartbeat_tasks, _next_due_seconds
 
 SCAN_INTERVAL = timedelta(seconds=30)
 _SENSOR_KEY = "_heartbeat_sensor"

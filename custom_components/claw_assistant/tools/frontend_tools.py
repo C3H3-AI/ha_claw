@@ -522,11 +522,12 @@ class FrontendInspectTool(llm.Tool):
             if result and "error" not in (result if isinstance(result, dict) else {}):
                 store_frontend_text_cache(hass, "exec_js", result)
                 _store_exec_js_cache(hass, js_code, result)
-            if isinstance(result, str) and len(result) > 4000:
-                size = 4000
+            if isinstance(result, str) and len(result) > 8000:
+                size = 8000
                 chunks = [result[i:i + size] for i in range(0, len(result), size)]
                 result = {
                     "chunked": True,
+                    "total_chars": len("".join(chunks)),
                     "total_parts": len(chunks),
                     "parts": [
                         {
@@ -534,9 +535,9 @@ class FrontendInspectTool(llm.Tool):
                             "final": idx == len(chunks) - 1,
                             "text": chunk,
                         }
-                        for idx, chunk in enumerate(chunks[:5])
+                        for idx, chunk in enumerate(chunks[:10])
                     ],
-                    "has_more": len(chunks) > 5,
+                    "has_more": len(chunks) > 10,
                 }
             return {"success": "error" not in (result or {}), "result": result}
 
@@ -636,6 +637,41 @@ class FrontendInspectTool(llm.Tool):
             var target = drillDown(el) || climbUp(deep) || drillDown(deep) || el;
             var targetTag = (target.tagName||'').toLowerCase();
 
+            function fireTouchEvents(elem, x, y) {{
+                var touch = new Touch({{
+                    identifier: Date.now(),
+                    target: elem,
+                    clientX: x,
+                    clientY: y,
+                    pageX: x + window.scrollX,
+                    pageY: y + window.scrollY,
+                    screenX: x,
+                    screenY: y,
+                    radiusX: 1,
+                    radiusY: 1,
+                    force: 1
+                }});
+                var touchOpts = {{bubbles: true, cancelable: true, composed: true, touches: [touch], targetTouches: [touch], changedTouches: [touch]}};
+                elem.dispatchEvent(new TouchEvent('touchstart', touchOpts));
+                elem.dispatchEvent(new TouchEvent('touchend', touchOpts));
+            }}
+
+            function firePointerEvents(elem, x, y) {{
+                var ptrOpts = {{bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, pointerType: 'touch', isPrimary: true, pointerId: 1}};
+                elem.dispatchEvent(new PointerEvent('pointerdown', ptrOpts));
+                elem.dispatchEvent(new PointerEvent('pointerup', ptrOpts));
+            }}
+
+            function fireMouseEvents(elem, x, y) {{
+                var mouseOpts = {{bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: 0, buttons: 1}};
+                elem.dispatchEvent(new MouseEvent('mousedown', mouseOpts));
+                elem.dispatchEvent(new MouseEvent('mouseup', mouseOpts));
+                elem.dispatchEvent(new MouseEvent('click', mouseOpts));
+            }}
+
+            try {{ fireTouchEvents(target, cx, cy); }} catch(e) {{}}
+            try {{ firePointerEvents(target, cx, cy); }} catch(e) {{}}
+            fireMouseEvents(target, cx, cy);
             target.click();
 
             if (target.focus) target.focus();
@@ -997,12 +1033,57 @@ class FrontendInspectTool(llm.Tool):
 
             var INTERACTIVE_TAGS = {{'a':1,'button':1,'details':1,'embed':1,'input':1,'menu':1,'menuitem':1,'object':1,'select':1,'textarea':1,'summary':1,'dialog':1}};
             var INTERACTIVE_ROLES = {{'button':1,'dialog':1,'treeitem':1,'alert':1,'grid':1,'progressbar':1,'radio':1,'checkbox':1,'menuitem':1,'option':1,'switch':1,'dropdown':1,'scrollbar':1,'combobox':1,'textbox':1,'tabpanel':1,'tab':1,'link':1,'slider':1,'listbox':1,'searchbox':1,'menuitemradio':1,'menuitemcheckbox':1,'tooltip':1,'tree':1,'region':1,'spinbutton':1,'columnheader':1}};
-            var HA_INTERACTIVE = {{'ha-icon-button':1,'mwc-icon-button':1,'ha-button':1,'mwc-button':1,'ha-list-item':1,'mwc-list-item':1,'ha-check-list-item':1,'ha-clickable-list-item':1,'ha-dropdown-item':1,'ha-switch':1,'ha-slider':1,'ha-select':1,'ha-textfield':1,'ha-radio':1,'ha-checkbox':1,'ha-fab':1,'ha-chip':1,'ha-assist-chip':1,'ha-icon-next':1,'ha-icon-prev':1,'ha-button-menu':1,'ha-label':1,'md-filled-button':1,'md-outlined-button':1,'md-text-button':1,'md-icon-button':1,'md-filled-tonal-button':1,'md-fab':1,'md-checkbox':1,'md-radio':1,'md-switch':1,'md-slider':1,'md-filled-text-field':1,'md-outlined-text-field':1,'md-filled-select':1,'md-outlined-select':1,'md-list-item':1,'md-menu-item':1,'md-icon-button-toggle':1}};
+            var HA_INTERACTIVE = {{'ha-icon-button':1,'mwc-icon-button':1,'ha-button':1,'mwc-button':1,'ha-list-item':1,'mwc-list-item':1,'ha-check-list-item':1,'ha-clickable-list-item':1,'ha-dropdown-item':1,'ha-switch':1,'ha-slider':1,'ha-select':1,'ha-textfield':1,'ha-radio':1,'ha-checkbox':1,'ha-fab':1,'ha-chip':1,'ha-assist-chip':1,'ha-icon-next':1,'ha-icon-prev':1,'ha-button-menu':1,'ha-label':1,'md-filled-button':1,'md-outlined-button':1,'md-text-button':1,'md-icon-button':1,'md-filled-tonal-button':1,'md-fab':1,'md-checkbox':1,'md-radio':1,'md-switch':1,'md-slider':1,'md-filled-text-field':1,'md-outlined-text-field':1,'md-filled-select':1,'md-outlined-select':1,'md-list-item':1,'md-menu-item':1,'md-icon-button-toggle':1,'ha-input':1,'wa-input':1,'ha-textarea':1,'wa-textarea':1,'ha-form-string':1,'ha-form-integer':1,'ha-form-float':1,'ha-form-boolean':1,'ha-form-select':1,'ha-input-search':1}};
             var HA_SHADOW_HOSTS = (function() {{
                 var tags = [
+                    // 顶层容器
                     'home-assistant','home-assistant-main','ha-drawer','partial-panel-resolver',
+                    // 面板
                     'ha-panel-lovelace','ha-panel-config','ha-panel-developer-tools',
-                    'hui-root','hui-view','hui-masonry-view','hui-sections-view',
+                    'ha-panel-history','ha-panel-logbook','ha-panel-calendar','ha-panel-energy',
+                    'ha-panel-map','ha-panel-media-browser','ha-panel-profile','ha-panel-todo',
+                    // Lovelace 视图
+                    'hui-root','hui-view','hui-masonry-view','hui-sections-view','hui-panel-view',
+                    'hui-sidebar-view','hui-view-container','hui-view-header','hui-view-footer',
+                    'hui-view-background','hui-view-badges','hui-section','hui-grid-section',
+                    // Lovelace 卡片
+                    'hui-card','hui-alarm-panel-card','hui-area-card','hui-button-card',
+                    'hui-calendar-card','hui-clock-card','hui-conditional-card',
+                    'hui-entities-card','hui-entity-card','hui-entity-filter-card',
+                    'hui-gauge-card','hui-glance-card','hui-grid-card','hui-heading-card',
+                    'hui-history-graph-card','hui-home-summary-card','hui-horizontal-stack-card',
+                    'hui-humidifier-card','hui-iframe-card','hui-light-card','hui-logbook-card',
+                    'hui-map-card','hui-markdown-card','hui-media-control-card',
+                    'hui-picture-card','hui-picture-elements-card','hui-picture-entity-card',
+                    'hui-picture-glance-card','hui-plant-status-card','hui-sensor-card',
+                    'hui-shopping-list-card','hui-shortcut-card','hui-stack-card',
+                    'hui-statistic-card','hui-statistics-graph-card','hui-thermostat-card',
+                    'hui-tile-card','hui-todo-list-card','hui-toggle-group-card',
+                    'hui-updates-card','hui-vertical-stack-card','hui-weather-forecast-card',
+                    'hui-distribution-card','hui-empty-state-card','hui-error-card',
+                    // Lovelace 能源卡片
+                    'hui-energy-carbon-consumed-gauge-card','hui-energy-compare-card',
+                    'hui-energy-date-selection-card','hui-energy-devices-graph-card',
+                    'hui-energy-distribution-card','hui-energy-gas-graph-card',
+                    'hui-energy-grid-balance-card','hui-energy-sankey-card',
+                    'hui-energy-solar-graph-card','hui-energy-sources-table-card',
+                    'hui-energy-usage-graph-card','hui-energy-water-graph-card',
+                    // Lovelace 实体行
+                    'hui-generic-entity-row','hui-button-entity-row','hui-climate-entity-row',
+                    'hui-cover-entity-row','hui-group-entity-row','hui-input-button-entity-row',
+                    'hui-input-datetime-entity-row','hui-input-number-entity-row',
+                    'hui-input-select-entity-row','hui-input-text-entity-row',
+                    'hui-light-entity-row','hui-lock-entity-row','hui-media-player-entity-row',
+                    'hui-number-entity-row','hui-scene-entity-row','hui-script-entity-row',
+                    'hui-select-entity-row','hui-sensor-entity-row','hui-text-entity-row',
+                    'hui-timer-entity-row','hui-toggle-entity-row','hui-update-entity-row',
+                    'hui-weather-entity-row','hui-humidifier-entity-row','hui-vacuum-entity-row',
+                    // Lovelace 徽章
+                    'hui-badge','hui-entity-badge','hui-state-label-badge','hui-heading-badge',
+                    // Lovelace 对话框
+                    'hui-dialog-edit-card','hui-dialog-edit-view','hui-dialog-edit-section',
+                    'hui-dialog-create-card','hui-dialog-suggest-card','hui-dialog-save-config',
+                    // 配置页面
                     'hass-tabs-subpage','hass-tabs-subpage-data-table','hass-subpage',
                     'hass-loading-screen','hass-error-screen',
                     'ha-config-dashboard','ha-config-entities','ha-config-section-entities',
@@ -1011,16 +1092,23 @@ class FrontendInspectTool(llm.Tool):
                     'ha-config-scene','ha-config-helpers','ha-config-flow',
                     'ha-config-voice-assistants','ha-config-voice-assistants-expose',
                     'ha-config-entry-page','ha-config-logs','ha-config-info',
+                    // 数据表格和过滤器
                     'ha-data-table','ha-data-table-labels','ha-top-app-bar-fixed','ha-menu-button',
                     'ha-input-search','search-input','ha-search-input',
                     'ha-filter-entities','ha-filter-devices','ha-filter-integrations',
                     'ha-filter-floor-areas','ha-filter-labels','ha-filter-categories',
                     'ha-filter-domains','ha-filter-states','ha-filter-voice-assistants',
+                    // 对话框
                     'ha-more-info-dialog','ha-dialog','ha-voice-command-dialog','dialog',
-                    'ha-card','hui-card','ha-form','ha-settings-row','ha-expansion-panel',
+                    'ha-quick-bar','dialog-box','dialog-form','dialog-data-entry-flow',
+                    'ha-more-info-info','ha-more-info-history','ha-more-info-details',
+                    'ha-more-info-settings','ha-more-info-logbook','more-info-content',
+                    // 卡片和面板
+                    'ha-card','ha-form','ha-settings-row','ha-expansion-panel',
                     'ha-sidebar','ha-assist-chat','ha-markdown','ha-markdown-element',
-                    'ha-more-info-info','ha-more-info-history','more-info-content',
+                    // 状态控制
                     'ha-state-control-toggle','ha-entity-toggle','ha-state-icon',
+                    // 交互组件
                     'ha-assist-chip','ha-dropdown','ha-checkbox','ha-radio',
                     'ha-integration-overflow-menu','ha-sub-menu',
                     'lit-virtualizer','ha-alert','ha-tooltip','wa-popup',
@@ -1040,7 +1128,15 @@ class FrontendInspectTool(llm.Tool):
                     'md-dialog','md-filled-text-field','md-outlined-text-field',
                     'md-filled-select','md-outlined-select','md-list-item','md-menu-item',
                     'md-checkbox','md-radio','md-switch','md-slider','md-fab',
-                    'md-filled-tonal-button','md-icon-button-toggle'
+                    'md-filled-tonal-button','md-icon-button-toggle',
+                    // 服务和选择器
+                    'ha-service-control','ha-target-picker','ha-yaml-editor','ha-code-editor',
+                    // 输入组件 (对话框中的输入框)
+                    'ha-input','wa-input','ha-textarea','wa-textarea',
+                    'ha-form-string','ha-form-integer','ha-form-float','ha-form-boolean',
+                    'ha-form-select','ha-form-multi_select','ha-form-expandable','ha-form-grid',
+                    'ha-input-search','ha-picker-combo-box','ha-picker-field','ha-generic-picker',
+                    'ha-combo-box-item','ha-navigation-picker'
                 ];
                 var m = {{}};
                 for (var ti = 0; ti < tags.length; ti++) m[tags[ti]] = 1;
@@ -1189,6 +1285,60 @@ class FrontendInspectTool(llm.Tool):
 
             var _seenElements = new WeakSet();
             
+            function findParentContext(el) {{
+                var walk = el.parentElement;
+                var visited = new Set();
+                while (walk && !visited.has(walk)) {{
+                    visited.add(walk);
+                    var tn = walk.tagName.toLowerCase();
+                    if (tn === 'ha-card' || tn.startsWith('hui-') && tn.endsWith('-card')) {{
+                        var header = walk.querySelector('.card-header');
+                        var title = header ? header.textContent.trim().slice(0,40) : '';
+                        var ct = walk.getAttribute('data-card-type') || tn.replace('hui-','').replace('-card','');
+                        return title ? ct + ':' + title : ct;
+                    }}
+                    if (tn === 'ha-dialog' || tn === 'ha-more-info-dialog') {{
+                        var dt = walk.querySelector('.mdc-dialog__title,ha-dialog-header');
+                        return 'dialog:' + (dt ? dt.textContent.trim().slice(0,30) : '');
+                    }}
+                    if (tn === 'ha-settings-row') {{
+                        var sr = walk.querySelector('[slot="heading"],.heading');
+                        return 'setting:' + (sr ? sr.textContent.trim().slice(0,30) : '');
+                    }}
+                    if (tn === 'ha-expansion-panel') {{
+                        var ep = walk.querySelector('[slot="header"],.header');
+                        return 'panel:' + (ep ? ep.textContent.trim().slice(0,30) : '');
+                    }}
+                    var next = walk.parentElement;
+                    if (!next) {{
+                        var rn = walk.getRootNode && walk.getRootNode();
+                        next = (rn && rn !== walk && rn.host) ? rn.host : null;
+                    }}
+                    walk = next;
+                }}
+                return null;
+            }}
+
+            function getActionType(el, tag) {{
+                if (tag === 'input' || tag === 'textarea' || tag === 'ha-textfield' || tag === 'ha-input' || tag === 'wa-input' || tag === 'ha-textarea' || tag === 'wa-textarea' || tag === 'ha-form-string' || tag === 'ha-form-integer' || tag === 'ha-form-float' || tag.includes('text-field')) return 'type';
+                if (tag === 'select' || tag === 'ha-select' || tag === 'ha-form-select' || tag === 'ha-picker-combo-box' || tag === 'ha-combo-box' || tag.includes('-select')) return 'select';
+                if (tag === 'ha-switch' || tag === 'md-switch' || tag === 'ha-checkbox' || tag === 'md-checkbox' || tag === 'ha-form-boolean') return 'toggle';
+                if (tag === 'ha-slider' || tag === 'md-slider') return 'slide';
+                if (tag === 'a' || el.getAttribute('href')) return 'navigate';
+                return 'tap';
+            }}
+
+            function getPosition(rect) {{
+                var vw = window.innerWidth, vh = window.innerHeight;
+                var cx = rect.left + rect.width/2, cy = rect.top + rect.height/2;
+                var pos = [];
+                if (cy < vh * 0.25) pos.push('top');
+                else if (cy > vh * 0.75) pos.push('bottom');
+                if (cx < vw * 0.3) pos.push('left');
+                else if (cx > vw * 0.7) pos.push('right');
+                return pos.length ? pos.join('-') : 'center';
+            }}
+
             function markInteractive(el, o) {{
                 if (!isInteractive(el)) return;
                 if (_seenElements.has(el)) return;
@@ -1203,6 +1353,10 @@ class FrontendInspectTool(llm.Tool):
                 highlightElement(el, idx);
                 var tag = el.tagName.toLowerCase();
                 var entry = {{idx: idx, tag: tag}};
+                entry.action = getActionType(el, tag);
+                entry.pos = getPosition(rect);
+                var ctx = findParentContext(el);
+                if (ctx) entry.in = ctx;
                 var part = el.getAttribute('part');
                 if (part) entry.part = part;
                 try {{

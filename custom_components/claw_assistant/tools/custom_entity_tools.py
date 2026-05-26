@@ -10,7 +10,7 @@ from homeassistant.helpers import entity_registry as er, llm
 from homeassistant.util.json import JsonObjectType
 
 from ..const import DOMAIN
-from ..runtime.custom_entity_store import (
+from ..runtime.storage.custom_entity_store import (
     SUPPORTED_PLATFORMS,
     async_delete_custom_entity,
     async_list_custom_entities,

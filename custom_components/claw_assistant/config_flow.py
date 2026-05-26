@@ -287,7 +287,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         )
 
     async def _workspace_edit(self, doc_name: str, user_input: dict[str, Any] | None = None) -> FlowResult:
-        from .runtime.workspace_store import async_save_workspace_doc, get_workspace_doc
+        from .runtime.storage.workspace_store import async_save_workspace_doc, get_workspace_doc
 
         step_id = f"ws_{doc_name.lower()}"
 
@@ -311,7 +311,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         return await self._workspace_edit("AGENTS", user_input)
 
     async def async_step_ws_bootstrap(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        from .runtime.workspace_store import (
+        from .runtime.storage.workspace_store import (
             async_save_workspace_doc,
             async_set_bootstrap_active,
             get_workspace_doc,
@@ -356,7 +356,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         return await self._workspace_edit("USER", user_input)
 
     async def async_step_skill_editor(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        from .runtime.skill_store import list_installed_skills
+        from .runtime.storage.skill_store import async_refresh_prompt_store, list_installed_skills
 
         if user_input is not None:
             if user_input.get("back"):
@@ -366,7 +366,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 self._skill_editor_target = slug
                 return await self.async_step_skill_edit()
 
-        from .runtime.skill_store import _INTERNAL_SKILL_SLUGS
+        await async_refresh_prompt_store(self.hass, force=True)
+
+        from .runtime.storage.skill_store import _INTERNAL_SKILL_SLUGS
 
         skills = await self.hass.async_add_executor_job(list_installed_skills)
         options = []
@@ -400,7 +402,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         )
 
     async def async_step_skill_edit(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        from .runtime.skill_store import (
+        from .runtime.storage.skill_store import (
             async_delete_skill,
             async_get_installed_skill,
             async_install_skill,
@@ -466,7 +468,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
     async def async_step_plugin_manager(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Plugin manager - list installed plugins."""
-        from .runtime.plugin_store import list_installed_plugins, plugins_dir
+        from .runtime.storage.plugin_store import list_installed_plugins, plugins_dir
 
         if user_input is not None:
             if user_input.get("back"):
@@ -526,7 +528,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
     async def async_step_plugin_detail(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Plugin detail - show info and actions."""
-        from .runtime.plugin_store import (
+        from .runtime.storage.plugin_store import (
             get_plugin_install_guide,
             hot_load_plugin,
             hot_unload_plugin,
@@ -592,7 +594,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
     async def async_step_plugin_delete_confirm(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Confirm plugin deletion."""
-        from .runtime.plugin_store import (
+        from .runtime.storage.plugin_store import (
             hot_unload_plugin,
             plugins_dir,
         )

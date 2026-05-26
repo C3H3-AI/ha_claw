@@ -12,13 +12,13 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import llm
 from homeassistant.util.json import JsonObjectType
 
-from ..runtime.ha_guide_store import (
+from ..runtime.storage.ha_guide_store import (
     async_delete_runtime_guide_doc,
     async_upsert_runtime_guide_doc,
     get_homeassistant_guide_doc,
     list_homeassistant_guide_docs,
 )
-from ..runtime.self_edit import (
+from ..runtime.utils.self_edit import (
     async_apply_proposal,
     async_discard_proposal,
     async_list_proposals,
@@ -26,19 +26,19 @@ from ..runtime.self_edit import (
     async_read_proposal,
     async_stage_proposal,
 )
-from ..runtime.memory_store import (
+from ..runtime.storage.memory_store import (
     async_delete_memory_entry,
     async_get_memory_entry,
     async_list_memory_entries,
     async_save_memory_entry_result,
 )
-from ..runtime.skill_store import (
+from ..runtime.storage.skill_store import (
     async_delete_skill,
     async_install_skill,
     get_installed_skill,
     list_installed_skills,
 )
-from ..runtime.text_patch import PatchError, apply_patches
+from ..runtime.utils.text_patch import PatchError, apply_patches
 
 _LOGGER = logging.getLogger(__name__)
 

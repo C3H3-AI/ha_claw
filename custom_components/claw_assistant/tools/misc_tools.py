@@ -16,30 +16,30 @@ from homeassistant.helpers import llm
 from homeassistant.util.json import JsonObjectType
 
 from ..runtime import get_global_state, get_output_state, set_current_thought
-from ..runtime.ha_guide_store import (
+from ..runtime.storage.ha_guide_store import (
     get_homeassistant_guide_doc,
     get_homeassistant_guide_overview,
     list_homeassistant_guide_docs,
     search_homeassistant_guide,
 )
-from ..runtime.heartbeat_store import (
+from ..runtime.storage.heartbeat_store import (
     async_clear_heartbeat_result,
     async_delete_heartbeat_task,
     async_list_heartbeat_tasks,
     async_record_heartbeat_result,
     async_upsert_heartbeat_task,
 )
-from ..runtime.loop_controller import get_loop_status, record_thought
-from ..runtime.memory_store import (
+from ..runtime.agent.loop_controller import get_loop_status, record_thought
+from ..runtime.storage.memory_store import (
     _transient_reason,
     async_clear_memory_entries,
     async_get_memory_entry,
     async_list_memory_entries,
     async_save_memory_entry_result,
 )
-from ..runtime.events import fire_live_progress
-from ..runtime.route_hints import build_next_action, build_route_envelope, build_route_hint
-from ..runtime.skill_store import (
+from ..runtime.core.events import fire_live_progress
+from ..runtime.utils.route_hints import build_next_action, build_route_envelope, build_route_hint
+from ..runtime.storage.skill_store import (
     async_get_installed_skill,
     async_install_skill,
     async_save_master_prompt,
@@ -48,9 +48,9 @@ from ..runtime.skill_store import (
     list_installed_skills,
     load_master_prompt,
 )
-from ..runtime.tool_progress import tool_progress_line
+from ..runtime.tools.tool_progress import tool_progress_line
 from ..sensor import async_sync_heartbeat_sensor
-from ..runtime.workspace_store import (
+from ..runtime.storage.workspace_store import (
     async_save_workspace_doc,
     async_set_bootstrap_active,
     get_today_memory_doc,
@@ -512,7 +512,7 @@ class ExecutePythonTool(llm.Tool):
         pip_index_url = str(tool_input.tool_args.get("pip_index_url", "") or "")
 
         if sandbox_flag:
-            from ..runtime.sandbox import run_in_sandbox
+            from ..runtime.utils.sandbox import run_in_sandbox
 
             try:
                 return _cap_py_payload(
@@ -620,7 +620,7 @@ class ExecutePythonTool(llm.Tool):
         import os as _os
         import tempfile as _tempfile
 
-        from ..runtime.data_path import (
+        from ..runtime.utils.data_path import (
             absolute_output_url as _absolute_output_url,
             output_dir_path as _output_dir_path,
             tmp_dir_path as _tmp_dir_path,
@@ -1245,7 +1245,7 @@ class GetInstalledSkillTool(llm.Tool):
                 tool_input.tool_args.get("name", ""),
             )
             try:
-                from ..runtime.evolution_review import record_loaded_skill
+                from ..runtime.storage.evolution_review import record_loaded_skill
 
                 record_loaded_skill(hass, result.get("slug", ""))
             except Exception:
@@ -1345,7 +1345,7 @@ class GetWorkspaceDocTool(llm.Tool):
             if str(name).strip().upper() == "TODAY_MEMORY":
                 return {"success": True, **get_today_memory_doc()}
             doc = get_workspace_doc(tool_input.tool_args.get("name", ""))
-            from ..runtime.workspace_store import _DOC_PURPOSES
+            from ..runtime.storage.workspace_store import _DOC_PURPOSES
             purpose = _DOC_PURPOSES.get(doc.get("name", ""), "")
             result: JsonObjectType = {"success": True, **doc}
             if purpose:
@@ -1408,7 +1408,7 @@ class HeartbeatManagerTool(llm.Tool):
                 return {"success": False, "error": "Heartbeat title is required"}
             notify_channel = tool_input.tool_args.get("notify_channel", "")
             if not notify_channel:
-                from ..runtime.state import _active_conversation_id, is_im_channel
+                from ..runtime.core.state import _active_conversation_id, is_im_channel
                 conv_id = _active_conversation_id.get()
                 if is_im_channel(conv_id):
                     notify_channel = conv_id
@@ -1519,7 +1519,7 @@ class SetWorkspaceDocTool(llm.Tool):
                 tool_input.tool_args.get("name", ""),
                 tool_input.tool_args.get("markdown", ""),
             )
-            from ..runtime.workspace_store import _DOC_PURPOSES, _normalize_doc_name
+            from ..runtime.storage.workspace_store import _DOC_PURPOSES, _normalize_doc_name
             normalized = _normalize_doc_name(tool_input.tool_args.get("name", ""))
             purpose = _DOC_PURPOSES.get(normalized, "")
             result: JsonObjectType = {"success": True, "path": str(path)}
@@ -1619,7 +1619,7 @@ class MemoryGraphTool(llm.Tool):
     async def async_call(
         self, hass: HomeAssistant, tool_input: llm.ToolInput, llm_context: llm.LLMContext
     ) -> JsonObjectType:
-        from ..runtime.graph_service import (  # noqa: PLC0415
+        from ..runtime.storage.graph_service import (  # noqa: PLC0415
             async_get_node,
             async_link,
             async_recall,
@@ -1800,7 +1800,7 @@ Parameters:
 
         set_current_thought(hass, thought)
         hass.bus.async_fire("ha_crack_thought", {"thought": thought})
-        from ..runtime.state import _active_conversation_id
+        from ..runtime.core.state import _active_conversation_id
         fire_live_progress(
             hass,
             conversation_id=_active_conversation_id.get(),
@@ -2549,7 +2549,7 @@ class MediaAnalyzeTool(llm.Tool):
         if file_size == 0:
             return {"success": False, "error": f"Video file is empty: {file_path}"}
 
-        from ..runtime.data_path import tmp_dir_path
+        from ..runtime.utils.data_path import tmp_dir_path
         import uuid
         work_dir = tmp_dir_path(hass) / f"vframes_{uuid.uuid4().hex[:8]}"
         await hass.async_add_executor_job(lambda: work_dir.mkdir(parents=True, exist_ok=True))
@@ -2690,7 +2690,7 @@ class GetConversationHistoryTool(llm.Tool):
 
     async def async_call(self, hass: HomeAssistant, tool_input: llm.ToolInput, llm_context: llm.LLMContext) -> JsonObjectType:
         from ..conversation_utils import get_conversation_history
-        from ..runtime.state import get_active_conversation_state, get_conversation_status
+        from ..runtime.core.state import get_active_conversation_state, get_conversation_status
 
         args = tool_input.tool_args
         action = args.get("action", "get")
@@ -2956,7 +2956,7 @@ class PluginManagerTool(llm.Tool):
     async def async_call(
         self, hass: HomeAssistant, tool_input: llm.ToolInput, llm_context: llm.LLMContext
     ) -> JsonObjectType:
-        from ..runtime.plugin_store import (
+        from ..runtime.storage.plugin_store import (
             cancel_plugin_approval,
             get_loaded_plugins,
             get_plugin_install_guide,
@@ -2969,7 +2969,7 @@ class PluginManagerTool(llm.Tool):
             reload_plugins,
             validate_plugin_installation,
         )
-        from ..runtime.tool_executor import execute_kernel_tool
+        from ..runtime.tools.tool_executor import execute_kernel_tool
 
         action = tool_input.tool_args.get("action", "list")
         plugin_name = tool_input.tool_args.get("plugin_name", "").strip()
