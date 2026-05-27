@@ -851,26 +851,73 @@ def _clear_conversation_runtime(hass, conversation_id: str | None) -> None:
 
 def _stop_conversation_runtime(hass, conversation_id: str | None) -> bool:
     registry = _task_registry(hass)
+    stopped_any_task = False
+
     task = registry.get(conversation_id or "")
     if task is not None and not task.done():
         _stop_requests(hass).add(conversation_id or "")
         task.cancel("Stopped by /stop command")
+        stopped_any_task = True
 
-    token = set_active_conversation(conversation_id)
+    if not stopped_any_task:
+        for cid, t in list(registry.items()):
+            if t is not None and not t.done():
+                _stop_requests(hass).add(cid)
+                t.cancel("Stopped by /stop command (scan)")
+                stopped_any_task = True
+
+    from .conversation_utils import get_conversation_history
+    conv_history = get_conversation_history()
+    if conv_history:
+        for cid in list(conv_history._in_progress.keys()):
+            conv_history.clear_in_progress(cid)
+
     try:
-        task_loop = get_task_loop_state(hass)
-        was_active = bool(task_loop.get("active", False))
-        task_loop["active"] = False
-        task_loop["phase"] = "stopped"
-        task_loop["stop_reason"] = "Stopped by /stop command"
-        task_loop["waiting_choice"] = False
-        task_loop["pending_feedback"] = None
-        task_loop["last_choice"] = None
-    finally:
-        reset_active_conversation(token)
+        from .runtime.hooks.official_websocket_hook import _clear_live_event_buffer
+        for cid in list(registry.keys()):
+            _clear_live_event_buffer(hass, cid)
+        if conversation_id:
+            _clear_live_event_buffer(hass, conversation_id)
+    except Exception:
+        pass
+
+    all_conv_ids = set()
+    if conversation_id:
+        all_conv_ids.add(conversation_id)
+    all_conv_ids.update(registry.keys())
+
+    was_active = False
+    for cid in all_conv_ids:
+        token = set_active_conversation(cid)
+        try:
+            task_loop = get_task_loop_state(hass)
+            if task_loop.get("active", False):
+                was_active = True
+            task_loop["active"] = False
+            task_loop["phase"] = "stopped"
+            task_loop["stop_reason"] = "Stopped by /stop command"
+            task_loop["waiting_choice"] = False
+            task_loop["pending_feedback"] = None
+            task_loop["last_choice"] = None
+        finally:
+            reset_active_conversation(token)
+
+    if not all_conv_ids:
+        token = set_active_conversation(conversation_id)
+        try:
+            task_loop = get_task_loop_state(hass)
+            was_active = bool(task_loop.get("active", False))
+            task_loop["active"] = False
+            task_loop["phase"] = "stopped"
+            task_loop["stop_reason"] = "Stopped by /stop command"
+            task_loop["waiting_choice"] = False
+            task_loop["pending_feedback"] = None
+            task_loop["last_choice"] = None
+        finally:
+            reset_active_conversation(token)
 
     get_should_end_flag(hass)["value"] = True
-    return was_active or (task is not None and not task.done())
+    return was_active or stopped_any_task
 
 
 async def async_handle_chat_command(

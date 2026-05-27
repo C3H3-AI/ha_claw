@@ -108,6 +108,7 @@ class ConversationHistory:
     ):
         self._histories: Dict[str, List[ConversationTurn]] = {}
         self._last_touched: Dict[str, float] = {}
+        self._in_progress: Dict[str, dict] = {}
         self.max_turns = max_turns
         self.max_age_seconds = max_age_hours * 3600
         self._store: Optional["Store"] = None
@@ -145,11 +146,30 @@ class ConversationHistory:
 
         self._histories[conversation_id].append(turn)
         self._last_touched[conversation_id] = turn.timestamp
+        self._in_progress.pop(conversation_id, None)
 
         if len(self._histories[conversation_id]) > self.max_turns:
             self._histories[conversation_id] = self._histories[conversation_id][-self.max_turns:]
 
         self._schedule_save()
+
+    def mark_turn_in_progress(self, conversation_id: str, user_message: str) -> None:
+        """Mark a turn as in-progress so it appears in history immediately."""
+        if conversation_id not in self._histories:
+            self._histories[conversation_id] = []
+        self._in_progress[conversation_id] = {
+            "user_message": user_message,
+            "timestamp": time.time(),
+        }
+        self._last_touched[conversation_id] = time.time()
+
+    def clear_in_progress(self, conversation_id: str) -> None:
+        """Clear in-progress marker after turn completes."""
+        self._in_progress.pop(conversation_id, None)
+
+    def get_in_progress(self, conversation_id: str) -> dict | None:
+        """Get in-progress turn data if any."""
+        return self._in_progress.get(conversation_id)
 
     def set_conversation_title(self, conversation_id: str, title: str) -> None:
         title = (title or "").strip()

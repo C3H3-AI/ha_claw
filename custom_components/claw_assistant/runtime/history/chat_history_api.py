@@ -150,7 +150,28 @@ async def websocket_chat_history_list(
             "last_message_at": last_ts,
             "seconds_ago": int(now - last_ts),
             "channel": channel,
+            "in_progress": False,
         })
+
+    for conv_id, progress in history._in_progress.items():
+        if conv_id in shadow_ids:
+            continue
+        existing = next((c for c in conversations if c["conversation_id"] == conv_id), None)
+        if existing:
+            existing["in_progress"] = True
+        else:
+            user_msg = progress.get("user_message", "")[:60]
+            ts = progress.get("timestamp", now)
+            conversations.append({
+                "conversation_id": conv_id,
+                "summary": user_msg or "进行中...",
+                "turn_count": 0,
+                "first_message_at": ts,
+                "last_message_at": ts,
+                "seconds_ago": int(now - ts),
+                "channel": _extract_channel_from_conversation_id(conv_id) or "HA",
+                "in_progress": True,
+            })
 
     conversations.sort(key=lambda c: c["last_message_at"], reverse=True)
     connection.send_result(msg["id"], {"conversations": conversations})

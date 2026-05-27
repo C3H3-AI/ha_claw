@@ -34,6 +34,10 @@ _KNOWN_INCOMPATIBLE_SIGNATURES = {
     "messages_dispatch_rejected",
     "unauthorized",
 }
+_TRANSIENT_ERROR_SIGNATURES = {
+    "server_disconnected",
+    "transient_service_error",
+}
 
 
 def _utcnow() -> datetime:
@@ -113,6 +117,22 @@ def _error_signature(error: str | None) -> str:
         return "content_parts_required"
     if "server disconnected" in lowered:
         return "server_disconnected"
+    if (
+        "transient service error" in lowered
+        or "timeout" in lowered
+        or "timed out" in lowered
+        or "connection" in lowered
+        or "disconnected" in lowered
+        or "reset by peer" in lowered
+        or "broken pipe" in lowered
+        or "temporarily unavailable" in lowered
+        or "rate limit" in lowered
+        or "429" in lowered
+        or "502" in lowered
+        or "503" in lowered
+        or "504" in lowered
+    ):
+        return "transient_service_error"
     if "unauthorized" in lowered or "401" in lowered:
         return "unauthorized"
     if "/v1/messages dispatch" in lowered:
@@ -202,6 +222,8 @@ def should_temporarily_skip_agent(hass: HomeAssistant, agent_id: str) -> bool:
     entry = get_adaptive_memory_state(hass).get("agents", {}).get(agent_id, {})
     if not isinstance(entry, dict):
         return False
+    if entry.get("last_error_signature") in _TRANSIENT_ERROR_SIGNATURES:
+        return False
     return _in_cooldown(entry)
 
 
@@ -260,8 +282,11 @@ async def async_record_agent_failure(
     entry["last_failure_at"] = _iso_now()
 
     if (
-        signature in _SEVERE_ERROR_SIGNATURES
-        or int(entry["consecutive_failures"]) >= 2
+        signature not in _TRANSIENT_ERROR_SIGNATURES
+        and (
+            signature in _SEVERE_ERROR_SIGNATURES
+            or int(entry["consecutive_failures"]) >= 2
+        )
     ):
         entry["cooldown_until"] = (_utcnow() + timedelta(minutes=_COOLDOWN_MINUTES)).isoformat()
 
