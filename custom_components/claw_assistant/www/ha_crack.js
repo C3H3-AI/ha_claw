@@ -5,7 +5,7 @@
         if (e.reason?.message?.includes('nextSibling')) e.preventDefault();
     });
     
-    const HACRACK_VERSION = '8.7.0';
+    const HACRACK_VERSION = '8.8.0';
     if (window.__hacrackVersion && window.__hacrackVersion !== HACRACK_VERSION) {
         const reloadKey = '__hacrackReloadCount';
         const reloads = parseInt(sessionStorage.getItem(reloadKey) || '0', 10);
@@ -843,14 +843,11 @@
         .claw-md > :last-child { margin-bottom: 0; }
         .claw-md p { margin: 0.5em 0; }
         .claw-md h1, .claw-md h2, .claw-md h3, .claw-md h4, .claw-md h5, .claw-md h6 {
-            margin: 0.8em 0 0.4em; font-weight: 600; line-height: 1.3;
+            margin: 0.5em 0; font-weight: normal; line-height: 1.6; font-size: 1em; display: block;
         }
-        .claw-md h1 { font-size: 1.25em; }
-        .claw-md h2 { font-size: 1.15em; }
-        .claw-md h3 { font-size: 1.05em; }
         .claw-md strong { font-weight: 600; }
         .claw-md em { font-style: italic; }
-        .claw-md p:has(em:first-child) { color: var(--secondary-text-color, #888); }
+
         .claw-md a { color: var(--primary-color, #03a9f4); text-decoration: none; }
         .claw-md a:hover { text-decoration: underline; }
         .claw-md ul, .claw-md ol { padding-left: 1.8em; margin: 0.4em 0; }
@@ -1998,11 +1995,32 @@
             if (!el.__clawRenderBlocked) {
                 el.__clawRenderBlocked = true;
             }
+            let renderParts = parts;
+            const toolParts = parts.filter(p => p.type === 'tool');
+            const isOnlyThinking = toolParts.length === 1 && toolParts[0].id === '_thinking_singleton';
+            let thinkingInPanel = false;
+            if (isOnlyThinking) {
+                const textParts = parts.filter(p => p.type === 'text');
+                const totalText = textParts.map(p => p.text || '').join('').trim();
+                if (totalText.length >= 10) {
+                    thinkingInPanel = true;
+                    renderParts = [...textParts];
+                    _mdStreamActive = false;
+                    _turnEnded = true;
+                    if (typeof window.__clawOnStreamEnd === 'function') {
+                        setTimeout(() => window.__clawOnStreamEnd(), 50);
+                    }
+                } else {
+                    const thinkingPart = toolParts[0];
+                    renderParts = [thinkingPart, ...textParts];
+                }
+            }
             let html = '';
-            for (let idx = 0; idx < parts.length; idx++) {
-                const part = parts[idx];
+            for (let idx = 0; idx < renderParts.length; idx++) {
+                const part = renderParts[idx];
                 if (part.type === 'text') {
-                    const streamingTail = _mdStreamActive && idx === parts.length - 1 ? '...' : '';
+                    const isLastText = !renderParts.slice(idx + 1).some(p => p.type === 'text');
+                    const streamingTail = _mdStreamActive && isLastText ? '...' : '';
                     html += '<div class="claw-md-text" data-part-idx="' + idx + '">' + marked.parse(_prepareToolMarkers(_normalizeAssistantTables((part.text || '') + streamingTail))) + '</div>';
                     continue;
                 }
@@ -2010,7 +2028,7 @@
                 const act = activities.find(a => a.tool_call_id === part.id || a.marker_id === part.id);
                 if (!act) continue;
                 const built = _buildCardHtml(act);
-                const cardClass = _mdStreamActive ? 'claw-ta-card' : 'claw-ta-card collapsed';
+                const cardClass = (isOnlyThinking || !_mdStreamActive) ? 'claw-ta-card collapsed' : 'claw-ta-card';
                 html += '<div class="' + cardClass + '" data-ta-id="' + _escHtml(built.taId) + '"' + (act.result !== undefined ? ' data-has-result="1"' : '') + '>' + built.html + '</div>';
             }
             if (_mdStreamActive && parts[parts.length - 1]?.type !== 'text') {
@@ -2059,8 +2077,29 @@
                     _transformCodeBlocks(el);
                     el.querySelectorAll('.claw-ta-card .claw-ta-header').forEach(h => h.addEventListener('click', () => { const c = h.closest('.claw-ta-card'); if (c) { c.classList.toggle('collapsed'); c.dataset.userToggled = '1'; } }));
                 }
-                const oldPanel = msr.querySelector('.claw-ta-panel');
-                if (oldPanel) oldPanel.remove();
+                let oldPanel = msr.querySelector('.claw-ta-panel');
+                if (oldPanel && !thinkingInPanel) oldPanel.remove();
+                if (thinkingInPanel) {
+                    const thinkingAct = activities.find(a => a.tool_name === '_thinking');
+                    if (thinkingAct && !oldPanel) {
+                        const built = _buildCardHtml(thinkingAct);
+                        const panel = document.createElement('div');
+                        panel.className = 'claw-ta-panel collapsed';
+                        panel.innerHTML =
+                            '<div class="claw-ta-panel-header">' +
+                                '<svg class="claw-ta-panel-chevron" viewBox="0 0 24 24"><path d="M11.9999 13.1714L16.9497 8.22168L18.3639 9.63589L11.9999 15.9999L5.63599 9.63589L7.0502 8.22168L11.9999 13.1714Z"/></svg>' +
+                                '<b>Justification</b>' +
+                                '<span class="claw-ta-panel-count">1</span>' +
+                            '</div>' +
+                            '<div class="claw-ta-panel-body">' +
+                                '<div class="claw-ta-card collapsed" data-ta-id="' + _escHtml(built.taId) + '" data-has-result="1">' + built.html + '</div>' +
+                            '</div>';
+                        panel.querySelector('.claw-ta-panel-header')?.addEventListener('click', () => panel.classList.toggle('collapsed'));
+                        panel.querySelector('.claw-ta-card .claw-ta-header')?.addEventListener('click', (e) => { e.stopPropagation(); const c = e.target.closest('.claw-ta-card'); if (c) { c.classList.toggle('collapsed'); c.dataset.userToggled = '1'; } });
+                        const mixedEl = el.querySelector('.claw-md-mixed');
+                        if (mixedEl) mixedEl.prepend(panel);
+                    }
+                }
                 return;
             }
         }
@@ -2069,12 +2108,20 @@
             if (fallback) { fallback.remove(); fallback = null; }
         }
         const mixed = el?.querySelector('.claw-md-mixed');
+        if (mixed && mixed.querySelector('.claw-ta-card')) {
+            if (_turnEnded) {
+                const mixedCards = mixed.querySelectorAll('.claw-ta-card');
+                mixedCards.forEach(card => {
+                    if (!card.dataset.userToggled) card.classList.add('collapsed');
+                });
+            }
+            return;
+        }
         activities.forEach(act => {
             const toolName = _normalizeToolName(act.tool_name);
             const taId = act.id || (toolName + '_' + (act.tool_call_id || Math.random().toString(36).slice(2)));
             if (!act.id) act.id = taId;
             let card = msr.querySelector('.claw-ta-card[data-ta-id="' + taId + '"]');
-            if (!card && mixed) card = mixed.querySelector('.claw-ta-card[data-ta-id="' + taId + '"]');
             if (card) {
                 if ((act.result !== undefined || act.error) && !card.dataset.hasResult) {
                     _updateExistingCard(card, act);
@@ -3440,11 +3487,36 @@
         };
 
         const waitAndGrab = (voiceEl) => {
-            if (grabChat(voiceEl)) return;
+            if (grabChat(voiceEl)) {
+                _tryAutoResumeLiveTurn();
+                return;
+            }
             let tries = 0;
             const tid = setInterval(() => {
-                if (grabChat(voiceEl) || ++tries > 50) clearInterval(tid);
+                if (grabChat(voiceEl) || ++tries > 50) {
+                    clearInterval(tid);
+                    if (tries <= 50) _tryAutoResumeLiveTurn();
+                }
             }, 50);
+        };
+        
+        let _autoResumeAttempted = false;
+        const _tryAutoResumeLiveTurn = async () => {
+            if (_autoResumeAttempted) return;
+            _autoResumeAttempted = true;
+            const settings = window.__clawSettings || {};
+            if (settings.continuous_conversation) return;
+            const h = getHass();
+            if (!h?.connection) return;
+            try {
+                const snap = await h.connection.sendMessagePromise({ type: 'ha_crack/live_turn_snapshot' });
+                if (snap?.active && snap.conversation_id) {
+                    const dock = ensureDock();
+                    if (dock) {
+                        _resumeConversation(dock, snap.conversation_id);
+                    }
+                }
+            } catch(_) {}
         };
 
         let _historyVisible = false;
@@ -3785,6 +3857,7 @@
             _dockVoiceEl = null;
             _dockedChat = null;
             _historyVisible = false;
+            _autoResumeAttempted = false;
             _stopFabSync();
             const msr = getMainSR();
             if (!msr) return;
@@ -3919,6 +3992,7 @@
             bindHistoryWindow(hass, state.conversationId);
         }
         state.persist = persist;
+        
         if (!window.__clawPersistHookInstalled) {
             window.__clawPersistHookInstalled = true;
             window.addEventListener('beforeunload', () => state.persist?.());
@@ -4005,7 +4079,11 @@
                 if (!settings.continuous_conversation) return;
                 if (!isFreshConversation(this._conversation)) return;
                 if (Array.isArray(state.conversation) && state.conversation.length > 0) {
-                    const restored = state.conversation.map(m => ({...m, tool_calls: m.tool_calls || {}}));
+                    const restored = state.conversation.map(m => ({
+                        ...m,
+                        tool_calls: {},
+                        thinking: ''
+                    }));
                     if (restored[0]?.who !== 'hass') {
                         const wt = this.hass?.localize?.('ui.dialogs.voice_command.how_can_i_help') || '';
                         restored.unshift({ who: 'hass', text: wt, thinking: '', tool_calls: {} });
@@ -4504,6 +4582,8 @@
         let windowTimeLabel = '0s';
         let hasTurn = false;
         let statusLoop = null;
+        let liveEndCheckPending = false;
+        let liveEndCheckAt = 0;
 
         const resetState = (removeBar, keepTokens = false) => {
             phase = S_IDLE;
@@ -4613,6 +4693,7 @@
             if (phase === S_IDLE) return;
             turnEnd = Date.now();
             phase = S_IDLE;
+            window.__clawLiveStreamSubscribed = false;
             if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
             render();
         };
@@ -4649,7 +4730,6 @@
                                 _scheduleToolRender();
                             }
                             if (delta._claw_thinking) {
-                                _mdStreamActive = false;
                                 if (window.__clawToolDetailsEnabled) {
                                     const markerId = '_thinking_singleton';
                                     const parts = window.__clawTurnParts || (window.__clawTurnParts = []);
@@ -4681,6 +4761,7 @@
                                 }
                             }
                             if (delta._claw_tool_info) {
+                                _mdStreamActive = true;
                                 const ti = delta._claw_tool_info;
                                 window.__clawToolActivitySeen = true;
                                 const act = _upsertToolActivity(ti);
@@ -4689,6 +4770,7 @@
                                 _scheduleToolRender();
                             }
                             if (delta._claw_tool_result) {
+                                _mdStreamActive = true;
                                 const tr = delta._claw_tool_result;
                                 window.__clawToolActivitySeen = true;
                                 const completed = _completeToolActivity(tr);
@@ -4697,6 +4779,7 @@
                                 _scheduleToolRender();
                             }
                             if (delta.tool_calls) {
+                                _mdStreamActive = true;
                                 if (window.__clawToolActivitySeen) {
                                     render();
                                     callback(ev);
@@ -4824,8 +4907,12 @@
             const pct = Math.min(100, Math.round(tk/ctxW*100));
             const pc = pctColor(pct);
             const active = phase !== S_IDLE;
+            const now = Date.now();
             let timer = '--';
-            if (active && turnStart) timer = ftime(Math.round((Date.now()-turnStart)/1000));
+            let windowTimer = windowTimeLabel;
+            if (hasTurn && active && windowStart) windowTimer = fwindow(Math.round((now - windowStart) / 1000));
+            else if (hasTurn && turnEnd && windowStart) windowTimer = fwindow(Math.round((turnEnd - windowStart) / 1000));
+            if (active && turnStart) timer = ftime(Math.round((now-turnStart)/1000));
             else if (turnStart && turnEnd) timer = ftime(Math.round((turnEnd-turnStart)/1000));
 
             const $ = (r) => bar.querySelector(`[data-r="${r}"]`);
@@ -4873,7 +4960,7 @@
             const pctEl = $('pct');
             pctEl.textContent = hasTurn ? Math.max(1, pct)+'%' : '--%';
             pctEl.style.color = barColor;
-            $('win').textContent = hasTurn ? windowTimeLabel : '--';
+            $('win').textContent = hasTurn ? windowTimer : '--';
             $('timer').textContent = timer;
         };
 
@@ -4889,13 +4976,132 @@
             }
         });
 
+        const probeLiveEnd = async () => {
+            const convId = window.__clawLiveConvId;
+            if (!window.__clawLiveStreamSubscribed || !convId || phase === S_IDLE) return;
+            const now = Date.now();
+            if (liveEndCheckPending || now - liveEndCheckAt < 2500) return;
+            liveEndCheckPending = true;
+            liveEndCheckAt = now;
+            try {
+                const snapshot = await hass.connection.sendMessagePromise({ type: 'ha_crack/live_turn_snapshot' });
+                if (!snapshot?.active || snapshot.conversation_id !== convId) {
+                    window.__clawLiveStreamSubscribed = false;
+                    window.__clawLiveStreamChecked = false;
+                    endTurn();
+                }
+            } catch(e) {
+            } finally {
+                liveEndCheckPending = false;
+            }
+        };
+
         const startStatusBar = () => {
             if (statusLoop) return;
-            statusLoop = setInterval(() => {
+            statusLoop = setInterval(async () => {
                 if (!settings.enable_context_status_bar) return;
-                if (deepQuery('ha-assist-chat')?.shadowRoot) {
+                const chat = deepQuery('ha-assist-chat');
+                if (chat?.shadowRoot) {
                     installHooks();
                     render();
+                    probeLiveEnd();
+                    
+                    if (!window.__clawLiveStreamSubscribed && !window.__clawLiveStreamChecked) {
+                        window.__clawLiveStreamChecked = true;
+                        try {
+                            const snapshot = await hass.connection.sendMessagePromise({ type: 'ha_crack/live_turn_snapshot' });
+                            
+                            if (!snapshot?.active && snapshot?.conversation_id && settings.continuous_conversation) {
+                                const state = window.__clawAssistChatState;
+                                if (state?.conversationId === snapshot.conversation_id) {
+                                    try {
+                                        const histResp = await hass.connection.sendMessagePromise({
+                                            type: 'ha_crack/chat_history_get',
+                                            conversation_id: snapshot.conversation_id,
+                                            max_turns: 50,
+                                            display_depth: 20
+                                        });
+                                        if (histResp?.turns?.length > 0) {
+                                            const newConv = [{ who: 'hass', text: chat.hass?.localize?.('ui.dialogs.voice_command.how_can_i_help') || '', thinking: '', tool_calls: {} }];
+                                            for (const t of histResp.turns) {
+                                                if (t.user) newConv.push({ who: 'user', text: t.user, thinking: '', tool_calls: {} });
+                                                if (t.assistant) newConv.push({ who: 'hass', text: t.assistant_display || t.assistant, thinking: '', tool_calls: {} });
+                                            }
+                                            chat._conversation = newConv;
+                                            chat.requestUpdate?.('_conversation');
+                                            state.conversation = newConv;
+                                            state.persist?.();
+                                        }
+                                    } catch(e) {}
+                                }
+                            }
+                            
+                            if (snapshot?.active && snapshot.conversation_id) {
+                                window.__clawLiveStreamSubscribed = true;
+                                window.__clawLiveConvId = snapshot.conversation_id;
+                                window.__clawLiveText = (snapshot.response_parts || []).join('');
+                                
+                                const canInjectDom = !!settings.continuous_conversation;
+                                
+                                const getLastMd = () => {
+                                    if (!canInjectDom) return null;
+                                    const msgs = chat.shadowRoot?.querySelectorAll('.message.hass');
+                                    const lastMsg = msgs?.[msgs.length - 1];
+                                    return lastMsg?.querySelector('ha-markdown');
+                                };
+                                
+                                const updateMd = (text, final) => {
+                                    const md = getLastMd();
+                                    if (md) md.content = final ? text : (text + '…');
+                                };
+                                
+                                if (window.__clawLiveText) updateMd(window.__clawLiveText, false);
+                                
+                                hasTurn = true;
+                                turnStart = snapshot.turn_start_time ? (snapshot.turn_start_time * 1000) : Date.now();
+                                turnEnd = null;
+                                if (snapshot.window_start_time) {
+                                    windowStart = snapshot.window_start_time * 1000;
+                                    windowTimeLabel = fwindow(Math.round((Date.now() - windowStart) / 1000));
+                                }
+                                const snapshotPhase = snapshot.phase || 'thinking';
+                                phase = snapshotPhase === 'replying' ? S_REPLYING : snapshotPhase === 'tool_call' ? S_TOOL : S_THINKING;
+                                totalChars = calcCurrentChars() + (window.__clawLiveText?.length || 0);
+                                if (!tickTimer) tickTimer = setInterval(render, 200);
+                                render();
+                                
+                                hass.connection.subscribeMessage(
+                                    (evt) => {
+                                        if (!evt) return;
+                                        const evtType = evt.event_type || evt.type;
+                                        const evtData = evt.data || {};
+                                        
+                                        if (evtType === 'stream_end' || evtType === 'run-end' || evtType === 'intent-end') {
+                                            window.__clawLiveStreamSubscribed = false;
+                                            if (evtType === 'intent-end') {
+                                                const resp = evtData.intent_output?.response?.speech?.plain?.speech;
+                                                if (resp) window.__clawLiveText = resp;
+                                            }
+                                            updateMd(window.__clawLiveText, true);
+                                            endTurn();
+                                            return;
+                                        }
+                                        
+                                        if (evtType === 'intent-progress') {
+                                            const delta = evtData.chat_log_delta || evtData.delta || evtData;
+                                            const text = delta.content || delta._tts_skip_content || '';
+                                            if (text) {
+                                                window.__clawLiveText = (window.__clawLiveText || '') + text;
+                                                updateMd(window.__clawLiveText, false);
+                                                totalChars += text.length;
+                                            }
+                                        }
+                                    },
+                                    { type: 'ha_crack/subscribe_live_stream', conversation_id: snapshot.conversation_id }
+                                );
+                            }
+                        } catch(e) {}
+                    }
                 } else if (!settings.continuous_conversation && hasTurn) {
                     resetState(false);
                 }
