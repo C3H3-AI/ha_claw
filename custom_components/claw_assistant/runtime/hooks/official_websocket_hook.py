@@ -261,6 +261,9 @@ async def streaming_websocket_process(
     with async_get_chat_session(hass, requested_conversation_id) as session:
         conversation_id = session.conversation_id
 
+    dd = _domain_data(hass)
+    detached_tasks = dd.setdefault("_claw_detached_converse_tasks", {})
+
     @callback
     def forward_events(
         event_conversation_id: str,
@@ -279,43 +282,245 @@ async def streaming_websocket_process(
             delta = data.get("delta")
             if isinstance(delta, dict) and "tool_calls" in delta and not delta.get("content"):
                 return
+        evt_payload = {
+            "conversation_id": event_conversation_id,
+            "event_type": event_type,
+            "data": data,
+        }
+        _buffer_live_event(hass, event_conversation_id, evt_payload)
+        try:
+            connection.send_event(msg["id"], evt_payload)
+        except Exception:
+            pass
+
+    unsubscribe = async_subscribe_chat_logs(hass, forward_events)
+
+    captured_context = connection.context(msg)
+    converse_kwargs = dict(
+        text=msg["text"],
+        conversation_id=conversation_id,
+        context=captured_context,
+        language=msg.get("language"),
+        agent_id=msg.get("agent_id"),
+        device_id=msg.get("device_id"),
+        satellite_id=msg.get("satellite_id"),
+    )
+
+    existing_task = detached_tasks.get(conversation_id)
+    if existing_task is not None and not existing_task.done():
+        converse_task = existing_task
+        _LOGGER.info("Reattaching to in-flight detached conversation task for %s", conversation_id)
+    else:
+        async def _run_converse():
+            try:
+                return await conversation.async_converse(hass=hass, **converse_kwargs)
+            finally:
+                _buffer_live_event(hass, conversation_id, {
+                    "conversation_id": conversation_id,
+                    "event_type": "stream_end",
+                    "data": {},
+                })
+                detached_tasks.pop(conversation_id, None)
+                async def _delayed_clear():
+                    await asyncio.sleep(5)
+                    _clear_live_event_buffer(hass, conversation_id)
+                hass.async_create_background_task(_delayed_clear(), name=f"claw_clear_buf_{conversation_id}")
+
+        converse_task = hass.async_create_background_task(
+            _run_converse(),
+            name=f"claw_converse_{conversation_id}",
+        )
+        detached_tasks[conversation_id] = converse_task
+
+    try:
+        result = await asyncio.shield(asyncio.wrap_future(asyncio.ensure_future(converse_task)) if False else _await_task(converse_task))
+    except asyncio.CancelledError:
+        _LOGGER.info("WebSocket cancelled for conv=%s; backend converse continues detached", conversation_id)
+        unsubscribe()
+        raise
+    except Exception as err:
+        _LOGGER.error("conversation/process error: %s", err)
+        try:
+            connection.send_error(msg["id"], "conversation_error", str(err))
+        except Exception:
+            pass
+        unsubscribe()
+        return
+    finally:
+        try:
+            unsubscribe()
+        except Exception:
+            pass
+
+    try:
         connection.send_event(
             msg["id"],
             {
-                "conversation_id": event_conversation_id,
-                "event_type": event_type,
-                "data": data,
+                "conversation_id": conversation_id,
+                "event_type": "stream_end",
+                "data": {},
             },
         )
+        connection.send_result(msg["id"], result.as_dict())
+    except Exception:
+        pass
 
-    unsubscribe = async_subscribe_chat_logs(hass, forward_events)
+
+async def _await_task(task):
+    """Await a task without cancelling it when the awaiter is cancelled."""
     try:
-        result = await conversation.async_converse(
-            hass=hass,
-            text=msg["text"],
-            conversation_id=conversation_id,
-            context=connection.context(msg),
-            language=msg.get("language"),
-            agent_id=msg.get("agent_id"),
-            device_id=msg.get("device_id"),
-            satellite_id=msg.get("satellite_id"),
-        )
-    except Exception as err:
-        _LOGGER.error("conversation/process error: %s", err)
-        connection.send_error(msg["id"], "conversation_error", str(err))
-        return
-    finally:
-        unsubscribe()
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        raise
 
-    connection.send_event(
-        msg["id"],
-        {
-            "conversation_id": conversation_id,
-            "event_type": "stream_end",
-            "data": {},
-        },
+
+_LIVE_EVENT_BUFFER_KEY = "_claw_live_event_buffer"
+_LIVE_EVENT_MAX = 200
+_LIVE_SUBSCRIBERS_KEY = "_claw_live_subscribers"
+
+
+def _buffer_live_event(hass, conversation_id: str, evt: dict) -> None:
+    dd = _domain_data(hass)
+    buf = dd.setdefault(_LIVE_EVENT_BUFFER_KEY, {})
+    events = buf.setdefault(conversation_id, [])
+    events.append(evt)
+    if len(events) > _LIVE_EVENT_MAX:
+        events[:] = events[-_LIVE_EVENT_MAX:]
+    for sub_conn, sub_msg_id, sub_conv_id in dd.get(_LIVE_SUBSCRIBERS_KEY, []):
+        if sub_conv_id == conversation_id:
+            try:
+                sub_conn.send_event(sub_msg_id, evt)
+            except Exception:
+                pass
+
+
+def _clear_live_event_buffer(hass, conversation_id: str) -> None:
+    dd = _domain_data(hass)
+    buf = dd.get(_LIVE_EVENT_BUFFER_KEY, {})
+    buf.pop(conversation_id, None)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_crack/subscribe_live_stream",
+        vol.Optional("conversation_id", default=""): str,
+    }
+)
+@websocket_api.async_response
+async def websocket_subscribe_live_stream(
+    hass,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Subscribe to live event stream, replaying buffered events first."""
+    from ..core.state import get_active_conversation_state, get_conversation_status
+
+    requested_conv_id = msg.get("conversation_id") or ""
+    if not requested_conv_id:
+        status = get_conversation_status(hass)
+        active_conv = get_active_conversation_state(hass)
+        requested_conv_id = active_conv.get("id") or status.get("last_conversation_id") or ""
+
+    if not requested_conv_id:
+        connection.send_result(msg["id"], {"replayed": 0, "conversation_id": None})
+        return
+
+    dd = _domain_data(hass)
+    buf = dd.get(_LIVE_EVENT_BUFFER_KEY, {})
+    cached = list(buf.get(requested_conv_id, []))
+
+    subs = dd.setdefault(_LIVE_SUBSCRIBERS_KEY, [])
+    sub_entry = (connection, msg["id"], requested_conv_id)
+    subs.append(sub_entry)
+
+    @callback
+    def _on_disconnect():
+        try:
+            subs.remove(sub_entry)
+        except ValueError:
+            pass
+
+    connection.subscriptions[msg["id"]] = _on_disconnect
+    connection.send_result(msg["id"], {"replayed": len(cached), "conversation_id": requested_conv_id})
+
+    for evt in cached:
+        connection.send_event(msg["id"], evt)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_crack/live_turn_snapshot",
+    }
+)
+@websocket_api.async_response
+async def websocket_live_turn_snapshot(
+    hass,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Return snapshot of any in-progress conversation turn for frontend recovery after refresh."""
+    from ..core.state import (
+        get_conversation_status,
+        get_active_conversation_state,
+        get_runtime_store,
     )
-    connection.send_result(msg["id"], result.as_dict())
+    from ...chat_commands import _task_registry
+    from ...conversation_utils import get_conversation_history
+
+    status = get_conversation_status(hass)
+    active_conv = get_active_conversation_state(hass)
+    runtime_store = get_runtime_store(hass)
+    conv_history = get_conversation_history()
+
+    conversation_id = active_conv.get("id") or status.get("last_conversation_id") or ""
+    running_tasks = _task_registry(hass)
+    is_running = bool(conversation_id and conversation_id in running_tasks)
+
+    if not is_running and conv_history:
+        in_progress_ids = list(conv_history._in_progress.keys())
+        if in_progress_ids:
+            conversation_id = in_progress_ids[0]
+            is_running = True
+
+    if not is_running:
+        connection.send_result(msg["id"], {
+            "active": False,
+            "conversation_id": conversation_id or None,
+        })
+        return
+
+    current_thought = status.get("current_thought") or ""
+    tool_activities = []
+    live_response_parts = runtime_store.get("live_response_parts", {}).get(conversation_id, [])
+
+    tool_results_container = runtime_store.get("tool_results", {})
+    if isinstance(tool_results_container, dict):
+        tool_results = tool_results_container.get(conversation_id, [])
+    else:
+        tool_results = []
+
+    for tr in tool_results:
+        if isinstance(tr, dict):
+            tool_activities.append({
+                "tool_name": tr.get("tool_name", "tool"),
+                "success": tr.get("success", False),
+                "result_preview": str(tr.get("result", ""))[:200] if tr.get("result") else None,
+                "error": tr.get("error"),
+            })
+
+    turn_start_times = runtime_store.get("turn_start_times", {})
+    window_start_times = runtime_store.get("window_start_times", {})
+    
+    connection.send_result(msg["id"], {
+        "active": True,
+        "conversation_id": conversation_id,
+        "current_thought": current_thought[:500] if current_thought else None,
+        "tool_activities": tool_activities[:10],
+        "response_parts": live_response_parts[-5:] if live_response_parts else [],
+        "phase": status.get("current_phase", "thinking"),
+        "turn_start_time": turn_start_times.get(conversation_id),
+        "window_start_time": window_start_times.get(conversation_id),
+    })
 
 
 @websocket_api.websocket_command(
@@ -803,6 +1008,23 @@ def _install_recognize_intent_hook(hass) -> None:
                 for _ci in range(50):
                     active_conversation_id = kwargs.get("conversation_id") or conversation_id
                     runtime_store = get_runtime_store(self.hass)
+
+                    from ..core.state import get_should_end_flag
+                    if get_should_end_flag(self.hass).get("value"):
+                        _LOGGER.info(
+                            "pipeline async_converse hook: should_end_flag set, stop conv=%s",
+                            active_conversation_id,
+                        )
+                        break
+                    from ...chat_commands import _stop_requests
+                    sr = _stop_requests(self.hass)
+                    if (active_conversation_id and active_conversation_id in sr) or (conversation_id and conversation_id in sr):
+                        _LOGGER.info(
+                            "pipeline async_converse hook: stop requested, stop conv=%s",
+                            active_conversation_id,
+                        )
+                        break
+
                     completed = runtime_store.get("completed_goal_conversations", set())
                     if (
                         str(active_conversation_id) in completed
@@ -1179,6 +1401,8 @@ def install_official_websocket_process_hook(hass) -> None:
         ("ha_crack/report_state", websocket_report_state),
         ("ha_crack/get_settings", websocket_get_settings),
         ("ha_crack/get_context_status", websocket_get_context_status),
+        ("ha_crack/live_turn_snapshot", websocket_live_turn_snapshot),
+        ("ha_crack/subscribe_live_stream", websocket_subscribe_live_stream),
         ("ha_crack/upload_file", websocket_upload_file),
         ("ha_crack/frontend_snapshot", websocket_frontend_snapshot),
         ("ha_crack/frontend_exec_poll", websocket_frontend_exec_poll),
