@@ -40,6 +40,7 @@ from ..llm.response_format import (
     _looks_like_error,
     apply_agent_response_format,
     get_response_text,
+    prettify_agent_error,
     sanitize_response_text,
 )
 from ..output.response_policy import is_user_done_text
@@ -338,6 +339,11 @@ async def _finalize_completed_response(
             "goal: judge said continue but no continuation_prompt — Ralph loop will stall",
         )
     get_tool_calls_state(hass).clear()
+    try:
+        live_parts = get_runtime_store(hass).get("live_response_parts", {})
+        live_parts.pop(str(conversation_id or "default"), None)
+    except Exception:
+        pass
     return final_text, should_continue, continuation_prompt if should_continue else None
 
 
@@ -853,21 +859,13 @@ def _build_fallback_extra_prompt(
 ) -> str | None:
     """Build fallback extra prompt.
 
-    base_prompt already contains the full workspace docs + tool catalog + skill index
-    (built by orchestrator via build_base_prompt). We only append dynamic per-turn sections.
+    base_prompt is the stable prefix built by orchestrator. Per-turn user task
+    context is carried in the user message so it does not churn the system
+    prefix and break DeepSeek prefix caching.
     """
-    lang_section = ""
-    if hass is not None:
-        from ..llm.prompting import _resolve_user_language, _language_display_name
-        user_lang = _resolve_user_language(hass)
-        if user_lang:
-            display = _language_display_name(user_lang)
-            lang_section = f"## Response Language\nYou MUST reply in {display}."
-    required_prefix_sections = [
-        "## Active User Task\n" + _compact_text(_strip_internal_tags(user_text), 2400),
-    ]
-    if lang_section:
-        required_prefix_sections.append(lang_section)
+    del hass
+    del user_text
+
     required_suffix_sections = [pending_handoff_context] if pending_handoff_context else []
     optional_tail_sections: list[str] = []
 
@@ -877,7 +875,7 @@ def _build_fallback_extra_prompt(
 
     required_prompt = _build_budgeted_prompt(
         head_sections=[],
-        required_prefix_sections=required_prefix_sections,
+        required_prefix_sections=[],
         required_suffix_sections=required_suffix_sections,
         optional_tail_sections=optional_tail_sections,
         max_chars=_MAX_SYSTEM_PROMPT_CHARS,
@@ -992,6 +990,199 @@ def _raw_response_text(result: Any) -> str:
     if not isinstance(plain, dict):
         return ""
     return str(plain.get("original_speech", plain.get("speech", "")) or "")
+
+
+_UNAVAILABLE_ERROR_KEYWORDS = (
+    "not found",
+    "not_found",
+    "does not exist",
+    "no longer available",
+    "invalid agent",
+    "not loaded",
+    "not registered",
+    "not initialized",
+    "not configured",
+    "entity not available",
+    "entry not ready",
+    "entry not loaded",
+    "api_url_not_configured",
+    "api_key_not_configured",
+    "unsupported_provider",
+)
+
+_TRANSIENT_ERROR_KEYWORDS = (
+    "disconnected",
+    "connection",
+    "timeout",
+    "timed out",
+    "reset by peer",
+    "broken pipe",
+    "eof occurred",
+    "cannot connect",
+    "server disconnected",
+    "ssl",
+    "clientconnector",
+    "serverdisconnected",
+    "ai service",
+    "returned an error",
+    "service error",
+    "internal error",
+    "bad gateway",
+    "502",
+    "503",
+    "504",
+    "429",
+    "rate limit",
+    "overloaded",
+    "temporarily unavailable",
+    "try again",
+    "error talking to api",
+    "error code: 4",
+    "error code: 5",
+    "无法连接",
+    "连接失败",
+    "网络错误",
+    "请检查网络",
+    "连接超时",
+    "响应超时",
+    "服务器断开",
+    "服务不可用",
+    "请稍后再试",
+    "ai 服务",
+    "服务返回错误",
+    "返回了错误",
+)
+
+_TOOL_PAIR_ERROR_KEYWORDS = (
+    "tool_calls",
+    "tool_call_id",
+    "must be followed by",
+    "messages with role 'tool'",
+    'messages with role "tool"',
+    "orphaned tool",
+)
+
+_IMAGE_CONTENT_ERROR_KEYWORDS = (
+    "image_url",
+    "unknown variant",
+    "expected `text`",
+    "expected text",
+)
+
+_EMPTY_CONTENT_ERROR_KEYWORDS = (
+    "content parts are required",
+    "content is required",
+    "empty content",
+    "empty response",
+)
+
+
+def _is_agent_unavailable_error(err: Exception, err_lower: str) -> bool:
+    """Return true only for configuration/registration errors."""
+    return any(kw in err_lower for kw in _UNAVAILABLE_ERROR_KEYWORDS)
+
+
+def _is_transient_agent_error(err: Exception, err_lower: str) -> bool:
+    return (
+        isinstance(err, (TimeoutError, asyncio.TimeoutError))
+        or any(kw in err_lower for kw in _TRANSIENT_ERROR_KEYWORDS)
+    )
+
+
+def _format_agent_errors_for_user(
+    agent_errors: list[str],
+    *,
+    language: str | None,
+) -> str:
+    friendly_errors: list[str] = []
+    seen: set[str] = set()
+    for raw_error in agent_errors:
+        body = raw_error
+        if body.startswith("conversation.") and ":" in body:
+            _, body = body.split(":", 1)
+        friendly = prettify_agent_error(body.strip(), language=language) or t(
+            "err_service_unavailable",
+            language,
+        )
+        if friendly in seen:
+            continue
+        seen.add(friendly)
+        friendly_errors.append(friendly)
+    if not friendly_errors:
+        return t("agents_all_failed", language)
+    if len(friendly_errors) == 1:
+        return friendly_errors[0]
+    return "\n".join(f"- {error}" for error in friendly_errors)
+
+
+def _drop_empty_assistant_messages(chat_content: list) -> int:
+    from homeassistant.components.conversation.chat_log import AssistantContent
+
+    removed = 0
+    for item in list(chat_content):
+        if not isinstance(item, AssistantContent) and getattr(item, "role", None) != "assistant":
+            continue
+        content = getattr(item, "content", None)
+        if content:
+            continue
+        try:
+            chat_content.remove(item)
+            removed += 1
+        except ValueError:
+            pass
+    return removed
+
+
+async def _try_self_repair_agent_error(
+    hass: HomeAssistant,
+    conversation_id,
+    *,
+    err_lower: str,
+    current_agent_id: str,
+    transient_retry_counts: dict[str, int],
+) -> str | None:
+    chat_content = _get_chat_log_content(hass, conversation_id)
+    if not chat_content:
+        return None
+
+    repair_kind = ""
+    if any(kw in err_lower for kw in _TOOL_PAIR_ERROR_KEYWORDS):
+        repair_kind = "tool_pairs"
+    elif any(kw in err_lower for kw in _IMAGE_CONTENT_ERROR_KEYWORDS):
+        repair_kind = "image_content"
+    elif any(kw in err_lower for kw in _EMPTY_CONTENT_ERROR_KEYWORDS):
+        repair_kind = "empty_assistant"
+    else:
+        return None
+
+    repair_key = f"__self_repair:{current_agent_id}:{repair_kind}"
+    if transient_retry_counts.get(repair_key, 0) >= 1:
+        return None
+    transient_retry_counts[repair_key] = 1
+
+    if repair_kind == "tool_pairs":
+        try:
+            from ..llm.context_compressor import sanitize_tool_pairs
+
+            repaired = sanitize_tool_pairs(chat_content)
+            if repaired is not chat_content:
+                chat_content.clear()
+                chat_content.extend(repaired)
+            return "repaired tool-call history"
+        except Exception as err:
+            LOGGER.debug("Self-repair of tool-call history failed: %s", err)
+            return None
+
+    if repair_kind == "image_content":
+        stripped = _strip_image_blocks_from_chat(chat_content)
+        if stripped:
+            return f"removed {stripped} incompatible image block(s)"
+        return None
+
+    removed = _drop_empty_assistant_messages(chat_content)
+    if removed:
+        return f"removed {removed} empty assistant message(s)"
+    return None
 
 
 async def run_agent_fallback_chain(
@@ -1224,14 +1415,6 @@ async def run_agent_fallback_chain(
             LOGGER.debug("Skipping cooled-down agents for this turn: %s", skipped_agents)
         ordered_agents = active_agents
 
-    _TRANSIENT_ERROR_KEYWORDS = ("disconnected", "connection", "timeout", "reset by peer", "broken pipe", "eof occurred",
-                                 "cannot connect", "server disconnected", "ssl", "clientconnector", "serverdisconnected",
-                                 "tool_calls", "must be followed by",
-                                 "ai service", "returned an error", "service error", "internal error", "bad gateway", "502", "503", "429",
-                                 "rate limit", "overloaded", "temporarily unavailable", "try again",
-                                 "error talking to api", "error code: 4", "error code: 5",
-                                 "无法连接", "连接失败", "网络错误", "请检查网络", "连接超时", "服务器断开",
-                                 "服务不可用", "请稍后再试", "ai 服务", "服务返回错误", "返回了错误")
     _MAX_TRANSIENT_RETRIES = 2
     transient_retry_counts: dict[str, int] = {}
     primary_external_agent = ordered_agents[0] if ordered_agents else None
@@ -1550,38 +1733,27 @@ async def run_agent_fallback_chain(
         except Exception as err:
             err_msg = str(err)
             err_lower = err_msg.lower()
-
-            _UNAVAILABLE_KEYWORDS = (
-                "not found",
-                "not_found",
-                "does not exist",
-                "no longer available",
-                "invalid agent",
-                "not loaded",
-                "not registered",
-                "not initialized",
-                "not configured",
-                "entity not available",
-                "entry not ready",
-                "entry not loaded",
-                "api_url_not_configured",
-                "api_key_not_configured",
-                "unsupported_provider",
-            )
-            is_unavailable = (
-                isinstance(err, ValueError)
-                or any(kw in err_lower for kw in _UNAVAILABLE_KEYWORDS)
-            )
+            is_unavailable = _is_agent_unavailable_error(err, err_lower)
             if is_unavailable:
+                failure_reason = f"agent unavailable: {err_msg[:160]}"
                 LOGGER.info(
                     "Agent %s unavailable (%s: %s), skipping",
                     current_agent_id, type(err).__name__, err_msg[:120],
                 )
+                await async_record_agent_failure(
+                    hass,
+                    current_agent_id,
+                    error=failure_reason,
+                    conversation_id=conversation_id,
+                    stage="unavailable",
+                )
+                agent_errors.append(f"{current_agent_id}: {failure_reason}")
                 continue
 
             _CTX_EXC_HINTS = ("context_length_exceeded", "context length", "token_limit", "input too long", "context too long", "message too long", "max_tokens", "token limit", "too large")
             _is_ctx_exc = any(h in err_lower for h in _CTX_EXC_HINTS)
             _is_timeout = isinstance(err, (TimeoutError, asyncio.TimeoutError)) or "timeout" in err_lower
+            _is_transient_error = _is_transient_agent_error(err, err_lower)
             from ..llm.context_compressor import _estimate_total_tokens
             _chat_exc = _get_chat_log_content(hass, conversation_id)
             _est_exc = _estimate_total_tokens(_chat_exc or [])
@@ -1597,6 +1769,32 @@ async def run_agent_fallback_chain(
                         "Agent %s raised context exception but already has partial output (%d chars); preserving",
                         current_agent_id, len(_partial_output),
                     )
+                    result = _build_synthesized_result(
+                        language=language or hass.config.language,
+                        conversation_id=conversation_id,
+                        response_text=_partial_output,
+                    )
+                    agent_name = get_agent_name(hass, current_agent_id)
+                    result = await _finalize_synthesized_success(
+                        hass,
+                        result=result,
+                        agent_id=current_agent_id,
+                        agent_name=agent_name,
+                        response_text=_partial_output,
+                        conversation_mode=conversation_mode,
+                        conversation_id=conversation_id,
+                        original_text=original_text,
+                        user_text=text,
+                        conv_history=conv_history,
+                        task_loop=task_loop,
+                        title_agent_ids=title_agent_ids,
+                    )
+                    await async_record_agent_success(
+                        hass,
+                        current_agent_id,
+                        conversation_id=conversation_id,
+                    )
+                    return result
                 else:
                     transient_retry_counts["__ctx_compress_exc_attempts"] = _ctx_exc_attempts + 1
                     try:
@@ -1623,6 +1821,22 @@ async def run_agent_fallback_chain(
                         LOGGER.debug("Exception-path compression failed: %s", _comp_err)
                     agent_queue.insert(0, current_agent_id)
                     continue
+
+            repair_detail = await _try_self_repair_agent_error(
+                hass,
+                conversation_id,
+                err_lower=err_lower,
+                current_agent_id=current_agent_id,
+                transient_retry_counts=transient_retry_counts,
+            )
+            if repair_detail:
+                LOGGER.info(
+                    "Agent %s error self-repaired (%s); retrying same agent once",
+                    current_agent_id,
+                    repair_detail,
+                )
+                agent_queue.insert(0, current_agent_id)
+                continue
 
             successful_tool_response = extract_successful_tool_response(
                 get_tool_results_state(hass)
@@ -1669,6 +1883,39 @@ async def run_agent_fallback_chain(
                     conversation_id=conversation_id,
                 )
                 return result
+            partial_output = _get_last_assistant_content(hass, conversation_id)
+            if _is_transient_error and partial_output and len(partial_output) > 100:
+                result = _build_synthesized_result(
+                    language=language or hass.config.language,
+                    conversation_id=conversation_id,
+                    response_text=partial_output,
+                )
+                agent_name = get_agent_name(hass, current_agent_id)
+                result = await _finalize_synthesized_success(
+                    hass,
+                    result=result,
+                    agent_id=current_agent_id,
+                    agent_name=agent_name,
+                    response_text=partial_output,
+                    conversation_mode=conversation_mode,
+                    conversation_id=conversation_id,
+                    original_text=original_text,
+                    user_text=text,
+                    conv_history=conv_history,
+                    task_loop=task_loop,
+                    title_agent_ids=title_agent_ids,
+                )
+                LOGGER.info(
+                    "Agent %s raised transient error after partial output; preserved %d chars",
+                    current_agent_id,
+                    len(partial_output),
+                )
+                await async_record_agent_success(
+                    hass,
+                    current_agent_id,
+                    conversation_id=conversation_id,
+                )
+                return result
             await async_record_agent_failure(
                 hass,
                 current_agent_id,
@@ -1691,6 +1938,8 @@ async def run_agent_fallback_chain(
             else:
                 if "content parts are required" in err_msg:
                     agent_errors.append(f"{current_agent_id}: empty response")
+                elif _is_transient_error:
+                    agent_errors.append(f"{current_agent_id}: transient service error: {err_msg[:120]}")
                 else:
                     agent_errors.append(f"{current_agent_id}: {err_msg[:100]}")
             continue
@@ -1707,16 +1956,28 @@ async def run_agent_fallback_chain(
         return ConversationResult(response=intent_response, conversation_id=conversation_id)
 
     if agent_errors:
-        error_detail = "; ".join(agent_errors)
+        raw_error_detail = "; ".join(agent_errors)
+        error_detail = _format_agent_errors_for_user(
+            agent_errors,
+            language=resolved_lang,
+        )
     elif not fallback_agents:
+        raw_error_detail = ""
         error_detail = t("agents_none_configured", resolved_lang)
     elif getattr(hass.state, "value", str(hass.state)) != "RUNNING":
+        raw_error_detail = ""
         error_detail = t("agents_starting", resolved_lang)
     elif not ordered_agents:
+        raw_error_detail = ""
         error_detail = t("agents_all_failed", resolved_lang)
     else:
+        raw_error_detail = ""
         error_detail = t("agents_unavailable", resolved_lang)
-    LOGGER.warning("Agent fallback chain exhausted: %s", error_detail)
+    LOGGER.warning(
+        "Agent fallback chain exhausted: %s%s",
+        error_detail,
+        f" (raw: {raw_error_detail})" if raw_error_detail else "",
+    )
 
     get_should_end_flag(hass)["value"] = False
 

@@ -774,6 +774,8 @@ def _classify_error(code: str, message: str, body: str) -> str | None:
         return "err_service_unavailable"
     if "overloaded" in msg_l or "capacity" in msg_l or "503" in code_l:
         return "err_service_unavailable"
+    if "internal server error" in all_l or "unhashable type" in all_l:
+        return "err_service_unavailable"
 
     if "timed out" in all_l or "timeout" in all_l:
         return "err_timeout"
@@ -795,11 +797,25 @@ def _classify_plaintext_error(text: str) -> str | None:
         return "err_connection"
     if "rate limit" in low or "rate_limit" in low or "429" in low or "too many request" in low:
         return "err_rate_limited"
-    if "unauthorized" in low or "invalid api key" in low or "authentication" in low or "401" in low:
+    if (
+        "unauthorized" in low
+        or "forbidden" in low
+        or "invalid api key" in low
+        or "authentication" in low
+        or "401" in low
+        or "403" in low
+    ):
         return "err_auth_failed"
     if "quota" in low or "insufficient" in low or "余额" in low:
         return "err_quota_exceeded"
-    if "temporarily unavailable" in low or "服务暂时不可用" in low or "503" in low or "overloaded" in low:
+    if (
+        "temporarily unavailable" in low
+        or "服务暂时不可用" in low
+        or "503" in low
+        or "overloaded" in low
+        or "internal server error" in low
+        or "unhashable type" in low
+    ):
         return "err_service_unavailable"
     if "context length" in low or ("token" in low and ("limit" in low or "exceed" in low)):
         return "err_context_too_long"

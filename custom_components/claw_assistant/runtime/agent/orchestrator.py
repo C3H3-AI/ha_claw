@@ -36,7 +36,7 @@ from .loop_controller import (
 )
 from ..history.native_chatlog_bridge import reset_live_delta_state
 from ..core.options import build_conversation_runtime_config_for_hass
-from ..llm.prompting import _fit_base_prompt, build_base_prompt
+from ..llm.prompting import apply_turn_context, _fit_base_prompt, build_base_prompt, build_turn_context_prompt
 from ..llm.response_format import is_marshaled_tool_payload, sanitize_response_text
 from ..output.response_policy import analyze_response_state
 from ..core.state import (
@@ -51,6 +51,7 @@ from ..core.state import (
 )
 from ..output.summary import process_ai_summary
 from ..tools.tool_result_summary import extract_successful_tool_response
+from ..hooks.events import HookPayload, fire_hook_event
 from .turn_kernel import execute_kernel_turn
 from ..storage.workspace_store import get_user_context_prefix
 
@@ -332,7 +333,41 @@ async def execute_conversation_turn(
 ):
 
     conv_token = set_active_conversation(conversation_id)
+    conv_history = get_conversation_history()
+    if conv_history and conversation_id:
+        conv_history.mark_turn_in_progress(str(conversation_id), text)
     try:
+        prompt_report = await fire_hook_event(
+            hass,
+            HookPayload(
+                event="UserPromptSubmit",
+                conversation_id=conversation_id,
+                agent_id=agent_id,
+                user_text=text,
+                metadata={
+                    "language": language,
+                    "device_id": device_id,
+                    "satellite_id": satellite_id,
+                },
+            ),
+        )
+        if prompt_report.blocked:
+            message = next(
+                (
+                    outcome.message
+                    for outcome in prompt_report.outcomes
+                    if outcome.decision == "block" and outcome.message
+                ),
+                "Request blocked by claw_assistant hook.",
+            )
+            intent_response = intent.IntentResponse(
+                language=language or hass.config.language
+            )
+            intent_response.async_set_speech(message)
+            return ConversationResult(
+                response=intent_response, conversation_id=conversation_id
+            )
+
         return await _execute_conversation_turn_inner(
             hass,
             entry,
@@ -347,6 +382,17 @@ async def execute_conversation_turn(
             extra_system_prompt=extra_system_prompt,
         )
     finally:
+        if conv_history and conversation_id:
+            conv_history.clear_in_progress(str(conversation_id))
+        await fire_hook_event(
+            hass,
+            HookPayload(
+                event="Stop",
+                conversation_id=conversation_id,
+                agent_id=agent_id,
+                user_text=text,
+            ),
+        )
         reset_active_conversation(conv_token)
 
 
@@ -544,6 +590,15 @@ async def _execute_conversation_turn_inner(
                 ],
             )
         extra_system_prompt = await hass.async_add_executor_job(_build_prompt)
+        def _build_turn_context():
+            return build_turn_context_prompt(
+                hass,
+                text=text,
+                conversation_id=conversation_id,
+                runtime_config=runtime_config,
+            )
+        turn_context = await hass.async_add_executor_job(_build_turn_context)
+        text = apply_turn_context(text, turn_context)
 
     if not fallback_agents:
         continuation_index = 0

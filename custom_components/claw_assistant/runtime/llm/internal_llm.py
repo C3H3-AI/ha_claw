@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
+import hashlib
+import json
 import logging
 from typing import Any
 
@@ -39,6 +41,7 @@ _CHATLOG_TOOLS_ORIGINAL_KEY = "_ha_crack_original_chatlog_tools"
 _API_STATE: dict[str, Callable[[], None] | None] = {"unregister_api": None}
 _RUNTIME_PATCH_SNAPSHOT_KEY = "internal_llm_patch_snapshot"
 _TOOL_MODE: ContextVar[str] = ContextVar("claw_assistant_tool_mode", default="unset")
+_PREFIX_CACHE_STATE_KEY = "prefix_cache"
 
 
 _MAX_SYSTEM_PROMPT_CHARS = 16000
@@ -496,18 +499,26 @@ _CACHED_RUNTIME_TOOLS: list[llm.Tool] | None = None
 
 
 def build_runtime_tool_list() -> list[llm.Tool]:
+    global _CACHED_RUNTIME_TOOLS
+
+    if _CACHED_RUNTIME_TOOLS is not None:
+        return list(_CACHED_RUNTIME_TOOLS)
 
     from ...tools.registry import build_tool_list
     from ...tools.skill_tools import build_skill_tool_list
+    from ..storage.plugin_store import get_plugin_tools
 
     tools = merge_tool_lists(
-        build_tool_list(include_plugins=True), build_skill_tool_list()
+        build_tool_list(include_plugins=False),
+        sorted(get_plugin_tools(), key=lambda tool: tool.name),
+        build_skill_tool_list(),
     )
+    _CACHED_RUNTIME_TOOLS = list(tools)
     LOGGER.debug(
-        "Built full runtime tool surface: %s tools",
+        "Built cached runtime tool surface: %s tools",
         len(tools),
     )
-    return tools
+    return list(tools)
 
 
 def invalidate_runtime_tool_cache() -> None:
@@ -532,6 +543,75 @@ def merge_tool_lists(*tool_groups: list[llm.Tool]) -> list[llm.Tool]:
     return merged_tools
 
 
+def _prefix_fingerprint(api_prompt: str, tools: list[llm.Tool]) -> str:
+    payload = {
+        "api_prompt": api_prompt,
+        "tools": [tool.name for tool in tools],
+    }
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()
+    ).hexdigest()[:16]
+
+
+def _record_prefix_fingerprint(
+    hass: HomeAssistant,
+    *,
+    api_prompt: str,
+    tools: list[llm.Tool],
+    source: str,
+    tool_mode: str,
+) -> None:
+    runtime_store = get_runtime_store(hass)
+    state = runtime_store.setdefault(
+        _PREFIX_CACHE_STATE_KEY,
+        {"last_hash": "", "changes": 0, "stable_hits": 0, "recent": []},
+    )
+    fingerprint = _prefix_fingerprint(api_prompt, tools)
+    previous = str(state.get("last_hash") or "")
+    changed = bool(previous and previous != fingerprint)
+    if changed:
+        state["changes"] = int(state.get("changes", 0) or 0) + 1
+    elif previous:
+        state["stable_hits"] = int(state.get("stable_hits", 0) or 0) + 1
+    state["last_hash"] = fingerprint
+    state["last_tool_names"] = [tool.name for tool in tools]
+    state["last_prompt_chars"] = len(api_prompt or "")
+    state["last_tool_count"] = len(tools)
+    state["last_source"] = source
+    recent = state.setdefault("recent", [])
+    recent.append(
+        {
+            "source": source,
+            "hash": fingerprint,
+            "previous_hash": previous,
+            "changed": changed,
+            "prompt_chars": len(api_prompt or ""),
+            "tool_count": len(tools),
+            "tool_mode": tool_mode,
+        }
+    )
+    del recent[:-20]
+    if changed:
+        LOGGER.info(
+            "Prefix fingerprint changed source=%s mode=%s %s -> %s prompt=%d tools=%d",
+            source,
+            tool_mode,
+            previous,
+            fingerprint,
+            len(api_prompt or ""),
+            len(tools),
+        )
+    else:
+        LOGGER.debug(
+            "Prefix fingerprint stable source=%s mode=%s hash=%s prompt=%d tools=%d",
+            source,
+            tool_mode,
+            fingerprint,
+            len(api_prompt or ""),
+            len(tools),
+        )
+
+
 @dataclass(slots=True, kw_only=True)
 class EnhancedAPI(llm.API):
 
@@ -541,9 +621,17 @@ class EnhancedAPI(llm.API):
 
     async def async_get_api_instance(self, llm_context: llm.LLMContext) -> llm.APIInstance:
         tools = build_runtime_tool_list()
+        api_prompt = build_internal_llm_prompt(full=False)
+        _record_prefix_fingerprint(
+            self.hass,
+            api_prompt=api_prompt,
+            tools=tools,
+            source="enhanced_api",
+            tool_mode=_TOOL_MODE.get(),
+        )
         return llm.APIInstance(
             api=self,
-            api_prompt=build_internal_llm_prompt(full=False),
+            api_prompt=api_prompt,
             llm_context=llm_context,
             tools=tools,
         )
@@ -606,11 +694,20 @@ def _patch_assist_api_prompt(hass: HomeAssistant) -> None:
         return final_tools
 
     async def patched_get_api_instance(self, llm_context):
+        api_prompt = self._async_get_api_prompt(llm_context, None)
+        tools = self._async_get_tools(llm_context, None)
+        _record_prefix_fingerprint(
+            hass,
+            api_prompt=api_prompt,
+            tools=tools,
+            source="assist_api",
+            tool_mode=_TOOL_MODE.get(),
+        )
         return APIInstance(
             api=self,
-            api_prompt=self._async_get_api_prompt(llm_context, None),
+            api_prompt=api_prompt,
             llm_context=llm_context,
-            tools=self._async_get_tools(llm_context, None),
+            tools=tools,
             custom_serializer=selector_serializer,
         )
 
@@ -797,6 +894,13 @@ def patch_chatlog_tools(hass: HomeAssistant) -> None:
             llm_context=self.llm_api.llm_context,
             tools=filtered_tools,
             custom_serializer=self.llm_api.custom_serializer,
+        )
+        _record_prefix_fingerprint(
+            hass,
+            api_prompt=self.llm_api.api_prompt,
+            tools=filtered_tools,
+            source="chat_log",
+            tool_mode=tool_mode,
         )
         LOGGER.debug(
             "External AI tool list switched to %s tool surface: %s -> %s",

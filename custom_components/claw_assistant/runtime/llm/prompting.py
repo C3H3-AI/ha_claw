@@ -184,22 +184,17 @@ def _language_display_name(lang_code: str) -> str:
     return lang_code
 
 
-def build_base_prompt(
+def _build_channel_context_section(
     hass: HomeAssistant,
     *,
     text: str,
     conversation_id: str | None,
-    runtime_config: ConversationRuntimeConfig,
 ) -> str:
     from ..core.state import (
         get_channel_type, is_im_channel, get_conversation_status,
         is_companion_app, is_mobile_platform, get_platform_display_name,
     )
     from ..hooks.official_websocket_hook import get_frontend_platform
-
-    base_prompt = build_internal_llm_prompt(text)
-    static_sections: list[str] = []
-    dynamic_sections: list[str] = []
 
     user_lang = _resolve_user_language(hass)
     lang_instruction = ""
@@ -223,10 +218,16 @@ def build_base_prompt(
         is_voice = True
 
     if is_voice:
-        pass
+        return (
+            "## Channel\n"
+            "Type: voice pipeline.\n"
+            "The user may hear this through TTS. Keep the response concise and "
+            "easy to listen to unless the user asks for detail."
+            f"{lang_instruction}"
+        )
     elif is_im_channel(conversation_id):
-        static_sections.append(
-            f"## Channel\n"
+        return (
+            "## Channel\n"
             f"Type: {ch_type} (instant messaging).\n"
             f"You are chatting inside an IM bot (WeChat / QQ / etc.). "
             f"The user reads your reply as a text message on their phone or desktop. "
@@ -235,8 +236,8 @@ def build_base_prompt(
             f"{lang_instruction}"
         )
     elif is_companion_app(platform):
-        static_sections.append(
-            f"## Channel\n"
+        return (
+            "## Channel\n"
             f"Type: ha (Home Assistant Companion App).\n"
             f"Platform: {platform_name}.\n"
             f"The user is using the official Home Assistant mobile app. "
@@ -248,8 +249,8 @@ def build_base_prompt(
             f"{lang_instruction}"
         )
     elif is_mobile_platform(platform):
-        static_sections.append(
-            f"## Channel\n"
+        return (
+            "## Channel\n"
             f"Type: ha (Home Assistant mobile web).\n"
             f"Platform: {platform_name}.\n"
             f"The user is accessing Home Assistant via a mobile browser. "
@@ -259,31 +260,65 @@ def build_base_prompt(
             f"This is NOT a voice channel — the user is reading, not listening."
             f"{lang_instruction}"
         )
-    else:
-        platform_info = f"Platform: {platform_name}.\n" if platform else ""
-        static_sections.append(
-            "## Channel\n"
-            "Type: ha (Home Assistant frontend chat panel).\n"
-            f"{platform_info}"
-            "You are inside the Home Assistant web UI Assist chat window. "
-            "The user types text and reads your reply in a rich-markdown bubble. "
-            "You may use full markdown: bold, italic, lists, tables, code blocks, etc. "
-            "Write shareable media under `OUTPUT_DIR`; reply with `output_url(name)` "
-            "or `[VIDEO:/local/...]`/`[IMAGE:...]`/`[GIF:...]`/`[FILE:...]` — auto-rendered. "
-            "Camera/media specifics live in their tool descriptions. "
-            "This is NOT a voice channel — the user is reading, not listening."
-            f"{lang_instruction}"
-        )
 
-    static_sections.extend(_build_runtime_preference_sections(runtime_config))
+    platform_info = f"Platform: {platform_name}.\n" if platform else ""
+    return (
+        "## Channel\n"
+        "Type: ha (Home Assistant frontend chat panel).\n"
+        f"{platform_info}"
+        "You are inside the Home Assistant web UI Assist chat window. "
+        "The user types text and reads your reply in a rich-markdown bubble. "
+        "You may use full markdown: bold, italic, lists, tables, code blocks, etc. "
+        "Write shareable media under `OUTPUT_DIR`; reply with `output_url(name)` "
+        "or `[VIDEO:/local/...]`/`[IMAGE:...]`/`[GIF:...]`/`[FILE:...]` — auto-rendered. "
+        "Camera/media specifics live in their tool descriptions. "
+        "This is NOT a voice channel — the user is reading, not listening."
+        f"{lang_instruction}"
+    )
+
+
+def build_base_prompt(
+    hass: HomeAssistant,
+    *,
+    text: str,
+    conversation_id: str | None,
+    runtime_config: ConversationRuntimeConfig,
+) -> str:
+    del hass
+    del text
+    del conversation_id
+
+    base_prompt = build_internal_llm_prompt("")
+    return _fit_base_prompt(
+        base_prompt,
+        _build_runtime_preference_sections(runtime_config),
+    )
+
+
+def build_turn_context_prompt(
+    hass: HomeAssistant,
+    *,
+    text: str,
+    conversation_id: str | None,
+    runtime_config: ConversationRuntimeConfig,
+) -> str:
+    sections: list[str] = []
+
+    channel_context = _build_channel_context_section(
+        hass,
+        text=text,
+        conversation_id=conversation_id,
+    )
+    if channel_context:
+        sections.append(channel_context)
 
     peer_section = _build_peer_agents_section(hass, runtime_config)
     if peer_section:
-        static_sections.append(peer_section)
+        sections.append(peer_section)
 
     topic_hint = build_homeassistant_topic_hint(text)
     if topic_hint:
-        dynamic_sections.append(
+        sections.append(
             f"## Current Home Assistant Topic Hint\n{topic_hint}"
         )
 
@@ -304,14 +339,30 @@ def build_base_prompt(
             f'\nFocus on the current request: "{text}"\n'
             "Reuse prior context only when it helps the current turn."
         )
-        dynamic_sections.append(history_prompt.strip())
+        sections.append(history_prompt.strip())
 
     config_prompt = build_config_approval_prompt_block(hass)
     if config_prompt:
-        dynamic_sections.append(config_prompt)
+        sections.append(config_prompt)
 
     im_approval_prompt = build_im_approval_prompt_block(hass)
     if im_approval_prompt:
-        dynamic_sections.append(im_approval_prompt)
+        sections.append(im_approval_prompt)
 
-    return _fit_base_prompt(base_prompt, static_sections + dynamic_sections)
+    return _fit_sections_to_budget_preserving_suffix(
+        sections,
+        max_chars=min(_MAX_BASE_PROMPT_CHARS // 2, 8000),
+    )
+
+
+def apply_turn_context(text: str, turn_context: str) -> str:
+    if not turn_context.strip():
+        return text
+    return (
+        "<turn-context>\n"
+        f"{turn_context.strip()}\n"
+        "</turn-context>\n\n"
+        "<user-request>\n"
+        f"{text.strip()}\n"
+        "</user-request>"
+    )
