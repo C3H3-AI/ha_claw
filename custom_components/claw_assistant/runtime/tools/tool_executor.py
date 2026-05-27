@@ -11,6 +11,7 @@ from .tool_result_summary import (
     extract_failed_tool_response,
     extract_successful_tool_response,
 )
+from ..hooks.events import HookPayload, fire_hook_event
 
 def _sanitize_tool_payload(value: Any) -> Any:
 
@@ -52,6 +53,7 @@ _KERNEL_BLOCKED_TOOLS = frozenset(
         "ParallelToolCall",
         "SetConversationState",
         "ThinkContinue",
+        
     }
 )
 
@@ -86,6 +88,7 @@ async def execute_kernel_tool(
 ) -> dict[str, Any]:
 
     from ...tools.registry import build_tool_list
+    from ...tools.skill_tools import build_skill_tool_list
 
     if tool_name in _KERNEL_BLOCKED_TOOLS:
         return {
@@ -99,6 +102,8 @@ async def execute_kernel_tool(
 
     tool = next((item for item in build_tool_list(include_names={tool_name}) if item.name == tool_name), None)
     if tool is None:
+        tool = next((item for item in build_skill_tool_list() if item.name == tool_name), None)
+    if tool is None:
         return {
             "tool_name": tool_name,
             "tool_args": tool_args,
@@ -106,6 +111,37 @@ async def execute_kernel_tool(
             "error": f"Unknown tool: {tool_name}",
             "result": None,
             "summary": f"Unknown tool: {tool_name}",
+        }
+
+    pre_report = await fire_hook_event(
+        hass,
+        HookPayload(
+            event="PreToolUse",
+            agent_id=agent_id,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            metadata={
+                "language": language,
+                "device_id": device_id,
+            },
+        ),
+    )
+    if pre_report.blocked:
+        message = next(
+            (
+                outcome.message
+                for outcome in pre_report.outcomes
+                if outcome.decision == "block" and outcome.message
+            ),
+            f"Tool blocked by claw_assistant hook: {tool_name}",
+        )
+        return {
+            "tool_name": tool_name,
+            "tool_args": _sanitize_tool_payload(tool_args),
+            "success": False,
+            "error": message,
+            "result": None,
+            "summary": message,
         }
 
     llm_context = llm.LLMContext(
@@ -132,6 +168,16 @@ async def execute_kernel_tool(
             "result": None,
         }
         tool_result["summary"] = extract_failed_tool_response([tool_result]) or str(err)
+        await fire_hook_event(
+            hass,
+            HookPayload(
+                event="PostToolUse",
+                agent_id=agent_id,
+                tool_name=tool_name,
+                tool_args=tool_args,
+                tool_result=tool_result,
+            ),
+        )
         return tool_result
 
     result = _sanitize_tool_payload(result)
@@ -156,4 +202,14 @@ async def execute_kernel_tool(
     else:
         summary = extract_failed_tool_response([tool_result])
     tool_result["summary"] = summary[:1200] if summary else ""
+    await fire_hook_event(
+        hass,
+        HookPayload(
+            event="PostToolUse",
+            agent_id=agent_id,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            tool_result=tool_result,
+        ),
+    )
     return tool_result
