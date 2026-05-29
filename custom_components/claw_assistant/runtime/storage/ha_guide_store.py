@@ -192,7 +192,7 @@ _GUIDE_TOPIC_HINTS: dict[str, tuple[str, ...]] = {
     # 76 — misc tools
     "misc": (
         "ParallelToolCall", "Notify", "AgentHandoff", "NextAgentHandoff",
-        "SetConversationState", "HeartbeatManager", "ReadFile",
+        "SetConversationState", "HeartbeatManager", "ReadRuntimeArtifact",
         "GetConversationHistory", "notification", "parallel",
         "通知", "并行", "心跳", "对话历史",
     ),
@@ -302,7 +302,7 @@ _TOOL_GUIDE_MAP: dict[str, str] = {
     "NextAgentHandoff": "76_misc_tools.md",
     "SetConversationState": "76_misc_tools.md",
     "HeartbeatManager": "76_misc_tools.md",
-    "ReadFile": "76_misc_tools.md",
+    "ReadRuntimeArtifact": "76_misc_tools.md",
     "GetConversationHistory": "76_misc_tools.md",
     "ExposeEntity": "77_entity_tools.md",
     "IntentCall": "77_entity_tools.md",

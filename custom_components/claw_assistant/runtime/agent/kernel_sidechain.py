@@ -17,7 +17,6 @@ LOGGER = logging.getLogger(__name__)
 
 @dataclass
 class KernelStep:
-    """A single kernel planner step."""
     index: int
     kind: str
     title: str

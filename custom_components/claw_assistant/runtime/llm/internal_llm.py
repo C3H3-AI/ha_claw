@@ -22,6 +22,11 @@ from ..core.state import (
     get_tool_calls_state,
     get_tool_results_state,
 )
+from ..agent.loop_controller import (
+    check_tool_repeat,
+    get_execution_control_limits,
+    record_tool_usage,
+)
 from ..storage.workspace_store import (
     build_workspace_prompt_sections,
     build_workspace_startup_bundle,
@@ -763,6 +768,49 @@ def _patch_tool_call_tracking(hass: HomeAssistant) -> None:
         tool_calls = get_tool_calls_state(hass)
         conv_id_before = get_active_conversation_state(hass).get("id")
         tool_calls.append(tool_input.tool_name)
+        tool_args = _json_safe(tool_input.tool_args)
+        limits = get_execution_control_limits(hass)
+        repeat_prompt, should_stop = check_tool_repeat(
+            hass,
+            tool_name=tool_input.tool_name,
+            tool_args=tool_args if isinstance(tool_args, dict) else {},
+            max_repeat=limits["max_tool_repeat"],
+            identical_warn=limits["identical_call_warn"],
+            identical_stop=limits["identical_call_stop"],
+        )
+        if repeat_prompt:
+            LOGGER.warning(
+                "Tool execution guard triggered for %s: stop=%s",
+                tool_input.tool_name,
+                should_stop,
+            )
+        should_block_tool = should_stop or (
+            bool(repeat_prompt) and repeat_prompt.startswith("[MANDATORY")
+        )
+        if should_block_tool:
+            record_tool_usage(
+                hass,
+                tool_name=tool_input.tool_name,
+                tool_args=tool_args if isinstance(tool_args, dict) else {},
+                success=False,
+                blocked=True,
+                error=repeat_prompt,
+            )
+            result = {
+                "success": False,
+                "error": "tool_repeat_limit",
+                "message": repeat_prompt,
+            }
+            tool_results.append(
+                {
+                    "tool_name": tool_input.tool_name,
+                    "tool_args": tool_args,
+                    "success": False,
+                    "error": "tool_repeat_limit",
+                    "result": _compact_result_summary(result),
+                }
+            )
+            return result
 
         try:
             try:
@@ -778,6 +826,8 @@ def _patch_tool_call_tracking(hass: HomeAssistant) -> None:
             guide_content = await async_get_tool_guide(tool_input.tool_name)
             if guide_content and isinstance(result, dict):
                 result["TOOL_USAGE_GUIDE"] = guide_content
+            if repeat_prompt and isinstance(result, dict):
+                result["TOOL_REPEAT_WARNING"] = repeat_prompt
 
             conv_id_after = get_active_conversation_state(hass).get("id")
             if conv_id_before and conv_id_after and conv_id_before != conv_id_after:
@@ -805,11 +855,18 @@ def _patch_tool_call_tracking(hass: HomeAssistant) -> None:
             tool_results.append(
                 {
                     "tool_name": tool_input.tool_name,
-                    "tool_args": _json_safe(tool_input.tool_args),
+                    "tool_args": tool_args,
                     "success": success,
                     "error": error,
                     "result": result_summary,
                 }
+            )
+            record_tool_usage(
+                hass,
+                tool_name=tool_input.tool_name,
+                tool_args=tool_args if isinstance(tool_args, dict) else {},
+                success=bool(success),
+                error=str(error or ""),
             )
             if not success:
                 LOGGER.info("Tool call failed: %s - %s | args=%s", tool_input.tool_name, error or "unknown", tool_input.tool_args)
@@ -820,11 +877,18 @@ def _patch_tool_call_tracking(hass: HomeAssistant) -> None:
             tool_results.append(
                 {
                     "tool_name": tool_input.tool_name,
-                    "tool_args": _json_safe(tool_input.tool_args),
+                    "tool_args": tool_args,
                     "success": False,
                     "error": str(err),
                     "result": None,
                 }
+            )
+            record_tool_usage(
+                hass,
+                tool_name=tool_input.tool_name,
+                tool_args=tool_args if isinstance(tool_args, dict) else {},
+                success=False,
+                error=str(err),
             )
             raise
 

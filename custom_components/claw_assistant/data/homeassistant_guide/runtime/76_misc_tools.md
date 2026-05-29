@@ -33,6 +33,9 @@ Send notification.
 
 Consult another AI agent.
 
+`agent_id` accepts the real conversation entity id, displayed agent name, or
+an alias from `available_agents`.
+
 ```json
 {
   "agent_id": "conversation.other_agent",
@@ -92,9 +95,12 @@ Manage scheduled follow-up tasks (replaces blind polling).
 
 `notify_channel` format: `wechat:account_id:user_id` or `qq:user:openid`.
 
-## ReadFile
+## ReadRuntimeArtifact
 
-Read temp/output file.
+Read a Claw Assistant temp/output runtime artifact text file.
+
+This is not a general file reader. For workspace markdown documents under
+`.storage/claw_assistant/workspace/`, use `GetWorkspaceDoc` instead.
 
 | Action | Params |
 |--------|--------|

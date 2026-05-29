@@ -122,7 +122,7 @@ _PRESERVE_TOOLS = frozenset({
     "ExecutePython",
     "execute_python",
     "ConfigFile",
-    "ReadFile",
+    "ReadRuntimeArtifact",
     "WriteFile",
     "ShellCommand",
     "BashTool",

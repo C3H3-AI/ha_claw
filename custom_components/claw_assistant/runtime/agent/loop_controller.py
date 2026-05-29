@@ -7,11 +7,23 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 
+from ...const import (
+    CONF_IDENTICAL_CALL_STOP,
+    CONF_IDENTICAL_CALL_WARN,
+    CONF_MAX_TOOL_REPEAT,
+    CONF_PIPELINE_TIMEOUT,
+    DEFAULT_IDENTICAL_CALL_STOP,
+    DEFAULT_IDENTICAL_CALL_WARN,
+    DEFAULT_MAX_TOOL_REPEAT,
+    DEFAULT_PIPELINE_TIMEOUT,
+    DOMAIN,
+)
 from ..core.config import DEFAULT_THRESHOLDS
 from ..core.state import get_task_loop_state
 
 _MAX_TRACE_ENTRIES = 200
 _MAX_HISTORY_ENTRIES = 50
+_MAX_TOOL_USAGE_ENTRIES = 100
 
 
 def _trim_list(lst: list, max_size: int) -> None:
@@ -58,6 +70,7 @@ def reset_loop_for_conversation(
             "stop_reason": "",
             "budget_exhausted": False,
             "continuation_count": 0,
+            "tool_usage": [],
         }
     )
     return task_loop
@@ -65,7 +78,7 @@ def reset_loop_for_conversation(
 
 def record_user_turn(hass: HomeAssistant, *, text: str) -> dict[str, Any]:
 
-    task_loop = get_task_loop_state(hass)
+    task_loop = reset_execution_control_for_turn(hass)
     task_loop["is_first_turn"] = int(task_loop.get("turn_count", 0)) == 0
     task_loop["turn_count"] = int(task_loop.get("turn_count", 0)) + 1
     task_loop["last_progress_at"] = _now_iso()
@@ -81,6 +94,20 @@ def record_user_turn(hass: HomeAssistant, *, text: str) -> dict[str, Any]:
     )
     _trim_list(task_loop["history"], _MAX_HISTORY_ENTRIES)
     _trim_list(task_loop["trace"], _MAX_TRACE_ENTRIES)
+    return task_loop
+
+
+def reset_execution_control_for_turn(hass: HomeAssistant) -> dict[str, Any]:
+    """Reset per-user-turn execution guards without clearing conversation history."""
+
+    task_loop = get_task_loop_state(hass)
+    task_loop["thought_count"] = 0
+    task_loop["step_count"] = 0
+    task_loop["steps"] = []
+    task_loop["tool_usage"] = []
+    task_loop["budget_exhausted"] = False
+    task_loop["continuation_count"] = 0
+    task_loop["stop_reason"] = ""
     return task_loop
 
 
@@ -296,6 +323,58 @@ def _args_signature(tool_args: dict | None) -> str:
     return json.dumps(tool_args or {}, sort_keys=True, ensure_ascii=False)
 
 
+def get_execution_control_limits(hass: HomeAssistant) -> dict[str, int]:
+    """Return configured execution limits with safe defaults."""
+
+    max_repeat = DEFAULT_MAX_TOOL_REPEAT
+    identical_warn = DEFAULT_IDENTICAL_CALL_WARN
+    identical_stop = DEFAULT_IDENTICAL_CALL_STOP
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        max_repeat = int(entry.options.get(CONF_MAX_TOOL_REPEAT, max_repeat))
+        identical_warn = int(entry.options.get(CONF_IDENTICAL_CALL_WARN, identical_warn))
+        identical_stop = int(entry.options.get(CONF_IDENTICAL_CALL_STOP, identical_stop))
+        break
+    return {
+        "max_tool_repeat": max(1, max_repeat),
+        "identical_call_warn": max(1, identical_warn),
+        "identical_call_stop": max(1, identical_stop),
+    }
+
+
+def get_configured_pipeline_timeout(hass: HomeAssistant) -> int:
+    """Return the configured pipeline timeout in seconds."""
+
+    timeout = DEFAULT_PIPELINE_TIMEOUT
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        timeout = int(entry.options.get(CONF_PIPELINE_TIMEOUT, timeout))
+        break
+    return max(1, timeout)
+
+
+def record_tool_usage(
+    hass: HomeAssistant,
+    *,
+    tool_name: str,
+    tool_args: dict | None = None,
+    success: bool | None = None,
+    blocked: bool = False,
+    error: str | None = None,
+) -> dict[str, Any]:
+    task_loop = get_task_loop_state(hass)
+    usage = task_loop.setdefault("tool_usage", [])
+    record = {
+        "tool_name": tool_name,
+        "tool_args": tool_args or {},
+        "success": success,
+        "blocked": blocked,
+        "error": error or "",
+        "timestamp": _now_iso(),
+    }
+    usage.append(record)
+    _trim_list(usage, _MAX_TOOL_USAGE_ENTRIES)
+    return record
+
+
 def check_tool_repeat(
     hass: HomeAssistant,
     *,
@@ -311,15 +390,18 @@ def check_tool_repeat(
     - should_stop: True if loop should be forcibly terminated
     """
     task_loop = get_task_loop_state(hass)
-    steps = task_loop.get("steps", [])
+    records = [
+        *task_loop.get("steps", []),
+        *task_loop.get("tool_usage", []),
+    ]
 
-    same_name_count = sum(1 for s in steps if s.get("tool_name") == tool_name)
+    same_name_count = sum(1 for s in records if s.get("tool_name") == tool_name) + 1
 
     current_sig = _args_signature(tool_args)
     identical_count = sum(
-        1 for s in steps
+        1 for s in records
         if s.get("tool_name") == tool_name and _args_signature(s.get("tool_args")) == current_sig
-    )
+    ) + 1
 
     if identical_count >= identical_stop:
         return IDENTICAL_CALL_STOP_PROMPT.format(tool_name=tool_name, count=identical_count), True

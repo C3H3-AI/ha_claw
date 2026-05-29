@@ -1415,7 +1415,7 @@ async def run_agent_fallback_chain(
             LOGGER.debug("Skipping cooled-down agents for this turn: %s", skipped_agents)
         ordered_agents = active_agents
 
-    _MAX_TRANSIENT_RETRIES = 2
+    _MAX_TRANSIENT_RETRIES = 3
     transient_retry_counts: dict[str, int] = {}
     primary_external_agent = ordered_agents[0] if ordered_agents else None
 
@@ -1762,7 +1762,7 @@ async def run_agent_fallback_chain(
             if _is_ctx_exc and _est_exc < 20000:
                 _is_ctx_exc = False
             _ctx_exc_attempts = transient_retry_counts.get("__ctx_compress_exc_attempts", 0)
-            if _is_ctx_exc and _ctx_exc_attempts < 2:
+            if _is_ctx_exc and _ctx_exc_attempts < 3:
                 _partial_output = _get_last_assistant_content(hass, conversation_id)
                 if _partial_output and len(_partial_output) > 100:
                     LOGGER.info(

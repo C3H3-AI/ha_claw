@@ -4,7 +4,9 @@ import asyncio
 import json
 import logging
 from pathlib import Path
+import re
 import time
+from typing import Any
 
 import voluptuous as vol
 
@@ -434,7 +436,51 @@ def _get_current_agent_id(hass: HomeAssistant) -> str:
     return str(get_conversation_status(hass).get("current_agent_id", "") or "")
 
 
-def _resolve_peer_agents(hass: HomeAssistant) -> list[dict[str, str]]:
+def _normalize_agent_selector(value: object) -> str:
+    """Normalize a user/model supplied agent selector for loose matching."""
+
+    text = str(value or "").strip().lower()
+    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+
+def _agent_aliases(agent_id: str, *names: str) -> list[str]:
+    """Return stable aliases an LLM may use when selecting a peer agent."""
+
+    base = agent_id.removeprefix("conversation.")
+    variants = (agent_id, base, base.replace("_", "."), base.replace("_", "-"), *(alias for name in names for alias in (name, name.replace(" ", "/"), name.replace(" ", "-"))))
+    return list(dict.fromkeys(alias for alias in variants if _normalize_agent_selector(alias)))
+
+
+def _resolve_agent_selector(agent_selector: str, peers: list[dict[str, Any]]) -> str | None:
+    """Resolve an agent entity_id from id, display name, or normalized alias."""
+
+    wanted = _normalize_agent_selector(agent_selector)
+    if not wanted:
+        return None
+    slug_id = "conversation." + wanted.replace(" ", "_")
+    if any(peer.get("agent_id") == slug_id for peer in peers):
+        return slug_id
+
+    exact_matches: list[str] = []
+    fuzzy_matches: list[str] = []
+    for peer in peers:
+        agent_id = str(peer.get("agent_id", "") or "")
+        aliases = [agent_id, peer.get("agent_name", ""), *(peer.get("aliases", []) or [])]
+        normalized_aliases = {_normalize_agent_selector(alias) for alias in aliases}
+        normalized_aliases.discard("")
+        if wanted in normalized_aliases:
+            exact_matches.append(agent_id)
+            continue
+        if any(wanted in alias or alias in wanted for alias in normalized_aliases):
+            fuzzy_matches.append(agent_id)
+
+    matches = exact_matches or fuzzy_matches
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _resolve_peer_agents(hass: HomeAssistant) -> list[dict[str, Any]]:
     """Get configured conversation agents with names and is_you flag."""
     from ..runtime.core.state import get_runtime_store
     from homeassistant.helpers import entity_registry as er
@@ -452,7 +498,7 @@ def _resolve_peer_agents(hass: HomeAssistant) -> list[dict[str, str]]:
     current_aid = _get_current_agent_id(hass)
     options = entry.options
     ent_reg = er.async_get(hass)
-    agents: list[dict[str, str]] = []
+    agents: list[dict[str, Any]] = []
     seen: set[str] = set()
     for key in (CONF_PRIMARY_AGENT, CONF_FALLBACK_AGENT, CONF_SECONDARY_FALLBACK_AGENT):
         aid = str(options.get(key, "") or "").strip()
@@ -460,9 +506,11 @@ def _resolve_peer_agents(hass: HomeAssistant) -> list[dict[str, str]]:
             continue
         seen.add(aid)
         ent = ent_reg.async_get(aid)
-        name = (ent.name or ent.original_name) if ent else aid.split(".")[-1]
+        state = hass.states.get(aid)
+        state_name = str(state.attributes.get("friendly_name", "") or "") if state else ""
+        name = (ent.name or ent.original_name) if ent else state_name or aid.split(".")[-1]
         is_you = (aid == current_aid)
-        agents.append({"agent_id": aid, "agent_name": name, "role": _ROLE_LABELS.get(key, "peer"), "is_you": is_you})
+        agents.append({"agent_id": aid, "agent_name": name, "aliases": _agent_aliases(aid, name, state_name), "role": _ROLE_LABELS.get(key, "peer"), "is_you": is_you})
     return agents
 
 
@@ -604,7 +652,7 @@ Use cases:
 - Cross-check / peer-review your answer.
 
 Params:
-- agent_id: target agent entity_id. Leave empty to auto-select the first peer.
+- agent_id: target agent entity_id, display name, or normalized alias. Leave empty to auto-select the first peer.
 - question: what you want to discuss. Empty = list available agents only.
 - context: your current work / analysis so the other AI has full context.
 - intent: "consult" (opinion), "request" (action), "review" (check my work).
@@ -646,13 +694,14 @@ The response always includes available_agents so you know who you can talk to.""
                 return {"success": False, "error": "No other peer agents configured", "available_agents": peers}
             agent_id = others[0]["agent_id"]
         else:
-            known_ids = {p["agent_id"] for p in peers}
-            if agent_id not in known_ids:
+            selected_agent_id = _resolve_agent_selector(agent_id, peers)
+            if not selected_agent_id:
                 return {
                     "success": False,
-                    "error": f"Agent {agent_id} not found in configured peers",
+                    "error": f"Agent {agent_id} not found in configured peers. Use agent_id, agent_name, or aliases from available_agents.",
                     "available_agents": others,
                 }
+            agent_id = selected_agent_id
 
         try:
             _LOGGER.info("AgentHandoff: consulting %s, max_rounds=%d, question=%s...", agent_id, max_rounds, question[:80])
@@ -713,11 +762,13 @@ The response includes available_agents so you always know who else is available.
             return {"success": False, "error": str(exc), "agent_id": agent_id, "available_agents": others}
 
 
-class ReadFileTool(llm.Tool):
-    name = "ReadFile"
-    description = """Read or search a text file created by Claw Assistant.
+class ReadRuntimeArtifactTool(llm.Tool):
+    name = "ReadRuntimeArtifact"
+    description = """Read or search a runtime artifact text file created by Claw Assistant.
 
 Only files under Claw Assistant temp/output directories are allowed.
+Use GetWorkspaceDoc for workspace markdown documents. This tool is not a
+general file reader.
 
 Modes (controlled by action param):
 - action=read (default): Read file content with pagination.
@@ -768,7 +819,13 @@ query(required for search/search_fuzzy), context_chars(default 200)."""
             output_dir_path(hass).resolve(),
         ]
         if not any(target == root or root in target.parents for root in allowed_roots):
-            return {"success": False, "error": "ReadFile can only access Claw Assistant temp/output files"}
+            return {
+                "success": False,
+                "error": (
+                    "ReadRuntimeArtifact can only access Claw Assistant temp/output files; "
+                    "use GetWorkspaceDoc for workspace documents"
+                ),
+            }
         if not target.is_file():
             return {"success": False, "error": f"File not found: {target}"}
 
@@ -794,7 +851,7 @@ query(required for search/search_fuzzy), context_chars(default 200)."""
             remaining = result["total_chars"] - result["next_offset"]
             resp["_hint"] = (
                 f"Content truncated. {remaining} chars remaining. "
-                f"You MUST call ReadFile again with offset={result['next_offset']} "
+                f"You MUST call ReadRuntimeArtifact again with offset={result['next_offset']} "
                 f"to continue reading the next page."
             )
         return resp

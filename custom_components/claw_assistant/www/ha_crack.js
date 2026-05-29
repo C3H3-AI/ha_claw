@@ -5,7 +5,7 @@
         if (e.reason?.message?.includes('nextSibling')) e.preventDefault();
     });
     
-    const HACRACK_VERSION = '8.8.0';
+    const HACRACK_VERSION = '8.9.0';
     if (window.__hacrackVersion && window.__hacrackVersion !== HACRACK_VERSION) {
         const reloadKey = '__hacrackReloadCount';
         const reloads = parseInt(sessionStorage.getItem(reloadKey) || '0', 10);
@@ -1603,7 +1603,7 @@
         'WebSearch': { icon: 'earth', label: 'Web Search' },
         'UrlFetch': { icon: 'external-link', label: 'URL Fetch' },
         'WebReadChunk': { icon: 'file-text', label: 'Web Read Chunk' },
-        'ReadFile': { icon: 'file', label: 'Read File' },
+        'ReadRuntimeArtifact': { icon: 'file', label: 'Read Artifact' },
         'CameraCapture': { icon: 'camera', label: 'Camera Capture' },
         'MediaAnalyze': { icon: 'file-image', label: 'Media Analyze' },
         'Notify': { icon: 'notification-3', label: 'Notify' },
@@ -2019,9 +2019,7 @@
             for (let idx = 0; idx < renderParts.length; idx++) {
                 const part = renderParts[idx];
                 if (part.type === 'text') {
-                    const isLastText = !renderParts.slice(idx + 1).some(p => p.type === 'text');
-                    const streamingTail = _mdStreamActive && isLastText ? '...' : '';
-                    html += '<div class="claw-md-text" data-part-idx="' + idx + '">' + marked.parse(_prepareToolMarkers(_normalizeAssistantTables((part.text || '') + streamingTail))) + '</div>';
+                    html += '<div class="claw-md-text" data-part-idx="' + idx + '">' + marked.parse(_prepareToolMarkers(_normalizeAssistantTables(part.text || ''))) + '</div>';
                     continue;
                 }
                 if (part.type !== 'tool') continue;
@@ -2031,8 +2029,8 @@
                 const cardClass = (isOnlyThinking || !_mdStreamActive) ? 'claw-ta-card collapsed' : 'claw-ta-card';
                 html += '<div class="' + cardClass + '" data-ta-id="' + _escHtml(built.taId) + '"' + (act.result !== undefined ? ' data-has-result="1"' : '') + '>' + built.html + '</div>';
             }
-            if (_mdStreamActive && parts[parts.length - 1]?.type !== 'text') {
-                html += '<div class="claw-md-text"><p>...</p></div>';
+            if (_mdStreamActive) {
+                html += '<div class="claw-md-text claw-streaming-tail"><p>...</p></div>';
             }
             if (html) {
                 const seqSig = parts.map(p => p.type === 'text' ? 't' : ('x:' + p.id)).join('|');
@@ -2044,11 +2042,21 @@
                         if (part.type !== 'text') continue;
                         const node = mixed.querySelector('.claw-md-text[data-part-idx="' + idx + '"]');
                         if (!node) continue;
-                        const streamingTail = _mdStreamActive && idx === parts.length - 1 ? '...' : '';
-                        const textSig = (part.text || '').length + '|' + (_mdStreamActive && idx === parts.length - 1 ? 's' : 'e');
-                        if (node.dataset.textSig === textSig) continue;
+                        const textSig = (part.text || '').length;
+                        if (node.dataset.textSig === String(textSig)) continue;
                         node.dataset.textSig = textSig;
-                        node.innerHTML = marked.parse(_prepareToolMarkers(_normalizeAssistantTables((part.text || '') + streamingTail)));
+                        node.innerHTML = marked.parse(_prepareToolMarkers(_normalizeAssistantTables(part.text || '')));
+                    }
+                    const existingTail = mixed.querySelector('.claw-streaming-tail');
+                    if (!_mdStreamActive) {
+                        if (existingTail) existingTail.remove();
+                    } else if (!existingTail) {
+                        const ph = document.createElement('div');
+                        ph.className = 'claw-md-text claw-streaming-tail';
+                        ph.innerHTML = '<p>...</p>';
+                        mixed.appendChild(ph);
+                    } else {
+                        mixed.appendChild(existingTail);
                     }
                     activities.forEach(act => {
                         const taId = act.id || (_normalizeToolName(act.tool_name) + '_' + (act.tool_call_id || ''));
@@ -2735,10 +2743,79 @@
         const DOCK_ID = 'claw-assist-dock';
         const DOCK_STYLE_ID = 'claw-assist-dock-style';
         const DOCK_W = 'min(460px, 38vw)';
+        const DOCK_TOP_APP_BAR_STYLE_ID = 'claw-dock-top-app-bar-style';
+        const DOCK_TOP_APP_BAR_OFFSET = '--claw-dock-top-app-bar-offset';
+        const DOCK_TOP_APP_BAR_TARGET = 'claw-dock-top-app-bar-target';
+        const DOCK_HEADER_TARGET = 'claw-dock-header-target';
+        const DOCK_TRANSITION = '.25s cubic-bezier(.4,0,.2,1)';
 
         const getMainSR = () => {
             const home = document.querySelector('home-assistant');
             return home?.shadowRoot?.querySelector('home-assistant-main')?.shadowRoot || null;
+        };
+
+        const syncDockTopAppBars = () => {
+            const msr = getMainSR();
+            if (!msr) return;
+            const css = `
+                .${DOCK_TOP_APP_BAR_TARGET},
+                .${DOCK_HEADER_TARGET} {
+                    inset-inline-start: var(--ha-sidebar-width, 0px) !important;
+                    inset-inline-end: var(${DOCK_TOP_APP_BAR_OFFSET}, 0px) !important;
+                    width: auto !important;
+                    transition: inset-inline-end ${DOCK_TRANSITION} !important;
+                }
+            `;
+            deepQueryAll('.top-app-bar, .header', msr).forEach((el) => {
+                const styleInfo = getComputedStyle(el);
+                if (styleInfo.position !== 'fixed') return;
+                if (el.classList.contains('top-app-bar')) {
+                    el.classList.add(DOCK_TOP_APP_BAR_TARGET);
+                } else {
+                    el.classList.add(DOCK_HEADER_TARGET);
+                }
+                const root = el.getRootNode();
+                if (!root?.getElementById) return;
+                let style = root.getElementById(DOCK_TOP_APP_BAR_STYLE_ID);
+                if (!style) {
+                    style = document.createElement('style');
+                    style.id = DOCK_TOP_APP_BAR_STYLE_ID;
+                    root.appendChild(style);
+                }
+                style.textContent = css;
+            });
+        };
+
+        const clearDockTopAppBars = () => {
+            const msr = getMainSR();
+            if (!msr) return;
+            deepQueryAll('.' + DOCK_TOP_APP_BAR_TARGET + ', .' + DOCK_HEADER_TARGET, msr).forEach((el) => {
+                el.classList.remove(DOCK_TOP_APP_BAR_TARGET, DOCK_HEADER_TARGET);
+            });
+            deepQueryAll('*', msr).forEach((el) => {
+                el.shadowRoot?.getElementById(DOCK_TOP_APP_BAR_STYLE_ID)?.remove();
+            });
+        };
+
+        const setDockTopAppBarWidth = (hostEl, dockWidth) => {
+            if (!hostEl) return;
+            hostEl.style.setProperty('--mdc-top-app-bar-width', 'calc(100% - var(--mdc-drawer-width, 0px) - ' + dockWidth + ')');
+            syncDockTopAppBars();
+            requestAnimationFrame(() => {
+                hostEl.style.setProperty(DOCK_TOP_APP_BAR_OFFSET, dockWidth);
+            });
+        };
+
+        const hasNativeTopAppBarWidth = (hostEl) => {
+            if (!hostEl) return false;
+            return getComputedStyle(hostEl).getPropertyValue('--ha-top-app-bar-width').trim() !== '';
+        };
+
+        const clearDockTopAppBarWidth = (hostEl) => {
+            if (!hostEl) return;
+            hostEl.style.removeProperty('--mdc-top-app-bar-width');
+            hostEl.style.removeProperty(DOCK_TOP_APP_BAR_OFFSET);
+            clearDockTopAppBars();
         };
 
         const ensureDock = () => {
@@ -2751,9 +2828,10 @@
                 s.textContent = `
                     :host {
                         --claw-dock-width: ${DOCK_W};
+                        --claw-dock-transition: .25s cubic-bezier(.4,0,.2,1);
                     }
                     ha-drawer {
-                        transition: padding-right .25s cubic-bezier(.4,0,.2,1) !important;
+                        transition: padding-right var(--claw-dock-transition) !important;
                     }
                     :host([dock-open]) ha-drawer {
                         padding-right: var(--claw-dock-width) !important;
@@ -2769,7 +2847,7 @@
                         overflow: hidden;
                         background: var(--card-background-color, var(--primary-background-color, #fff));
                         --primary-background-color: var(--card-background-color, #fff);
-                        transition: width .25s cubic-bezier(.4,0,.2,1);
+                        transition: width var(--claw-dock-transition);
                         box-shadow: -1px 0 0 0 var(--divider-color, rgba(0,0,0,.12));
                         z-index: 100;
                     }
@@ -3199,6 +3277,10 @@
                     :host([dock-resizing]) ha-drawer {
                         transition: none !important;
                     }
+                    :host([dock-resizing]) #${DOCK_ID},
+                    :host([dock-resizing]) ha-drawer {
+                        transition: none !important;
+                    }
                     #${DOCK_ID}[resizing] .dock-resize::before {
                         opacity: 1;
                         transform: scaleY(1);
@@ -3248,7 +3330,7 @@
                             const w = Math.max(280, Math.min(window.innerWidth * 0.8, window.innerWidth - ev.clientX));
                             if (hostEl) {
                                 hostEl.style.setProperty('--claw-dock-width', w + 'px');
-                                hostEl.style.setProperty('--mdc-top-app-bar-width', 'calc(100% - var(--mdc-drawer-width, 0px) - ' + w + 'px)');
+                                setDockTopAppBarWidth(hostEl, w + 'px');
                                 const remaining = window.innerWidth - w;
                                 if (remaining < 870 && !hostEl.narrow) {
                                     hostEl.narrow = true;
@@ -3338,7 +3420,7 @@
         };
 
         window.addEventListener('location-changed', () => {
-            if (_dockActive) setTimeout(_startFabSync, 500);
+            if (_dockActive) setTimeout(() => { syncDockTopAppBars(); _startFabSync(); }, 500);
         });
 
         const neutralizeVoiceDialog = (voiceEl) => {
@@ -3468,7 +3550,7 @@
             const mainEl = document.querySelector('home-assistant')?.shadowRoot?.querySelector('home-assistant-main');
             if (mainEl) {
                 mainEl.setAttribute('dock-open', '');
-                mainEl.style.setProperty('--mdc-top-app-bar-width', 'calc(100% - var(--mdc-drawer-width, 0px) - var(--claw-dock-width))');
+                setDockTopAppBarWidth(mainEl, 'var(--claw-dock-width)');
             }
             document.body.style.overflow = '';
 
@@ -3879,7 +3961,7 @@
             const mainEl = document.querySelector('home-assistant')?.shadowRoot?.querySelector('home-assistant-main');
             if (mainEl) {
                 mainEl.removeAttribute('dock-open');
-                mainEl.style.removeProperty('--mdc-top-app-bar-width');
+                clearDockTopAppBarWidth(mainEl);
             }
             document.body.style.overflow = '';
         };
@@ -4589,6 +4671,10 @@
             phase = S_IDLE;
             turnStart = null;
             turnEnd = null;
+            window.__clawLiveStreamSubscribed = false;
+            window.__clawLiveStreamChecked = false;
+            window.__clawLiveConvId = null;
+            window.__clawLiveText = '';
             if (!keepTokens) {
                 totalChars = 0;
                 windowStart = Date.now();
@@ -4694,6 +4780,9 @@
             turnEnd = Date.now();
             phase = S_IDLE;
             window.__clawLiveStreamSubscribed = false;
+            window.__clawLiveStreamChecked = false;
+            window.__clawLiveConvId = null;
+            window.__clawLiveText = '';
             if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
             render();
         };
@@ -4831,7 +4920,7 @@
                                     if (typeof window.__clawOnStreamEnd === 'function') window.__clawOnStreamEnd();
                                 }
                             }
-                            if (t === 'run-end' || t === 'error' || t === 'stream_end') {
+                            if (t === 'intent-end' || t === 'run-end' || t === 'error' || t === 'stream_end') {
                                 this.__clawSoundPlayed = false;
                                 endTurn();
                             }
@@ -5922,12 +6011,26 @@
                 nativeInputRef = e.target;
                 handleInput(e);
             };
+            const checkHide = () => {
+                const val = native?.value || haInput?.value || '';
+                if (!val || !val.startsWith('/') || val.includes(' ')) {
+                    hidePopup();
+                }
+            };
+            const onDocumentClick = (e) => {
+                if (!popup || popup.style.display === 'none') return;
+                if (!popup.contains(e.target) && e.target !== native && !haInput.contains(e.target)) {
+                    hidePopup();
+                }
+            };
             if (native) {
                 native.addEventListener('input', onInput);
                 native.addEventListener('keydown', handleKeydown, true);
             }
             haInput.addEventListener('input', onInput);
             haInput.addEventListener('keydown', handleKeydown, true);
+            document.addEventListener('click', onDocumentClick);
+            setInterval(checkHide, 300);
         };
 
         window.addEventListener('claw-chat-updated', installHandler);

@@ -199,7 +199,8 @@ async def websocket_chat_history_get(
     conv_id = msg["conversation_id"]
     max_turns = msg.get("max_turns", 50)
     display_depth = msg.get("display_depth", DEFAULT_DISPLAY_DEPTH)
-    turns = history.get_history(conv_id)
+    turns = list(history.get_history(conv_id))
+    in_progress = history.get_in_progress(conv_id)
 
     result_turns = []
     total_chars = 0
@@ -221,6 +222,8 @@ async def websocket_chat_history_get(
             import json
             total_chars += len(json.dumps(tool_calls_normalized, ensure_ascii=False))
 
+        source = metadata.get("source", "")
+        is_command = source == "command" or user_msg.strip().startswith("/")
         result_turns.append({
             "user": _strip_internal_tags(user_msg),
             "assistant": assistant_msg,
@@ -229,7 +232,32 @@ async def websocket_chat_history_get(
             "agent_name": metadata.get("agent_name", ""),
             "timestamp": t.timestamp,
             "tool_calls": tool_calls_normalized,
+            "source": source,
+            "is_command": is_command,
         })
+
+    if in_progress:
+        user_msg = str(in_progress.get("user_message") or "")
+        timestamp = float(in_progress.get("timestamp") or time.time())
+        if user_msg and not (
+            result_turns
+            and result_turns[-1].get("user") == _strip_internal_tags(user_msg)
+            and not result_turns[-1].get("assistant")
+        ):
+            total_chars += len(user_msg)
+            is_cmd = user_msg.strip().startswith("/")
+            result_turns.append({
+                "user": _strip_internal_tags(user_msg),
+                "assistant": "",
+                "assistant_display": "",
+                "agent_id": "",
+                "agent_name": "",
+                "timestamp": timestamp,
+                "tool_calls": [],
+                "in_progress": True,
+                "source": "",
+                "is_command": is_cmd,
+            })
 
     display_turns = result_turns[-display_depth:] if display_depth > 0 else result_turns
     for dt in display_turns:

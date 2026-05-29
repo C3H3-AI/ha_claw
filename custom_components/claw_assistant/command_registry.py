@@ -124,6 +124,18 @@ CORE_COMMAND_REGISTRY: tuple[CommandSpec, ...] = (
             ("/plugin uninstall <name>", "Unload and delete a plugin from disk.", "卸载并从磁盘删除插件。"),
         ),
     ),
+    CommandSpec(
+        name="ooo",
+        usage="/ooo <goal>",
+        description="Spawn a subagent to handle a task with isolated context.",
+        description_zh="启动子代理在独立上下文中执行任务。",
+        category="Session",
+        subcommands=(
+            ("/ooo <goal>", "Spawn a subagent for the task.", "启动子代理执行任务。"),
+            ("/ooo list", "List active subagents.", "列出运行中的子代理。"),
+            ("/ooo stop <id>", "Stop a running subagent.", "停止运行中的子代理。"),
+        ),
+    ),
 )
 
 

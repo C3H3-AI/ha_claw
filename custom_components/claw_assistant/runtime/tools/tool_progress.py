@@ -406,7 +406,7 @@ def _tool_desc(name: str, a: dict, lang: str, hass=None) -> str:
         if zh:
             return f"💫 正在查询 {d} 帮助..." if d else "💫 正在查询服务帮助..."
         return f"💫 Help: {d}..." if d else "💫 Service help..."
-    if name == "ReadFile":
+    if name == "ReadRuntimeArtifact":
         act = str(a.get("action", "read")).strip()
         p = e(str(a.get("path", "")).rsplit("/", 1)[-1])[:20]
         query = e(str(a.get("query", "")))[:20]
@@ -566,5 +566,4 @@ def _short_hint(args: dict) -> str:
             v = _esc(v)
             return v[:20] if len(v) <= 20 else v[:17] + "..."
     return ""
-
 

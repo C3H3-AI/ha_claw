@@ -296,8 +296,24 @@ async def streaming_websocket_process(
     unsubscribe = async_subscribe_chat_logs(hass, forward_events)
 
     captured_context = connection.context(msg)
+    text = str(msg.get("text") or "").strip()
+    recent_map = hass.data.setdefault("_claw_cn_recent_messages", {})
+    if text in ("/new", "/reset"):
+        recent_map.pop(conversation_id, None)
+        _clear_live_event_buffer(hass, conversation_id)
+    elif text:
+        recent = recent_map.setdefault(conversation_id, [])
+        recent.append(text)
+        del recent[:-3]
+        if len(recent) > 1:
+            combined = "\n".join(
+                f"[Recent user message {idx + 1}] {item}"
+                for idx, item in enumerate(recent)
+            )
+            text = f"{combined}\n\n[Current request] {text}"
+
     converse_kwargs = dict(
-        text=msg["text"],
+        text=text,
         conversation_id=conversation_id,
         context=captured_context,
         language=msg.get("language"),
@@ -308,29 +324,32 @@ async def streaming_websocket_process(
 
     existing_task = detached_tasks.get(conversation_id)
     if existing_task is not None and not existing_task.done():
-        converse_task = existing_task
-        _LOGGER.info("Reattaching to in-flight detached conversation task for %s", conversation_id)
-    else:
-        async def _run_converse():
-            try:
-                return await conversation.async_converse(hass=hass, **converse_kwargs)
-            finally:
-                _buffer_live_event(hass, conversation_id, {
-                    "conversation_id": conversation_id,
-                    "event_type": "stream_end",
-                    "data": {},
-                })
-                detached_tasks.pop(conversation_id, None)
-                async def _delayed_clear():
-                    await asyncio.sleep(5)
-                    _clear_live_event_buffer(hass, conversation_id)
-                hass.async_create_background_task(_delayed_clear(), name=f"claw_clear_buf_{conversation_id}")
+        _LOGGER.info("Interrupting in-flight detached conversation task for %s", conversation_id)
+        existing_task.cancel("Interrupted by new websocket message")
+        detached_tasks.pop(conversation_id, None)
 
-        converse_task = hass.async_create_background_task(
-            _run_converse(),
-            name=f"claw_converse_{conversation_id}",
-        )
-        detached_tasks[conversation_id] = converse_task
+    async def _run_converse():
+        try:
+            return await conversation.async_converse(hass=hass, **converse_kwargs)
+        finally:
+            _buffer_live_event(hass, conversation_id, {
+                "conversation_id": conversation_id,
+                "event_type": "stream_end",
+                "data": {},
+            })
+            if detached_tasks.get(conversation_id) is asyncio.current_task():
+                detached_tasks.pop(conversation_id, None)
+            async def _delayed_clear():
+                await asyncio.sleep(10)
+                if not detached_tasks.get(conversation_id):
+                    _clear_live_event_buffer(hass, conversation_id)
+            hass.async_create_background_task(_delayed_clear(), name=f"claw_clear_buf_{conversation_id}")
+
+    converse_task = hass.async_create_background_task(
+        _run_converse(),
+        name=f"claw_converse_{conversation_id}",
+    )
+    detached_tasks[conversation_id] = converse_task
 
     try:
         result = await asyncio.shield(asyncio.wrap_future(asyncio.ensure_future(converse_task)) if False else _await_task(converse_task))

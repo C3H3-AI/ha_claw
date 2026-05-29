@@ -15,6 +15,7 @@ from .kernel_sidechain import (
     get_current_kernel_sidechain,
 )
 from .loop_controller import check_tool_repeat, finalize_kernel_step, record_kernel_step
+from .loop_controller import get_configured_pipeline_timeout, get_execution_control_limits
 from ..history.native_chatlog_bridge import (
     append_final_message_and_pause,
     discard_last_planner_message,
@@ -39,6 +40,7 @@ def _build_kernel_planner_prompt(
     user_text: str,
     steps: list[dict[str, Any]],
     step_index: int,
+    extra_system_prompt: str | None = None,
 ) -> str:
     """Build an independent kernel planner prompt.
     
@@ -61,7 +63,11 @@ def _build_kernel_planner_prompt(
         "",
         _render_completed_steps(steps),
         "",
-        _render_planner_rules(user_text=user_text, steps=steps),
+        _render_planner_rules(
+            user_text=user_text,
+            steps=steps,
+            extra_system_prompt=extra_system_prompt,
+        ),
     ]
     return "\n".join(sections)
 
@@ -102,6 +108,7 @@ def _render_planner_rules(
     *,
     user_text: str,
     steps: list[dict[str, Any]],
+    extra_system_prompt: str | None = None,
 ) -> str:
     tried = sorted(
         {
@@ -111,6 +118,11 @@ def _render_planner_rules(
         }
     )
     tried_block = "\n".join(f"- {item}" for item in tried) if tried else "- none yet"
+    extra_block = (
+        f"\n## Runtime Control Feedback\n{extra_system_prompt.strip()}\n"
+        if extra_system_prompt and extra_system_prompt.strip()
+        else ""
+    )
     return (
         "## Kernel Planner Rules\n"
         f'Current user goal: "{user_text}"\n'
@@ -119,6 +131,7 @@ def _render_planner_rules(
         "- If enough evidence already exists, return final.\n"
         "- If the user must answer a question, return ask_user.\n"
         "- If repeated attempts are failing, return stop or final.\n"
+        f"{extra_block}"
         "## Previously Attempted Actions\n"
         f"{tried_block}"
     )
@@ -195,6 +208,7 @@ async def execute_kernel_turn(
     )
     steps: list[dict[str, Any]] = []
     last_result = None
+    runtime_control_prompt: str | None = None
     get_conversation_status(hass)["kernel_mode_active"] = True
 
     try:
@@ -203,15 +217,25 @@ async def execute_kernel_turn(
                 user_text=user_text,
                 steps=steps,
                 step_index=step_index,
+                extra_system_prompt=runtime_control_prompt,
             )
 
             try:
-                from ..llm.context_compressor import sanitize_tool_pairs
+                from ..llm.context_compressor import get_compressor, sanitize_tool_pairs
                 from homeassistant.util.hass_dict import HassKey
                 _DK: HassKey = HassKey("conversation_chat_log")
                 _all = hass.data.get(_DK)
                 _cl = _all.get(conversation_id) if _all else None
                 if _cl and hasattr(_cl, "content") and _cl.content:
+                    _cc = get_compressor()
+                    if _cc.preflight_check(_cl.content):
+                        from .agent_fallback import _trim_chat_log_for_context_overflow
+                        LOGGER.info(
+                            "Kernel preflight compression: context exceeds threshold"
+                        )
+                        await _trim_chat_log_for_context_overflow(
+                            hass, conversation_id, force=True
+                        )
                     _fixed = sanitize_tool_pairs(_cl.content)
                     if _fixed is not _cl.content:
                         _cl.content.clear()
@@ -244,10 +268,10 @@ async def execute_kernel_turn(
                         satellite_id,
                         kernel_prompt,
                     ),
-                    timeout=120,
+                    timeout=get_configured_pipeline_timeout(hass),
                 )
             except _aio.TimeoutError:
-                LOGGER.warning("Kernel API call timed out after 120s at step %d", step_index)
+                LOGGER.warning("Kernel API call timed out at step %d", step_index)
                 if steps:
                     final_text = _render_final_answer(
                         "API call timed out; concluding based on completed steps.",
@@ -308,40 +332,32 @@ async def execute_kernel_turn(
                 return _finalize_result(result, final_text)
 
             if step.tool_name:
-                from ...const import (
-                    CONF_MAX_TOOL_REPEAT, DEFAULT_MAX_TOOL_REPEAT,
-                    CONF_IDENTICAL_CALL_WARN, DEFAULT_IDENTICAL_CALL_WARN,
-                    CONF_IDENTICAL_CALL_STOP, DEFAULT_IDENTICAL_CALL_STOP,
-                )
-                max_repeat = DEFAULT_MAX_TOOL_REPEAT
-                identical_warn = DEFAULT_IDENTICAL_CALL_WARN
-                identical_stop = DEFAULT_IDENTICAL_CALL_STOP
-                for entry in hass.config_entries.async_entries("claw_assistant"):
-                    max_repeat = int(entry.options.get(CONF_MAX_TOOL_REPEAT, DEFAULT_MAX_TOOL_REPEAT))
-                    identical_warn = int(entry.options.get(CONF_IDENTICAL_CALL_WARN, DEFAULT_IDENTICAL_CALL_WARN))
-                    identical_stop = int(entry.options.get(CONF_IDENTICAL_CALL_STOP, DEFAULT_IDENTICAL_CALL_STOP))
-                    break
+                limits = get_execution_control_limits(hass)
                 bail_prompt, should_stop = check_tool_repeat(
                     hass,
                     tool_name=step.tool_name,
                     tool_args=step.tool_args,
-                    max_repeat=max_repeat,
-                    identical_warn=identical_warn,
-                    identical_stop=identical_stop,
+                    max_repeat=limits["max_tool_repeat"],
+                    identical_warn=limits["identical_call_warn"],
+                    identical_stop=limits["identical_call_stop"],
                 )
                 if should_stop:
                     LOGGER.warning(
                         "Identical tool loop detected: %s, requesting graceful stop",
                         step.tool_name,
                     )
-                    extra_system_prompt = _append_prompt(extra_system_prompt, bail_prompt)
+                    runtime_control_prompt = _append_prompt(
+                        runtime_control_prompt, bail_prompt
+                    )
                     continue
                 if bail_prompt:
                     LOGGER.warning(
                         "Tool repeat limit reached: %s",
                         step.tool_name,
                     )
-                    extra_system_prompt = _append_prompt(extra_system_prompt, bail_prompt)
+                    runtime_control_prompt = _append_prompt(
+                        runtime_control_prompt, bail_prompt
+                    )
                     continue
 
             record = record_kernel_step(

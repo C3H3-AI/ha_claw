@@ -27,6 +27,116 @@ LOGGER = logging.getLogger(__name__)
 
 _EARLY_PATCH_DONE = "_claw_early_intent_patch_done"
 _LOCAL_INTENTS_PATCHED = "_ha_crack_intents_patched"
+_CN_COMMAND_PATCH_KEY = "_claw_cn_command_original"
+_CN_WECHAT_DETACH_PATCH_KEY = "_claw_cn_wechat_detach_original"
+_CN_WECHAT_TASKS_KEY = "_claw_cn_wechat_message_tasks"
+_CN_RECENT_KEY = "_claw_cn_recent_messages"
+
+
+def patch_cn_im_hub_interrupt_context(hass: HomeAssistant) -> None:
+    if not hass.data.get(_CN_COMMAND_PATCH_KEY):
+        try:
+            from custom_components.cn_im_hub.core import command as command_module
+        except ImportError:
+            command_module = None
+        if command_module is not None:
+            original_execute = command_module.execute_command
+
+            async def _patched_execute_command(
+                cmd_hass,
+                command,
+                *,
+                conversation_id,
+                agent_id,
+                extra_system_prompt=None,
+                user_id="",
+            ):
+                if getattr(command, "kind", None) != "conversation":
+                    return await original_execute(
+                        cmd_hass,
+                        command,
+                        conversation_id=conversation_id,
+                        agent_id=agent_id,
+                        extra_system_prompt=extra_system_prompt,
+                        user_id=user_id,
+                    )
+                text = str(getattr(command, "target", "") or "").strip()
+                recent_map = cmd_hass.data.setdefault(_CN_RECENT_KEY, {})
+                if text == "/new":
+                    recent_map.pop(conversation_id, None)
+                elif text:
+                    recent = recent_map.setdefault(conversation_id, [])
+                    recent.append(text)
+                    del recent[:-3]
+                    if len(recent) > 1:
+                        combined = "\n".join(
+                            f"[Recent user message {idx + 1}] {item}"
+                            for idx, item in enumerate(recent)
+                        )
+                        command = command_module.command_factory(
+                            "conversation",
+                            f"{combined}\n\n[Current request] {text}",
+                        )
+                return await original_execute(
+                    cmd_hass,
+                    command,
+                    conversation_id=conversation_id,
+                    agent_id=agent_id,
+                    extra_system_prompt=extra_system_prompt,
+                    user_id=user_id,
+                )
+
+            command_module.execute_command = _patched_execute_command
+            import sys
+            for module_name in (
+                "custom_components.cn_im_hub.providers.qq.client",
+                "custom_components.cn_im_hub.providers.wechat.client",
+                "custom_components.cn_im_hub.providers.feishu.client",
+                "custom_components.cn_im_hub.providers.wecom.client",
+                "custom_components.cn_im_hub.providers.dingtalk.client",
+                "custom_components.cn_im_hub.providers.xiaoyi.client",
+                "custom_components.cn_im_hub.providers.custom.client",
+            ):
+                provider_module = sys.modules.get(module_name)
+                if provider_module is not None and hasattr(provider_module, "execute_command"):
+                    provider_module.execute_command = _patched_execute_command
+            hass.data[_CN_COMMAND_PATCH_KEY] = original_execute
+
+    if hass.data.get(_CN_WECHAT_DETACH_PATCH_KEY):
+        return
+    try:
+        from custom_components.cn_im_hub.providers.wechat.client import WeixinClient
+    except ImportError:
+        return
+
+    original = WeixinClient._handle_message
+
+    async def _detached_handle_message(self, message):
+        from_user_id = str(message.get("from_user_id") or "").strip()
+        task_key = f"{getattr(self, '_account_id', '')}:{from_user_id}"
+        tasks = self._hass.data.setdefault(_CN_WECHAT_TASKS_KEY, {})
+        existing = tasks.get(task_key)
+        if existing is not None and not existing.done():
+            existing.cancel("Interrupted by newer WeChat message")
+
+        async def _run_message():
+            try:
+                await original(self, message)
+            except asyncio.CancelledError:
+                raise
+            finally:
+                if tasks.get(task_key) is asyncio.current_task():
+                    tasks.pop(task_key, None)
+
+        task = self._hass.async_create_task(
+            _run_message(),
+            f"claw_cn_wechat_message_{task_key}",
+        )
+        tasks[task_key] = task
+
+    WeixinClient._handle_message = _detached_handle_message
+    hass.data[_CN_WECHAT_DETACH_PATCH_KEY] = original
+    LOGGER.info("Installed cn_im_hub WeChat detached receive hook")
 _LOCAL_INTENTS_ORIGINAL = "_ha_crack_original_async_handle_intents"
 
 _ALLOWED_INTENTS = {
@@ -1974,9 +2084,8 @@ def patch_pipeline_websocket_detach(hass: HomeAssistant) -> None:
     if getattr(ap_ws, _PIPELINE_WS_DETACH_PATCHED, False):
         return
 
-    original_ws_run = ap_ws.websocket_run.__wrapped__ if hasattr(ap_ws.websocket_run, "__wrapped__") else None
-
-    original_run_fn = ap_ws.websocket_run
+    original_wrapped = ap_ws.websocket_run
+    original_unwrapped = getattr(ap_ws.websocket_run, "__wrapped__", None)
 
     from homeassistant.components import websocket_api as ws_api
 
@@ -1994,15 +2103,23 @@ def patch_pipeline_websocket_detach(hass: HomeAssistant) -> None:
         from homeassistant.helpers import chat_session
         from .official_websocket_hook import _buffer_live_event, _domain_data
 
+        async def _call_original():
+            if original_unwrapped is not None:
+                return await original_unwrapped(hass_inner, connection, msg)
+            result = original_wrapped(hass_inner, connection, msg)
+            if result is not None and hasattr(result, "__await__"):
+                return await result
+            return result
+
         pipeline_id = msg.get("pipeline")
         try:
             pipeline = async_get_pipeline(hass_inner, pipeline_id=pipeline_id)
         except Exception:
-            return await original_run_fn(hass_inner, connection, msg)
+            return await _call_original()
 
         start_stage = PipelineStage(msg["start_stage"])
         if start_stage != PipelineStage.INTENT:
-            return await original_run_fn(hass_inner, connection, msg)
+            return await _call_original()
 
         timeout = msg.get("timeout", DEFAULT_PIPELINE_TIMEOUT)
         conversation_id = msg.get("conversation_id") or ""
@@ -2090,11 +2207,16 @@ def patch_pipeline_websocket_detach(hass: HomeAssistant) -> None:
                     "event_type": "stream_end",
                     "data": {},
                 })
+                from .official_websocket_hook import _clear_live_event_buffer
+                async def _delayed_clear():
+                    await asyncio.sleep(30)
+                    _clear_live_event_buffer(hass_inner, conversation_id)
+                hass_inner.async_create_background_task(_delayed_clear(), name=f"claw_clear_buf_{conversation_id}")
 
     wrapped = detached_websocket_run
     for attr in ("_ws_command",):
-        if hasattr(original_run_fn, attr):
-            setattr(wrapped, attr, getattr(original_run_fn, attr))
+        if hasattr(original_wrapped, attr):
+            setattr(wrapped, attr, getattr(original_wrapped, attr))
 
     ap_ws.websocket_run = wrapped
 
@@ -2107,7 +2229,7 @@ def patch_pipeline_websocket_detach(hass: HomeAssistant) -> None:
             handlers["assist_pipeline/run"] = wrapped
 
     setattr(ap_ws, _PIPELINE_WS_DETACH_PATCHED, True)
-    setattr(ap_ws, "_claw_original_ws_run", original_run_fn)
+    setattr(ap_ws, "_claw_original_ws_run", original_wrapped)
     LOGGER.info("Patched assist_pipeline/run for detached execution on WS disconnect")
 
 

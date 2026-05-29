@@ -148,6 +148,11 @@ class FallbackConversationAgent(
         command_outcome = await async_handle_chat_command(self.hass, user_input)
         if command_outcome is not None:
             if command_outcome.result is not None:
+                self._record_simple_history_turn(
+                    user_input,
+                    command_outcome.result,
+                    source="command",
+                )
                 return self._finalize_result(command_outcome.result)
             if command_outcome.rewritten_text is not None:
                 user_input = conversation.ConversationInput(
@@ -184,6 +189,11 @@ class FallbackConversationAgent(
             if len(user_input.text or "") <= 200:
                 native_result = await self._maybe_handle_native_intent(user_input)
                 if native_result is not None:
+                    self._record_simple_history_turn(
+                        user_input,
+                        native_result,
+                        source="native_intent",
+                    )
                     return self._finalize_result(native_result)
 
             extra_system_prompt = getattr(user_input, "extra_system_prompt", None)
@@ -220,6 +230,54 @@ class FallbackConversationAgent(
             raise
         finally:
             unregister_running_task(self.hass, user_input.conversation_id, current_task)
+
+    def _record_simple_history_turn(
+        self,
+        user_input: conversation.ConversationInput,
+        result: conversation.ConversationResult,
+        *,
+        source: str,
+    ) -> None:
+        try:
+            conv_id = user_input.conversation_id
+            if not conv_id or not result or not result.response:
+                return
+            speech = result.response.speech or {}
+            plain = speech.get("plain", {}) if isinstance(speech, dict) else {}
+            assistant_text = sanitize_response_text(
+                plain.get("original_speech") or plain.get("speech") or "",
+                language=getattr(result.response, "language", None),
+            )
+            user_text = user_input.text or ""
+            if not user_text or not assistant_text:
+                return
+
+            from .conversation_utils import get_conversation_history
+
+            history = get_conversation_history()
+            turns = history.get_history(conv_id)
+            if turns:
+                last = turns[-1]
+                if (
+                    (last.user_message or "") == user_text
+                    and (last.assistant_response or "") == assistant_text
+                ):
+                    return
+            history.add_turn(
+                conv_id,
+                user_text,
+                assistant_text,
+                metadata={
+                    "agent_id": self.entry.entry_id,
+                    "agent_name": "Claw Assistant",
+                    "assistant_display": assistant_text,
+                    "language": user_input.language or "",
+                    "channel": "HA",
+                    "source": source,
+                },
+            )
+        except Exception:
+            _LOGGER.debug("Failed to record simple history turn", exc_info=True)
 
     async def _maybe_handle_native_intent(
         self, user_input: conversation.ConversationInput

@@ -29,6 +29,7 @@ from ..utils.data_path import tmp_dir_path
 from ..utils.i18n import t
 from ..llm.internal_llm import _MAX_SYSTEM_PROMPT_CHARS, _fit_head_section_to_required_suffix
 from .loop_controller import (
+    get_configured_pipeline_timeout,
     record_continuation,
     record_user_turn,
     reset_continuation_count,
@@ -42,10 +43,12 @@ from ..output.response_policy import analyze_response_state
 from ..core.state import (
     consume_tool_called,
     get_active_conversation_state,
+    get_channel_type,
     get_conversation_status,
     get_task_loop_state,
     get_tool_calls_state,
     get_tool_results_state,
+    is_im_channel,
     reset_active_conversation,
     set_active_conversation,
 )
@@ -102,7 +105,7 @@ async def _segment_large_text(text: str, hass: HomeAssistant | None = None) -> t
         LOGGER.info("Large text saved to %s (%d chars)", filepath, len(text))
         instruction = (
             f"[LARGE_TEXT] User sent large text ({len(text)} chars), saved to temp file.\n"
-            f"Use ReadFile(path=\"{filepath}\") to read full content before responding.\n"
+            f"Use ReadRuntimeArtifact(path=\"{filepath}\") to read full content before responding.\n"
             f"Preview (first 500 chars): {text[:500]}..."
         )
         return instruction, True
@@ -433,20 +436,6 @@ async def _execute_conversation_turn_inner(
         except Exception:
             pass
 
-    if task_loop.get("budget_exhausted"):
-        LOGGER.warning("Budget exhausted for conversation %s", conversation_id)
-        intent_response = intent.IntentResponse(
-            language=language or hass.config.language
-        )
-        intent_response.async_set_speech(
-            t("budget_exhausted", language or hass.config.language)
-        )
-
-        return ConversationResult(
-            response=intent_response, conversation_id=conversation_id
-        )
-
-    reset_continuation_count(hass)
     text, pending_attachments = _extract_attachment_tags(text, language=language)
     attachment_token = None
     if pending_attachments:
@@ -499,6 +488,8 @@ async def _execute_conversation_turn_inner(
         LOGGER.info("Large text saved to file: %d chars", len(text))
     task_loop = record_user_turn(hass, text=text)
     LOGGER.info("Task loop turn %s: %s...", task_loop["turn_count"], text[:50])
+
+    reset_continuation_count(hass)
 
     active_conv = get_active_conversation_state(hass)
     if conversation_id and active_conv.get("id") != conversation_id:
@@ -599,6 +590,17 @@ async def _execute_conversation_turn_inner(
             )
         turn_context = await hass.async_add_executor_job(_build_turn_context)
         text = apply_turn_context(text, turn_context)
+    else:
+        _turn_num = int(task_loop.get("turn_count", 0) or 0)
+        if is_im_channel(conversation_id) and _turn_num % 3 == 0:
+            from .agent_fallback import _IM_CHANNEL_PREFIXES
+            _ch_name = next(
+                (name for pfx, name in _IM_CHANNEL_PREFIXES.items()
+                 if conversation_id and conversation_id.startswith(pfx)),
+                get_channel_type(conversation_id),
+            )
+            text = f"[IM:{_ch_name}] {text}"
+        extra_system_prompt = None
 
     if not fallback_agents:
         continuation_index = 0
@@ -637,10 +639,10 @@ async def _execute_conversation_turn_inner(
                             satellite_id,
                             current_prompt,
                         ),
-                        timeout=120,
+                        timeout=get_configured_pipeline_timeout(hass),
                     )
                 except _aio.TimeoutError:
-                    LOGGER.warning("Direct API call timed out after 120s")
+                    LOGGER.warning("Direct API call timed out")
                     break
             direct_tool_results = _snapshot_tool_results(get_tool_results_state(hass))
             synthesized_response = extract_successful_tool_response(direct_tool_results)

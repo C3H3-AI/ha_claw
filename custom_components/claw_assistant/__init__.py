@@ -48,6 +48,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async_setup_event_listener(hass)
     from .runtime.utils.update_handler import async_setup_update_handler
     async_setup_update_handler(hass)
+    from .runtime.hooks.patches import patch_cn_im_hub_interrupt_context
+    patch_cn_im_hub_interrupt_context(hass)
     from .runtime.storage.custom_entity_store import async_load_custom_entities
     await async_load_custom_entities(hass)
     from .conversation_utils import async_setup_history_store
@@ -61,6 +63,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         failed = [p.manifest.name for p in loaded_plugins if not p.enabled]
         LOGGER.info("Plugins loaded: %d enabled, %d failed. Enabled: %s", len(enabled), len(failed), enabled)
         invalidate_runtime_tool_cache()
+    from .delegation import register_delegation_system
+    register_delegation_system(hass)
+    hass.data[DOMAIN]["entry"] = entry
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     LOGGER.info("claw_assistant initialized with backend-only runtime")
@@ -108,6 +113,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async_unload_update_handler(hass)
         from .conversation_utils import async_flush_history_store
         await async_flush_history_store(hass)
+        from .delegation import unregister_delegation_system
+        unregister_delegation_system()
         await async_unload_runtime(hass)
     return True
 

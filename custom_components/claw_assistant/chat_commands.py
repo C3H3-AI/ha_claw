@@ -962,6 +962,10 @@ async def async_handle_chat_command(
         if old_continuous_id:
             _purge_native_chat_log(hass, old_continuous_id)
             get_conversation_history().clear(old_continuous_id)
+            try:
+                hass.data.get("_claw_cn_recent_messages", {}).pop(old_continuous_id, None)
+            except Exception:
+                pass
         _clear_conversation_runtime(hass, conversation_id)
         status = get_conversation_status(hass)
         status.pop("history_continuation_id", None)
@@ -1042,6 +1046,9 @@ async def async_handle_chat_command(
 
     if command.name == "plugin_tool_invoke":
         return await _handle_plugin_tool_invoke(hass, user_input, command.raw_name, command.args)
+
+    if command.name == "ooo":
+        return await _handle_ooo_command(hass, user_input, command.args)
 
     return None
 
@@ -1487,3 +1494,26 @@ def _filter_plugin_tool_result(result: dict) -> dict:
             value = [_filter_plugin_tool_result(v) if isinstance(v, dict) else v for v in value]
         filtered[key] = value
     return filtered
+
+
+async def _handle_ooo_command(
+    hass,
+    user_input: conversation.ConversationInput,
+    args: str,
+) -> ChatCommandOutcome:
+    """Handle /ooo command for subagent delegation."""
+    from .delegation.command import handle_delegate_command
+    
+    result = await handle_delegate_command(
+        hass,
+        args=args or "",
+        conversation_id=user_input.conversation_id,
+        agent_id=user_input.agent_id,
+        language=user_input.language,
+    )
+    
+    if result.get("rewrite"):
+        return ChatCommandOutcome(rewritten_text=result["rewrite"])
+    
+    response_text = result.get("response", "")
+    return ChatCommandOutcome(result=_build_result(user_input, response_text))
