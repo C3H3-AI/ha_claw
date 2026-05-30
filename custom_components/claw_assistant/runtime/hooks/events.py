@@ -99,7 +99,7 @@ async def fire_hook_event(
         start = monotonic()
         try:
             outcome = await listener(payload)
-        except Exception as err:  # noqa: BLE001
+        except Exception as err:
             LOGGER.warning(
                 "Hook listener %s failed for %s: %s",
                 name,

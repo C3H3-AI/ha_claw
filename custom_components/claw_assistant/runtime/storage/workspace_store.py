@@ -345,7 +345,7 @@ async def async_save_workspace_doc(
     saved_path = await hass.async_add_executor_job(_write_doc, path, markdown)
     await async_refresh_workspace_store(hass)
     try:
-        from .graph_service import async_reindex_doc  # noqa: PLC0415
+        from .graph_service import async_reindex_doc
 
         await async_reindex_doc(hass, _normalize_doc_name(name), markdown)
     except Exception:

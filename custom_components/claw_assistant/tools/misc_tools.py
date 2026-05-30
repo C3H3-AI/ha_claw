@@ -1619,7 +1619,7 @@ class MemoryGraphTool(llm.Tool):
     async def async_call(
         self, hass: HomeAssistant, tool_input: llm.ToolInput, llm_context: llm.LLMContext
     ) -> JsonObjectType:
-        from ..runtime.storage.graph_service import (  # noqa: PLC0415
+        from ..runtime.storage.graph_service import (
             async_get_node,
             async_link,
             async_recall,
@@ -2174,7 +2174,7 @@ def _calc_frame_count(duration: float) -> int:
 
 _FFPROBE_TIMEOUT = 10
 _FFMPEG_FRAME_TIMEOUT = 30
-_VIDEO_COMPRESS_THRESHOLD = 5 * 1024 * 1024  # 5MB
+_VIDEO_COMPRESS_THRESHOLD = 5 * 1024 * 1024
 _VIDEO_COMPRESS_TIMEOUT = 120
 
 

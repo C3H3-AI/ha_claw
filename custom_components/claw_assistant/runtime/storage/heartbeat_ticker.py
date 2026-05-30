@@ -28,6 +28,7 @@ from .heartbeat_store import get_due_tasks, async_record_heartbeat_result, Heart
 LOGGER = logging.getLogger(__name__)
 _TICK_INTERVAL = timedelta(seconds=10)
 _UNSUB_KEY = "heartbeat_ticker_unsub"
+_TICK_RUNNING_KEY = "heartbeat_ticker_running"
 
 _HEARTBEAT_SYSTEM_PROMPT = (
     "You are a background heartbeat agent running an automated task. "
@@ -77,6 +78,16 @@ def _build_heartbeat_text(task: HeartbeatTask) -> str:
 
 
 async def _tick(hass: HomeAssistant, _now: Any = None) -> None:
+    if hass.data.get(_TICK_RUNNING_KEY):
+        return
+    hass.data[_TICK_RUNNING_KEY] = True
+    try:
+        await _tick_inner(hass)
+    finally:
+        hass.data[_TICK_RUNNING_KEY] = False
+
+
+async def _tick_inner(hass: HomeAssistant) -> None:
     due_tasks = await hass.async_add_executor_job(get_due_tasks)
     if not due_tasks:
         return
@@ -201,3 +212,4 @@ def async_unload_heartbeat_ticker(hass: HomeAssistant) -> None:
     unsub = hass.data.pop(_UNSUB_KEY, None)
     if unsub:
         unsub()
+    hass.data.pop(_TICK_RUNNING_KEY, None)

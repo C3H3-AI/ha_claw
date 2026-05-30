@@ -593,7 +593,7 @@ async def _run_subagent(
                 satellite_id=None,
                 extra_system_prompt=subagent_prompt,
             ),
-            timeout=child_timeout,
+            timeout=config.child_timeout_seconds,
         )
         
         if parent_conv_id:

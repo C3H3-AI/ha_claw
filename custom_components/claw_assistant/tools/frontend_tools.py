@@ -305,7 +305,7 @@ class FrontendInspectTool(llm.Tool):
         vol.Optional("direction", default="down"): vol.In(["up", "down", "left", "right"]),
         vol.Optional("amount", default=300): int,
         vol.Optional("depth", default=8): int,
-        vol.Optional("force", default=False): bool,  # Force refresh, bypass cache
+        vol.Optional("force", default=False): bool,
     })
 
     _DEEP_QUERY = """

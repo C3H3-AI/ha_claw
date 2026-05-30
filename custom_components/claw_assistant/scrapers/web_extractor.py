@@ -352,7 +352,7 @@ def _extract_text_from_json(data: Any, max_depth: int = 10) -> str:
             if key not in text_keys and not key.startswith("_"):
                 texts.append(_extract_text_from_json(value, max_depth - 1))
     elif isinstance(data, list):
-        for item in data[:50]:  # Limit list items
+        for item in data[:50]:
             texts.append(_extract_text_from_json(item, max_depth - 1))
     
     combined = "\n".join(t for t in texts if t and len(t.strip()) > 10)

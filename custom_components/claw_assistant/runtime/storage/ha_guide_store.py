@@ -57,123 +57,102 @@ class GuideStoreSnapshot:
 
 _GUIDE_STORE: dict[str, GuideStoreSnapshot] = {"snapshot": GuideStoreSnapshot()}
 _GUIDE_TOPIC_HINTS: dict[str, tuple[str, ...]] = {
-    # 10 — builtin intents
     "intent": (
         "intent", "intents", "HassTurnOn", "HassTurnOff", "HassLightSet",
         "HassSetPosition", "HassClimateSetTemperature", "HassMediaPause",
         "HassMediaNext", "HassVacuumStart", "意图", "指令",
     ),
-    # 15 — tool selection / routing
     "tool routing": (
         "routing", "ServiceCall", "intent", "tool selection", "工具选择",
         "路由", "IntentCall", "device control", "设备控制",
     ),
-    # 20 — services reference
     "service": (
         "service", "services", "服务", "domain", "alarm_control_panel",
         "lock", "media_player", "climate", "fan", "vacuum", "cover",
         "ListServices", "ServiceHelp", "服务调用",
     ),
-    # 30 — safety
     "safety": (
         "safety", "safe", "sensitive", "confirm", "destructive", "risk",
         "安全", "风险", "确认", "危险", "敏感",
     ),
-    # 40 — workflow playbooks
     "workflow": (
         "workflow", "playbook", "triage", "troubleshoot", "debug",
         "工作流", "排查", "调试", "诊断流程",
     ),
-    # 50 — checklists
     "checklist": (
         "checklist", "pre-change", "post-change", "verify", "rollback",
         "检查清单", "核对", "变更前", "变更后",
     ),
-    # 60 — frontend inspect
     "frontend": (
         "frontend", "FrontendInspect", "snapshot", "exec_js", "tap",
         "navigate", "scroll", "shadow DOM", "interactable",
         "屏幕", "页面", "点击", "界面", "前端",
     ),
-    # 61 — dashboard card
     "dashboard": (
         "dashboard", "lovelace", "DashboardCard", "card", "view",
         "html-card-pro", "仪表盘", "卡片", "视图", "面板",
     ),
-    # 62 — config entries
     "integration": (
         "integration", "integrations", "ConfigEntries", "config_entry",
         "flow", "reload", "repair", "repairs",
         "集成", "修复", "配置条目",
     ),
-    # 63 — ha control
     "ha control": (
         "HAControl", "shell", "ssh", "asyncssh", "check_config",
         "restart", "reboot", "reload_integration", "system_log",
         "命令行", "远程", "重启",
     ),
-    # 64 — automation
     "automation": (
         "automation", "automations", "Automation", "trigger", "condition",
         "action", "trace", "traces", "script", "scripts",
         "自动化", "脚本", "触发器", "条件",
     ),
-    # 65 — registry
     "registry": (
         "Registry", "registry", "area", "floor", "label", "category",
         "entity", "device", "rename",
         "区域", "楼层", "房间", "标签", "注册表",
     ),
-    # 66 — memory tools
     "memory": (
         "memory", "ConversationMemory", "MemoryGraph", "remember", "recall",
         "forget", "link", "knowledge graph",
         "记忆", "记住", "偏好", "知识图谱",
     ),
-    # 67 — batch control
     "batch": (
         "batch", "BatchControl", "bulk", "multiple", "turn_off", "turn_on",
         "toggle", "批量", "批量控制", "多设备",
     ),
-    # 68 — config file
     "config file": (
         "ConfigFile", "configuration.yaml", "yaml", "stage_write",
         "stage_delete", "approval", "config directory",
         "配置文件", "文件编辑",
     ),
-    # 69 — hacs
     "hacs": (
         "HACS", "hacs", "repository", "custom_component", "github",
         "install", "update", "uninstall", "store",
         "商店", "自定义组件", "第三方",
     ),
-    # 70 — execute python
     "python": (
         "ExecutePython", "python", "sandbox", "inline", "code",
         "requirements", "OUTPUT_DIR", "TMP_DIR",
         "执行", "代码", "脚本执行",
     ),
-    # 71 — helper manager
     "helper": (
         "HelperManager", "helper", "input_boolean", "input_number",
         "input_text", "input_select", "input_datetime", "input_button",
         "timer", "counter", "template sensor",
         "辅助实体", "计时器", "计数器",
     ),
-    # 72 — query tools
     "query": (
         "GetLiveContext", "EntityQuery", "SmartDiscovery", "AreaDevices",
         "HistoryQuery", "GetSystemIndex", "ListServices", "ServiceHelp",
         "ValidateService", "query", "state", "history",
         "查询", "状态", "实体查询", "历史",
     ),
-    # 73 — web search
     "web search": (
         "WebSearch", "UrlFetch", "WebReadChunk", "StockQuery",
         "search", "web", "url", "fetch", "google", "bing",
         "搜索", "网页", "抓取", "股票",
     ),
-    # 74 — skill tools
     "skill": (
         "skill", "skills", "InstallSkill", "ListInstalledSkills",
         "GetInstalledSkill", "DeleteSkill", "HomeAssistantGuide",
@@ -181,7 +160,6 @@ _GUIDE_TOPIC_HINTS: dict[str, tuple[str, ...]] = {
         "SetWorkspaceDoc", "GetMasterPrompt", "SetMasterPrompt",
         "技能", "工作区",
     ),
-    # 75 — self edit
     "self edit": (
         "ProposeSelfEdit", "ReviewSelfSkills", "ListProposals",
         "GetProposal", "ApplyProposal", "DiscardProposal",
@@ -189,38 +167,32 @@ _GUIDE_TOPIC_HINTS: dict[str, tuple[str, ...]] = {
         "proposal", "self-edit", "changelog",
         "自我编辑", "提案",
     ),
-    # 76 — misc tools
     "misc": (
         "ParallelToolCall", "Notify", "AgentHandoff", "NextAgentHandoff",
         "SetConversationState", "HeartbeatManager", "ReadRuntimeArtifact",
         "GetConversationHistory", "notification", "parallel",
         "通知", "并行", "心跳", "对话历史",
     ),
-    # 77 — entity tools
     "entity": (
         "CustomEntityManager", "ExposeEntity", "IntentCall",
         "entity", "expose", "sensor", "binary_sensor", "switch",
         "button", "template sensor",
         "实体", "暴露", "自定义实体",
     ),
-    # 78 — media tools
     "media": (
         "CameraCapture", "MediaAnalyze", "camera", "snapshot",
         "analyze", "image", "photo", "视觉",
         "摄像头", "拍照", "图片", "分析",
     ),
-    # 79 — service call
     "service call": (
         "ServiceCall", "service", "domain", "entity_id", "data",
         "brightness", "temperature", "turn_on", "turn_off",
         "服务调用", "调用服务",
     ),
-    # 80 — system control
     "system control": (
         "SystemControl", "output_mode", "global_inject", "status",
         "brief", "detailed", "系统控制", "输出模式",
     ),
-    # 81 — plugin system
     "plugin": (
         "plugin", "plugins", "PluginManager", "hermes", "install",
         "uninstall", "unload", "hot_reload", "reload_all",
@@ -228,7 +200,6 @@ _GUIDE_TOPIC_HINTS: dict[str, tuple[str, ...]] = {
         "standalone", "privileged", "call_tool",
         "插件", "插件系统", "热加载", "卸载",
     ),
-    # cross-cutting topics (not tied to a single guide)
     "calendar": ("calendar", "calendars", "日历", "日程"),
     "todo": ("todo", "shopping list", "待办", "任务", "清单", "购物"),
     "backup": ("backup", "restore", "rollback", "备份", "恢复", "回滚"),

@@ -631,7 +631,7 @@ class AutomationTool(llm.Tool):
 
         try:
             patched = parse_yaml(report.after)
-        except Exception as err:  # noqa: BLE001
+        except Exception as err:
             return {
                 "success": False,
                 "error": f"patched YAML did not parse: {err}",

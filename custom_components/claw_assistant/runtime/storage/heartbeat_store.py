@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import json
+import logging
 from pathlib import Path
 import re
 from typing import Any
@@ -13,6 +14,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util.file import write_utf8_file
 
 from ..utils.data_path import get_data_dir
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _heartbeat_path() -> Path:
