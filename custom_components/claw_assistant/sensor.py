@@ -7,10 +7,12 @@ from homeassistant.components.sensor import SensorEntity
 from homeassistant.components.text import TextEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import TrackTemplate, async_track_template_result
+from homeassistant.helpers.template import Template, TemplateError
 
 from .const import DOMAIN, VERSION
 from .runtime.storage.custom_entity_store import get_custom_entities_by_platform
@@ -171,7 +173,7 @@ class HeartbeatSensor(TextEntity):
 class DynamicSensor(SensorEntity):
 
     _attr_has_entity_name = True
-    _attr_should_poll = True
+    _attr_should_poll = False
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry, definition: dict) -> None:
@@ -203,16 +205,31 @@ class DynamicSensor(SensorEntity):
     def available(self) -> bool:
         return self._attr_native_value is not None
 
-    async def async_update(self) -> None:
+    async def async_added_to_hass(self) -> None:
+
+        await super().async_added_to_hass()
         tpl = self._definition.get("state_template", "")
         if not tpl:
             return
-        try:
-            from homeassistant.helpers.template import Template
-            result = Template(tpl, self.hass).async_render()
-            if result is None or str(result).lower() in ("unknown", "unavailable", "none"):
-                self._attr_native_value = None
-            else:
-                self._attr_native_value = result
-        except Exception:
+        info = async_track_template_result(
+            self.hass,
+            [TrackTemplate(Template(tpl, self.hass), None)],
+            self._handle_template_result,
+        )
+        self.async_on_remove(info.async_remove)
+        info.async_refresh()
+
+    @callback
+    def _handle_template_result(self, event, updates) -> None:
+        if not updates:
+            return
+        result = updates.pop().result
+        if (
+            isinstance(result, TemplateError)
+            or result is None
+            or str(result).lower() in ("unknown", "unavailable", "none")
+        ):
             self._attr_native_value = None
+        else:
+            self._attr_native_value = result
+        self.async_write_ha_state()

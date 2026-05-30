@@ -1,19 +1,18 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
 
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import TrackTemplate, async_track_template_result
+from homeassistant.helpers.template import Template, TemplateError
 
 from .const import DOMAIN, VERSION
 from .runtime.storage.custom_entity_store import get_custom_entities_by_platform
-
-SCAN_INTERVAL = timedelta(seconds=30)
 
 _PLATFORM = "binary_sensor"
 _ADD_KEY = "_custom_binary_sensor_add"
@@ -46,7 +45,7 @@ async def async_setup_entry(
 class DynamicBinarySensor(BinarySensorEntity):
 
     _attr_has_entity_name = True
-    _attr_should_poll = True
+    _attr_should_poll = False
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry, definition: dict) -> None:
@@ -75,18 +74,37 @@ class DynamicBinarySensor(BinarySensorEntity):
     def available(self) -> bool:
         return self._attr_is_on is not None
 
-    async def async_update(self) -> None:
+    async def async_added_to_hass(self) -> None:
+        """Render reactively instead of polling on a fixed interval.
+
+        A broken template is evaluated once at setup rather than re-rendered
+        (and re-logged) every poll tick.
+        """
+        await super().async_added_to_hass()
         tpl = self._definition.get("state_template", "")
         if not tpl:
             return
-        try:
-            from homeassistant.helpers.template import Template
-            result = Template(tpl, self.hass).async_render()
-            if result is None or str(result).lower() in ("unknown", "unavailable", "none"):
-                self._attr_is_on = None
-            elif isinstance(result, bool):
-                self._attr_is_on = result
-            else:
-                self._attr_is_on = str(result).lower() in ("true", "on", "1", "yes")
-        except Exception:
+        info = async_track_template_result(
+            self.hass,
+            [TrackTemplate(Template(tpl, self.hass), None)],
+            self._handle_template_result,
+        )
+        self.async_on_remove(info.async_remove)
+        info.async_refresh()
+
+    @callback
+    def _handle_template_result(self, event, updates) -> None:
+        if not updates:
+            return
+        result = updates.pop().result
+        if (
+            isinstance(result, TemplateError)
+            or result is None
+            or str(result).lower() in ("unknown", "unavailable", "none")
+        ):
             self._attr_is_on = None
+        elif isinstance(result, bool):
+            self._attr_is_on = result
+        else:
+            self._attr_is_on = str(result).lower() in ("true", "on", "1", "yes")
+        self.async_write_ha_state()
