@@ -219,8 +219,11 @@ class FallbackConversationAgent(
         except asyncio.CancelledError:
             self._salvage_partial_turn(user_input)
             if consume_stop_request(self.hass, user_input.conversation_id):
+                # The /stop command turn already emits the single canonical
+                # confirmation; the cancelled turn stops silently (empty speech
+                # produces no bubble and is never prefixed).
                 response = intent.IntentResponse(language=user_input.language)
-                response.async_set_speech("Stopped the current run.")
+                response.async_set_speech("")
                 return self._finalize_result(
                     conversation.ConversationResult(
                         conversation_id=user_input.conversation_id,
@@ -244,9 +247,14 @@ class FallbackConversationAgent(
                 return
             speech = result.response.speech or {}
             plain = speech.get("plain", {}) if isinstance(speech, dict) else {}
+            lang_attr = getattr(result.response, "language", None)
             assistant_text = sanitize_response_text(
                 plain.get("original_speech") or plain.get("speech") or "",
-                language=getattr(result.response, "language", None),
+                language=lang_attr,
+            )
+            display_text = sanitize_response_text(
+                plain.get("speech") or plain.get("original_speech") or "",
+                language=lang_attr,
             )
             user_text = user_input.text or ""
             if not user_text or not assistant_text:
@@ -270,7 +278,7 @@ class FallbackConversationAgent(
                 metadata={
                     "agent_id": self.entry.entry_id,
                     "agent_name": "Claw Assistant",
-                    "assistant_display": assistant_text,
+                    "assistant_display": display_text or assistant_text,
                     "language": user_input.language or "",
                     "channel": "HA",
                     "source": source,

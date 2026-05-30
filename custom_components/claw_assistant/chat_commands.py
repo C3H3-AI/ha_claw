@@ -39,6 +39,7 @@ from .runtime.core.state import (
     get_tool_calls_state,
     get_tool_results_state,
     reset_active_conversation,
+    reset_should_end_flag,
     set_active_conversation,
 )
 from .runtime import get_runtime_store
@@ -141,6 +142,24 @@ def _build_result(
         conversation_id=user_input.conversation_id,
         response=response,
     )
+
+
+def _format_command_result(hass, result: conversation.ConversationResult | None) -> None:
+    """Apply the same reply-prefix formatting commands as normal agent replies.
+
+    Command replies (``/stop``, ``/new``, ``/help`` ...) short-circuit before
+    the global ``_maybe_apply_global_response_format`` hook runs, so previously
+    they never received the ``(name) 回复:`` prefix while LLM answers did. That
+    made the two kinds of bubbles render inconsistently in the frontend. Routing
+    every command result through this single chokepoint makes commands honor the
+    configured ``conversation_mode`` exactly like a model reply (no prefix in
+    ``no_name`` mode, prefixed otherwise).
+    """
+    if result is None or result.response is None or not result.response.speech:
+        return
+    from .runtime.llm.response_format import apply_system_reply_format
+
+    apply_system_reply_format(hass, result)
 
 
 def _build_skill_usage_message() -> str:
@@ -846,7 +865,7 @@ def _clear_conversation_runtime(hass, conversation_id: str | None) -> None:
         if isinstance(key, str) and key.startswith("_claw_pipeline_converse_cont_"):
             hass.data.pop(key, None)
 
-    get_should_end_flag(hass)["value"] = False
+    reset_should_end_flag(hass)
 
 
 def _stop_conversation_runtime(hass, conversation_id: str | None) -> bool:
@@ -916,11 +935,28 @@ def _stop_conversation_runtime(hass, conversation_id: str | None) -> bool:
         finally:
             reset_active_conversation(token)
 
-    get_should_end_flag(hass)["value"] = True
+    if stopped_any_task or was_active:
+        get_should_end_flag(hass)["value"] = True
     return was_active or stopped_any_task
 
 
 async def async_handle_chat_command(
+    hass,
+    user_input: conversation.ConversationInput,
+) -> ChatCommandOutcome | None:
+    """Public entry: dispatch a chat command and format its reply uniformly.
+
+    All command outputs flow through this single chokepoint so the reply prefix
+    is applied in exactly one place (see ``_format_command_result``). Outcomes
+    that only rewrite the text (passthrough to the agent) are left untouched.
+    """
+    outcome = await _dispatch_chat_command(hass, user_input)
+    if outcome is not None and outcome.rewritten_text is None:
+        _format_command_result(hass, outcome.result)
+    return outcome
+
+
+async def _dispatch_chat_command(
     hass,
     user_input: conversation.ConversationInput,
 ) -> ChatCommandOutcome | None:
@@ -982,7 +1018,6 @@ async def async_handle_chat_command(
 
     if command.name == "stop":
         stopped = _stop_conversation_runtime(hass, conversation_id)
-        get_should_end_flag(hass)["value"] = False
         if stopped:
             return ChatCommandOutcome(result=_build_result(user_input, t("cmd_stop_done", lang)))
         return ChatCommandOutcome(result=_build_result(user_input, t("cmd_stop_none", lang)))
@@ -1189,9 +1224,22 @@ async def _handle_model_command(hass, user_input, args: str) -> ChatCommandOutco
     try:
         idx = int(parts[0])
     except ValueError:
-        return ChatCommandOutcome(result=_build_result(
-            user_input, t("cmd_model_invalid_idx", lang).replace("{idx}", parts[0])
-        ))
+        if not agents:
+            return ChatCommandOutcome(result=_build_result(user_input, t("cmd_model_no_agents", lang)))
+        lines: list[str] = [f"{t('cmd_model_header', lang)}\n"]
+        for i, ag in enumerate(agents, 1):
+            tags: list[str] = []
+            if ag["value"] == current_primary:
+                tags.append(t("cmd_model_tag_primary", lang))
+            if ag["value"] == current_fallback:
+                tags.append(t("cmd_model_tag_fallback", lang))
+            if ag["value"] == current_third:
+                tags.append(t("cmd_model_tag_third", lang))
+            tag_str = f" \u2190 {' + '.join(tags)}" if tags else ""
+            lines.append(f"  {i}. {ag['label']}{tag_str}")
+        lines.append("")
+        lines.append(t("cmd_model_switch_hint", lang))
+        return ChatCommandOutcome(result=_build_result(user_input, "\n".join(lines)))
 
     if idx < 1 or idx > len(agents):
         return ChatCommandOutcome(result=_build_result(

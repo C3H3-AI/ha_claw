@@ -1034,6 +1034,11 @@ def apply_agent_response_format(
     response_text = strip_reply_prefix(response_text)
     plain["original_speech"] = response_text
 
+
+    if not response_text.strip():
+        plain["speech"] = ""
+        return result
+
     if conversation_mode == CONVERSATION_MODE_NO_NAME:
         plain["speech"] = response_text
         return result
@@ -1078,4 +1083,56 @@ def apply_agent_response_format(
         return result
 
     plain["speech"] = format_reply_speech(agent_name, response_text, frontend_lang or language_of(result))
+    return result
+
+
+def apply_system_reply_format(
+    hass: Any,
+    result: Any,
+    *,
+    agent_name: str = "Claw Assistant",
+) -> Any:
+    """Stamp the configured reply prefix onto a system-generated result.
+
+    Both the ``/stop`` (and other) command replies and the agent-chain stop
+    response are produced outside the normal LLM formatting path *and* outside
+    the global ``_maybe_apply_global_response_format`` hook (the background
+    goal-continuation loop calls the unpatched ``original_converse``). Without a
+    single shared stamp, ``/stop`` first renders with the prefix from the
+    command reply and is then overwritten by the prefix-less agent-chain stop
+    text — exactly the "prefix flashes in then disappears" symptom.
+
+    Routing every system reply through this one helper (same ``agent_name`` and
+    same config-derived ``conversation_mode``) makes both outputs byte-identical
+    and consistent with model replies. ``no_name`` mode still yields no prefix
+    for system replies too, keeping the behavior uniform.
+    """
+    if (
+        result is None
+        or getattr(result, "response", None) is None
+        or not getattr(result.response, "speech", None)
+    ):
+        return result
+    try:
+        from ...const import (
+            CONF_CONVERSATION_MODE,
+            DEFAULT_CONVERSATION_MODE,
+            DOMAIN,
+        )
+
+        conversation_mode = DEFAULT_CONVERSATION_MODE
+        entries = hass.config_entries.async_entries(DOMAIN)
+        if entries:
+            conversation_mode = entries[0].options.get(
+                CONF_CONVERSATION_MODE, DEFAULT_CONVERSATION_MODE
+            )
+        apply_agent_response_format(
+            result,
+            hass=hass,
+            agent_name=agent_name,
+            agent_id=DOMAIN,
+            conversation_mode=conversation_mode,
+        )
+    except Exception:
+        pass
     return result

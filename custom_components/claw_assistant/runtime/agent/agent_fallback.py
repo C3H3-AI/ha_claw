@@ -10,7 +10,11 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import intent
 
-from ...const import CONVERSATION_MODE_ADD_NAME, CONVERSATION_MODE_DETAILED
+from ...const import (
+    CONVERSATION_MODE_ADD_NAME,
+    CONVERSATION_MODE_DETAILED,
+    CONVERSATION_MODE_NO_NAME,
+)
 from ...conversation_utils import detect_user_ending_intent
 from ..storage.adaptive_memory import (
     async_record_agent_failure,
@@ -34,6 +38,7 @@ from ..llm.internal_llm import (
 )
 from ..history.history_title import async_generate_history_title
 from .loop_controller import record_response
+from .loop_controller import get_configured_pipeline_timeout
 from ..history.native_chatlog_bridge import async_bridge_native_chatlog_turn
 from ..llm.prompting import _fit_base_prompt
 from ..llm.response_format import (
@@ -47,6 +52,7 @@ from ..output.response_policy import is_user_done_text
 from ..utils.signal_capture import async_capture_passive_signal
 from ..core.state import (
     consume_next_agent_handoff,
+    consume_should_end_flag,
     get_active_conversation_state,
     get_conversation_status,
     get_runtime_store,
@@ -59,6 +65,7 @@ from ..core.state import (
 from ..tools.tool_result_summary import NON_USER_FACING_TOOLS, extract_successful_tool_response
 from ..tools.tool_result_summary import extract_failed_tool_response
 from ..output.reply_formatter import format_reply_speech
+from ..storage.live_turn_store import async_save_live_turn_snapshot
 
 LOGGER = logging.getLogger(__name__)
 
@@ -106,6 +113,64 @@ def _get_last_assistant_content(hass: HomeAssistant, conversation_id: str) -> st
         if isinstance(item, AssistantContent) and item.content:
             return item.content.strip()
     return ""
+
+
+async def _call_external_agent_with_timeout(
+    hass: HomeAssistant,
+    original_async_converse,
+    *,
+    text: str,
+    conversation_id,
+    context,
+    language,
+    agent_id: str,
+    device_id,
+    satellite_id,
+    extra_system_prompt,
+):
+    timeout = get_configured_pipeline_timeout(hass)
+    try:
+        await async_save_live_turn_snapshot(
+            hass,
+            conversation_id=str(conversation_id or "default"),
+            active=True,
+            status="running",
+            text=text,
+            phase="external_agent",
+        )
+    except Exception:
+        LOGGER.debug("Failed to persist external-agent start snapshot", exc_info=True)
+    try:
+        return await asyncio.wait_for(
+            original_async_converse(
+                hass,
+                text,
+                conversation_id,
+                context,
+                language,
+                agent_id,
+                device_id,
+                satellite_id,
+                extra_system_prompt,
+            ),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        try:
+            await async_save_live_turn_snapshot(
+                hass,
+                conversation_id=str(conversation_id or "default"),
+                active=False,
+                status="timeout",
+                reason=f"External agent timed out after {timeout}s",
+                text=text,
+                current_thought=_get_last_assistant_content(hass, conversation_id),
+                tool_results=_snapshot_tool_results(get_tool_results_state(hass)),
+                phase="external_agent_timeout",
+            )
+        except Exception:
+            LOGGER.debug("Failed to persist external-agent timeout snapshot", exc_info=True)
+        raise
 
 
 async def _trim_chat_log_for_context_overflow(hass: HomeAssistant, conversation_id: str, *, summary_agent_id: str = "", force: bool = False) -> None:
@@ -258,6 +323,18 @@ async def _finalize_completed_response(
         completed.discard(conv_key)
         pending[conv_key] = continuation_prompt
         pending["latest"] = continuation_prompt
+        try:
+            await async_save_live_turn_snapshot(
+                hass,
+                conversation_id=conv_key,
+                active=True,
+                status="pending_continuation",
+                reason=verdict_suffix,
+                text=continuation_prompt,
+                phase="goal_continuation",
+            )
+        except Exception:
+            LOGGER.debug("Failed to persist pending goal continuation", exc_info=True)
     else:
         pending.pop(conv_key, None)
         pending.pop("latest", None)
@@ -1473,16 +1550,17 @@ async def run_agent_fallback_chain(
         try:
             tool_mode_token = set_runtime_tool_mode("native")
             try:
-                result = await original_async_converse(
+                result = await _call_external_agent_with_timeout(
                     hass,
-                    text,
-                    conversation_id,
-                    context,
-                    language,
-                    current_agent_id,
-                    device_id,
-                    satellite_id,
-                    current_extra_prompt,
+                    original_async_converse,
+                    text=text,
+                    conversation_id=conversation_id,
+                    context=context,
+                    language=language,
+                    agent_id=current_agent_id,
+                    device_id=device_id,
+                    satellite_id=satellite_id,
+                    extra_system_prompt=current_extra_prompt,
                 )
             finally:
                 reset_runtime_tool_mode(tool_mode_token)
@@ -1946,14 +2024,16 @@ async def run_agent_fallback_chain(
 
     resolved_lang = language or hass.config.language or "en"
 
-    if get_should_end_flag(hass).get("value"):
-        get_should_end_flag(hass)["value"] = False
-        stop_text = t("cmd_stop_done", resolved_lang)
+    if consume_should_end_flag(hass):
         LOGGER.info("Agent fallback chain stopped by user command")
         from homeassistant.components.conversation import ConversationResult
         intent_response = intent.IntentResponse(language=resolved_lang)
-        intent_response.async_set_speech(stop_text)
-        return ConversationResult(response=intent_response, conversation_id=conversation_id)
+        intent_response.async_set_speech("")
+        stop_result = ConversationResult(
+            response=intent_response, conversation_id=conversation_id
+        )
+        stop_result.continue_conversation = False
+        return stop_result
 
     if agent_errors:
         raw_error_detail = "; ".join(agent_errors)
@@ -1978,8 +2058,6 @@ async def run_agent_fallback_chain(
         error_detail,
         f" (raw: {raw_error_detail})" if raw_error_detail else "",
     )
-
-    get_should_end_flag(hass)["value"] = False
 
     intent_response = intent.IntentResponse(language=resolved_lang)
     intent_response.async_set_error(
