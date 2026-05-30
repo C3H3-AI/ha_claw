@@ -6,6 +6,7 @@ import asyncio
 import base64
 import logging
 import subprocess
+from time import monotonic
 import uuid
 from pathlib import Path
 
@@ -24,6 +25,11 @@ from ...const import CONF_ENABLE_CONTEXT_STATUS_BAR, CONF_ENABLE_FILE_UPLOAD, CO
 from ..history.continuous_conversation import (
     continuous_conversation_enabled,
     get_effective_conversation_id,
+)
+from ..storage.live_turn_store import (
+    async_save_live_turn_snapshot,
+    async_get_live_turn_events,
+    async_get_live_turn_snapshot,
 )
 from ..utils.data_path import get_tmp_dir
 
@@ -330,7 +336,39 @@ async def streaming_websocket_process(
 
     async def _run_converse():
         try:
-            return await conversation.async_converse(hass=hass, **converse_kwargs)
+            result = await conversation.async_converse(hass=hass, **converse_kwargs)
+        except asyncio.CancelledError:
+            await async_save_live_turn_snapshot(
+                hass,
+                conversation_id=conversation_id,
+                active=False,
+                status="cancelled",
+                reason="Interrupted by a newer message",
+                text=text,
+                phase="websocket_cancelled",
+            )
+            raise
+        except Exception as err:
+            await async_save_live_turn_snapshot(
+                hass,
+                conversation_id=conversation_id,
+                active=False,
+                status="error",
+                reason=str(err),
+                text=text,
+                phase="websocket_error",
+            )
+            raise
+        else:
+            await async_save_live_turn_snapshot(
+                hass,
+                conversation_id=conversation_id,
+                active=False,
+                status="finished",
+                text=text,
+                phase="websocket_finished",
+            )
+            return result
         finally:
             _buffer_live_event(hass, conversation_id, {
                 "conversation_id": conversation_id,
@@ -344,6 +382,18 @@ async def streaming_websocket_process(
                 if not detached_tasks.get(conversation_id):
                     _clear_live_event_buffer(hass, conversation_id)
             hass.async_create_background_task(_delayed_clear(), name=f"claw_clear_buf_{conversation_id}")
+
+    try:
+        await async_save_live_turn_snapshot(
+            hass,
+            conversation_id=conversation_id,
+            active=True,
+            status="running",
+            text=text,
+            phase="websocket_detached",
+        )
+    except Exception:
+        _LOGGER.debug("Failed to persist websocket turn start for %s", conversation_id, exc_info=True)
 
     converse_task = hass.async_create_background_task(
         _run_converse(),
@@ -396,6 +446,25 @@ async def _await_task(task):
 _LIVE_EVENT_BUFFER_KEY = "_claw_live_event_buffer"
 _LIVE_EVENT_MAX = 200
 _LIVE_SUBSCRIBERS_KEY = "_claw_live_subscribers"
+_LIVE_EVENT_PERSIST_TS_KEY = "_claw_live_event_persist_ts"
+_LIVE_EVENT_PERSIST_INTERVAL = 1.0
+
+
+def _should_persist_live_event(dd: dict, conversation_id: str, evt: dict) -> bool:
+    event_type = evt.get("event_type")
+    if event_type == "stream_end":
+        return True
+    data = evt.get("data")
+    delta = data.get("delta") if isinstance(data, dict) else None
+    if isinstance(delta, dict) and (delta.get("tool_calls") or delta.get("role") == "tool_result"):
+        return True
+    timestamps = dd.setdefault(_LIVE_EVENT_PERSIST_TS_KEY, {})
+    now = monotonic()
+    last = float(timestamps.get(conversation_id, 0.0) or 0.0)
+    if now - last < _LIVE_EVENT_PERSIST_INTERVAL:
+        return False
+    timestamps[conversation_id] = now
+    return True
 
 
 def _buffer_live_event(hass, conversation_id: str, evt: dict) -> None:
@@ -405,6 +474,21 @@ def _buffer_live_event(hass, conversation_id: str, evt: dict) -> None:
     events.append(evt)
     if len(events) > _LIVE_EVENT_MAX:
         events[:] = events[-_LIVE_EVENT_MAX:]
+    if _should_persist_live_event(dd, conversation_id, evt):
+        try:
+            hass.async_create_task(
+                async_save_live_turn_snapshot(
+                    hass,
+                    conversation_id=conversation_id,
+                    active=True,
+                    status="running",
+                    event=evt,
+                    update_status=False,
+                ),
+                "claw_live_event_persist",
+            )
+        except Exception:
+            _LOGGER.debug("Failed to persist live event for %s", conversation_id, exc_info=True)
     for sub_conn, sub_msg_id, sub_conv_id in dd.get(_LIVE_SUBSCRIBERS_KEY, []):
         if sub_conv_id == conversation_id:
             try:
@@ -447,6 +531,8 @@ async def websocket_subscribe_live_stream(
     dd = _domain_data(hass)
     buf = dd.get(_LIVE_EVENT_BUFFER_KEY, {})
     cached = list(buf.get(requested_conv_id, []))
+    if not cached:
+        cached = await async_get_live_turn_events(hass, requested_conv_id)
 
     subs = dd.setdefault(_LIVE_SUBSCRIBERS_KEY, [])
     sub_entry = (connection, msg["id"], requested_conv_id)
@@ -502,6 +588,25 @@ async def websocket_live_turn_snapshot(
             is_running = True
 
     if not is_running:
+        persisted = await async_get_live_turn_snapshot(hass, conversation_id or "")
+        if persisted:
+            persisted_tools = persisted.get("tool_results", [])
+            persisted_events = persisted.get("events", [])
+            connection.send_result(msg["id"], {
+                "active": bool(persisted.get("active", False)),
+                "conversation_id": persisted.get("conversation_id") or conversation_id or None,
+                "current_thought": persisted.get("current_thought"),
+                "tool_activities": persisted_tools[:10] if isinstance(persisted_tools, list) else [],
+                "response_parts": persisted.get("response_parts", []),
+                "phase": persisted.get("phase") or persisted.get("status") or "recovered",
+                "status": persisted.get("status", ""),
+                "reason": persisted.get("reason", ""),
+                "started_at": persisted.get("started_at", ""),
+                "updated_at": persisted.get("updated_at", ""),
+                "recovered": True,
+                "replay_events": persisted_events[-20:] if isinstance(persisted_events, list) else [],
+            })
+            return
         connection.send_result(msg["id"], {
             "active": False,
             "conversation_id": conversation_id or None,
@@ -670,15 +775,15 @@ def _guess_mime(filename: str) -> str:
 _BINARY_MAGIC_PREFIXES: tuple[bytes, ...] = (
     b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"GIF87a", b"GIF89a",
     b"BM", b"RIFF", b"%PDF-", b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08",
-    b"\x1f\x8b",  # gzip
-    b"7z\xbc\xaf\x27\x1c",  # 7z
-    b"Rar!\x1a\x07",  # rar
-    b"OggS", b"ID3", b"\xff\xfb", b"\xff\xf3", b"\xff\xf2",  # mp3 frames
+    b"\x1f\x8b",
+    b"7z\xbc\xaf\x27\x1c",
+    b"Rar!\x1a\x07",
+    b"OggS", b"ID3", b"\xff\xfb", b"\xff\xf3", b"\xff\xf2",
     b"\x00\x00\x00\x18ftyp", b"\x00\x00\x00\x1cftyp", b"\x00\x00\x00 ftyp",
-    b"\x1aE\xdf\xa3",  # mkv/webm
+    b"\x1aE\xdf\xa3",
     b"SQLite format 3\x00",
-    b"\x7fELF", b"MZ",  # executables
-    b"\x00asm",  # wasm
+    b"\x7fELF", b"MZ",
+    b"\x00asm",
 )
 
 
@@ -1028,8 +1133,8 @@ def _install_recognize_intent_hook(hass) -> None:
                     active_conversation_id = kwargs.get("conversation_id") or conversation_id
                     runtime_store = get_runtime_store(self.hass)
 
-                    from ..core.state import get_should_end_flag
-                    if get_should_end_flag(self.hass).get("value"):
+                    from ..core.state import consume_should_end_flag
+                    if consume_should_end_flag(self.hass):
                         _LOGGER.info(
                             "pipeline async_converse hook: should_end_flag set, stop conv=%s",
                             active_conversation_id,
@@ -1089,6 +1194,20 @@ def _install_recognize_intent_hook(hass) -> None:
                                 goal_conversation_id,
                             )
                             break
+                    try:
+                        await async_save_live_turn_snapshot(
+                            self.hass,
+                            conversation_id=str(active_conversation_id or conversation_id or "default"),
+                            active=True,
+                            status="continuing",
+                            text=prompt,
+                            phase="pipeline_goal_continuation",
+                        )
+                    except Exception:
+                        _LOGGER.debug(
+                            "pipeline async_converse hook: failed to persist continuation snapshot",
+                            exc_info=True,
+                        )
                     _LOGGER.info(
                         "pipeline async_converse hook: continuation turn %d for %s prompt=%s",
                         _ci, active_conversation_id, prompt[:120],
@@ -1149,6 +1268,19 @@ def _install_recognize_intent_hook(hass) -> None:
                         speech_text[:120],
                     )
             finally:
+                try:
+                    await async_save_live_turn_snapshot(
+                        self.hass,
+                        conversation_id=str(conversation_id or "default"),
+                        active=False,
+                        status="finished",
+                        phase="pipeline_goal_continuation_done",
+                    )
+                except Exception:
+                    _LOGGER.debug(
+                        "pipeline async_converse hook: failed to persist final continuation state",
+                        exc_info=True,
+                    )
                 self.hass.data.pop(flag_key, None)
                 _LOGGER.info("pipeline async_converse hook: exit conv=%s", conversation_id)
             return result

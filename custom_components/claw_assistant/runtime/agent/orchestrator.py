@@ -50,6 +50,7 @@ from ..core.state import (
     get_tool_results_state,
     is_im_channel,
     reset_active_conversation,
+    reset_live_response_parts,
     set_active_conversation,
 )
 from ..output.summary import process_ai_summary
@@ -339,6 +340,8 @@ async def execute_conversation_turn(
     conv_history = get_conversation_history()
     if conv_history and conversation_id:
         conv_history.mark_turn_in_progress(str(conversation_id), text)
+        reset_live_response_parts(hass, str(conversation_id))
+    turn_result = None
     try:
         prompt_report = await fire_hook_event(
             hass,
@@ -367,11 +370,12 @@ async def execute_conversation_turn(
                 language=language or hass.config.language
             )
             intent_response.async_set_speech(message)
-            return ConversationResult(
+            turn_result = ConversationResult(
                 response=intent_response, conversation_id=conversation_id
             )
+            return turn_result
 
-        return await _execute_conversation_turn_inner(
+        turn_result = await _execute_conversation_turn_inner(
             hass,
             entry,
             original_async_converse,
@@ -384,9 +388,30 @@ async def execute_conversation_turn(
             satellite_id=satellite_id,
             extra_system_prompt=extra_system_prompt,
         )
+        return turn_result
     finally:
         if conv_history and conversation_id:
             conv_history.clear_in_progress(str(conversation_id))
+        if conversation_id:
+            try:
+                final_text = ""
+                resp = getattr(turn_result, "response", None)
+                speech = getattr(resp, "speech", None) or {}
+                if isinstance(speech, dict):
+                    plain = speech.get("plain", {}) or {}
+                    final_text = str(
+                        plain.get("original_speech") or plain.get("speech") or ""
+                    )
+                reset_live_response_parts(hass, str(conversation_id))
+                from ..storage.live_turn_store import async_finalize_live_turn
+
+                await async_finalize_live_turn(
+                    hass, str(conversation_id), final_text
+                )
+            except Exception:
+                LOGGER.debug(
+                    "Failed to finalize live turn snapshot", exc_info=True
+                )
         await fire_hook_event(
             hass,
             HookPayload(
@@ -607,6 +632,8 @@ async def _execute_conversation_turn_inner(
         max_cont = DEFAULT_THRESHOLDS.max_continuations_per_turn
         current_prompt = extra_system_prompt
 
+        response = None
+        direct_tool_results = []
         while True:
             tool_calls_state = get_tool_calls_state(hass)
             tool_calls_state.clear()
@@ -643,6 +670,14 @@ async def _execute_conversation_turn_inner(
                     )
                 except _aio.TimeoutError:
                     LOGGER.warning("Direct API call timed out")
+                    timeout_response = intent.IntentResponse(
+                        language=language or hass.config.language
+                    )
+                    timeout_response.async_set_speech(t("err_timeout", language))
+                    direct_result = ConversationResult(
+                        response=timeout_response,
+                        conversation_id=conversation_id,
+                    )
                     break
             direct_tool_results = _snapshot_tool_results(get_tool_results_state(hass))
             synthesized_response = extract_successful_tool_response(direct_tool_results)

@@ -340,7 +340,7 @@ async def async_downgrade_intents_package(hass: HomeAssistant) -> None:
         try:
             from importlib.metadata import version
             return version("home-assistant-intents")
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
 
     current = await hass.async_add_executor_job(_check_current_version)
@@ -361,7 +361,7 @@ async def async_downgrade_intents_package(hass: HomeAssistant) -> None:
                 capture_output=True, text=True, timeout=120,
             )
             return proc.returncode, proc.stdout, proc.stderr
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return -1, "", str(exc)
 
     LOGGER.info("Downgrading home-assistant-intents %s -> 2026.3.3", current)
@@ -382,7 +382,7 @@ async def async_downgrade_intents_package(hass: HomeAssistant) -> None:
                 if isinstance(cache, dict):
                     for key in [k for k in cache if isinstance(k, str) and k.lower().startswith("zh")]:
                         cache.pop(key, None)
-    except Exception:  # noqa: BLE001
+    except Exception:
         LOGGER.debug("Skipped clearing default_agent zh cache", exc_info=True)
 
 
@@ -2176,10 +2176,29 @@ def patch_pipeline_websocket_detach(hass: HomeAssistant) -> None:
                 name=f"claw_pipeline_{conversation_id}",
             )
             detached_runs[conversation_id] = run_task
-            
+
             from ...chat_commands import _task_registry
             if conversation_id:
                 _task_registry(hass_inner)[conversation_id] = run_task
+
+            def _finalize_detached_run(_finished_task):
+                detached_runs.pop(conversation_id, None)
+                from ...chat_commands import _task_registry as _tr
+                registry = _tr(hass_inner)
+                if registry.get(conversation_id) is run_task:
+                    registry.pop(conversation_id, None)
+                _buffer_live_event(hass_inner, conversation_id, {
+                    "conversation_id": conversation_id,
+                    "event_type": "stream_end",
+                    "data": {},
+                })
+                from .official_websocket_hook import _clear_live_event_buffer
+                async def _delayed_clear():
+                    await asyncio.sleep(30)
+                    _clear_live_event_buffer(hass_inner, conversation_id)
+                hass_inner.async_create_background_task(_delayed_clear(), name=f"claw_clear_buf_{conversation_id}")
+
+            run_task.add_done_callback(_finalize_detached_run)
 
             def _on_unsub():
                 LOGGER.info("Pipeline WS unsubscribed for %s — task continues detached", conversation_id)
@@ -2198,20 +2217,6 @@ def patch_pipeline_websocket_detach(hass: HomeAssistant) -> None:
                 ))
             except Exception:
                 LOGGER.exception("Pipeline detached run error for %s", conversation_id)
-            finally:
-                detached_runs.pop(conversation_id, None)
-                from ...chat_commands import _task_registry as _tr
-                _tr(hass_inner).pop(conversation_id, None)
-                _buffer_live_event(hass_inner, conversation_id, {
-                    "conversation_id": conversation_id,
-                    "event_type": "stream_end",
-                    "data": {},
-                })
-                from .official_websocket_hook import _clear_live_event_buffer
-                async def _delayed_clear():
-                    await asyncio.sleep(30)
-                    _clear_live_event_buffer(hass_inner, conversation_id)
-                hass_inner.async_create_background_task(_delayed_clear(), name=f"claw_clear_buf_{conversation_id}")
 
     wrapped = detached_websocket_run
     for attr in ("_ws_command",):
