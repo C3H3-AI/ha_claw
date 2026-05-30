@@ -35,7 +35,7 @@ def clear_resume_history_binding(hass: HomeAssistant) -> None:
     status.pop(_RESUME_HISTORY_WINDOW_ID_KEY, None)
 
 
-_INTERNAL_TAG_RE = re.compile(r"\[-\s*\w+[:：][\s\S]*?\]", re.DOTALL)
+_INTERNAL_TAG_RE = re.compile(r"\[[^\[\]]{10,}\]", re.DOTALL)
 _ACTIVITY_BLOCK_RE = re.compile(
     r"<\s*activity-context\s*>[\s\S]*?</\s*activity-context\s*>",
     flags=re.IGNORECASE,
