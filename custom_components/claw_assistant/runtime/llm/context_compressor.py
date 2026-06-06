@@ -228,6 +228,34 @@ def _summarize_tool_result_line(msg: Any) -> str:
     return f"[{tool_name}] ({result_len:,} chars, {line_count} lines)"
 
 
+def _ccr_handle(raw: str, tool_name: str) -> str:
+    try:
+        from .ccr_store import get_ccr_store
+
+        cid = get_ccr_store().put(raw, tool_name=tool_name)
+    except Exception:  # never let caching break compression
+        cid = None
+    if not cid:
+        return ""
+    return f'\n[CCR:{cid}] full original via RetrieveOriginal(id="{cid}")'
+
+
+def _structural_digest(raw: str, *, max_chars: int = 500) -> str:
+    try:
+        from .content_router import ContentType, SmartCrusher, detect_content_type
+
+        if detect_content_type(raw) != ContentType.JSON:
+            return ""
+        crushed = SmartCrusher().compress(raw)
+    except Exception:  # digest is best-effort, never break compression
+        return ""
+    if not crushed:
+        return ""
+    if len(crushed) > max_chars:
+        crushed = crushed[:max_chars] + "…"
+    return f"\n{crushed}"
+
+
 class ContextCompressor:
 
     def __init__(
@@ -410,7 +438,12 @@ class ContextCompressor:
             tool_name = getattr(msg, "tool_name", "") or ""
             if _should_preserve_tool_result(tool_name, raw):
                 if len(raw) > 4000:
-                    truncated = raw[:3000] + "\n...[truncated, preserved critical content]...\n" + raw[-800:]
+                    truncated = (
+                        raw[:3000]
+                        + "\n...[truncated, preserved critical content]...\n"
+                        + raw[-800:]
+                        + _ccr_handle(raw, tool_name)
+                    )
                     result[i] = ToolResultContent(
                         agent_id=msg.agent_id,
                         tool_call_id=msg.tool_call_id,
@@ -419,7 +452,11 @@ class ContextCompressor:
                     )
                     pruned += 1
                 continue
-            summary_line = _summarize_tool_result_line(msg)
+            summary_line = (
+                _summarize_tool_result_line(msg)
+                + _structural_digest(raw)
+                + _ccr_handle(raw, tool_name)
+            )
             result[i] = ToolResultContent(
                 agent_id=msg.agent_id,
                 tool_call_id=msg.tool_call_id,
