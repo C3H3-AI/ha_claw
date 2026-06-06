@@ -67,6 +67,38 @@ _MD_HEADING_RE = re.compile(r"^(#{1,6})\s", re.MULTILINE)
 _MD_HR_RE = re.compile(r"^(\s*[-*_]\s*){3,}$", re.MULTILINE)
 _MD_BLOCKQUOTE_RE = re.compile(r"^(>\s*)+", re.MULTILINE)
 
+_VOICE_STATUS_KEYS = (
+    "is_voice_pipeline",
+    "_voice_detection_source",
+    "_pipeline_start_stage",
+    "_pipeline_end_stage",
+    "_pipeline_device_id",
+    "_pipeline_device_info",
+    "detected_platform",
+)
+
+
+def _refresh_turn_channel_status(
+    hass: HomeAssistant,
+    *,
+    conversation_id,
+    satellite_id,
+) -> None:
+    status = get_conversation_status(hass)
+    status["last_conversation_id"] = conversation_id
+    if satellite_id:
+        status["is_voice_pipeline"] = True
+        status["_voice_detection_source"] = "satellite_id"
+        return
+
+    # Assist pipeline hooks set fresh voice metadata before the conversation
+    # agent runs. Clear only stale voice state from previous non-pipeline turns.
+    source = str(status.get("_voice_detection_source") or "")
+    if source.startswith("pipeline:"):
+        return
+    for key in _VOICE_STATUS_KEYS:
+        status.pop(key, None)
+
 
 def _neutralize_user_markdown(text: str) -> str:
     if not text:
@@ -570,7 +602,11 @@ async def _execute_conversation_turn_inner(
     conversation_mode = runtime_config.conversation_mode
     enable_ai_summary = runtime_config.enable_ai_summary
 
-    get_conversation_status(hass)["last_conversation_id"] = conversation_id
+    _refresh_turn_channel_status(
+        hass,
+        conversation_id=conversation_id,
+        satellite_id=satellite_id,
+    )
 
     effective_agent = agent_id or (fallback_agents[0] if fallback_agents else "")
     if effective_agent:

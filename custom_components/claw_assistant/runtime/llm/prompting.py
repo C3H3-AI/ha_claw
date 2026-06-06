@@ -216,19 +216,33 @@ def _build_channel_context_section(
     pipeline_end_stage = conv_status.get("_pipeline_end_stage", "")
     if "tts" in pipeline_end_stage:
         is_voice = True
+    non_voice_pipeline_note = (
+        "Current turn pipeline: no active Assist voice pipeline metadata was "
+        "detected for this request. This only describes the current delivery "
+        "path; it does not mean the integration lacks voice support. If the "
+        "user asks about voice capability or configuration, distinguish "
+        "`ha` frontend transport from Assist/STT/TTS voice pipelines."
+    )
 
     if is_voice:
         return (
             "## Channel\n"
-            "Type: voice pipeline.\n"
-            "The user may hear this through TTS. Keep the response concise and "
-            "easy to listen to unless the user asks for detail."
+            "Transport: Home Assistant Assist voice pipeline.\n"
+            "The current turn was detected as voice because Assist pipeline "
+            "metadata includes STT, wake word, TTS, or a satellite id. "
+            "The user may hear this through TTS. Reply as one continuous spoken "
+            "paragraph in plain text only, like a natural conversation. "
+            "Avoid line breaks, markdown, bullets, headings, tables, code blocks, "
+            "media tags, URLs, file paths, emoji, and special symbols. "
+            "Keep it concise and easy to listen to unless the user asks for detail. "
+            "If the user asks whether voice is supported, do not deny it: this "
+            "integration can run through voice pipelines when invoked that way."
             f"{lang_instruction}"
         )
     elif is_im_channel(conversation_id):
         return (
             "## Channel\n"
-            f"Type: {ch_type} (instant messaging).\n"
+            f"Transport: {ch_type} (instant messaging).\n"
             f"You are chatting inside an IM bot (WeChat / QQ / etc.). "
             f"The user reads your reply as a text message on their phone or desktop. "
             f"Full markdown is supported: bold, italic, lists, tables, code blocks, etc. "
@@ -238,33 +252,33 @@ def _build_channel_context_section(
     elif is_companion_app(platform):
         return (
             "## Channel\n"
-            f"Type: ha (Home Assistant Companion App).\n"
+            f"Transport: ha (Home Assistant Companion App).\n"
             f"Platform: {platform_name}.\n"
             f"The user is using the official Home Assistant mobile app. "
             f"The chat interface is rendered in a WebView inside the app. "
             f"Full markdown is supported. Rich media (images, videos) can be displayed. "
             f"The user is on a mobile device with a smaller screen. "
             f"Keep responses concise and mobile-friendly when appropriate. "
-            f"This is NOT a voice channel — the user is reading, not listening."
+            f"{non_voice_pipeline_note}"
             f"{lang_instruction}"
         )
     elif is_mobile_platform(platform):
         return (
             "## Channel\n"
-            f"Type: ha (Home Assistant mobile web).\n"
+            f"Transport: ha (Home Assistant mobile web).\n"
             f"Platform: {platform_name}.\n"
             f"The user is accessing Home Assistant via a mobile browser. "
             f"Full markdown is supported. Rich media can be displayed. "
             f"The user is on a mobile device with a smaller screen. "
             f"Keep responses concise and mobile-friendly when appropriate. "
-            f"This is NOT a voice channel — the user is reading, not listening."
+            f"{non_voice_pipeline_note}"
             f"{lang_instruction}"
         )
 
     platform_info = f"Platform: {platform_name}.\n" if platform else ""
     return (
         "## Channel\n"
-        "Type: ha (Home Assistant frontend chat panel).\n"
+        "Transport: ha (Home Assistant frontend chat panel).\n"
         f"{platform_info}"
         "You are inside the Home Assistant web UI Assist chat window. "
         "The user types text and reads your reply in a rich-markdown bubble. "
@@ -272,7 +286,7 @@ def _build_channel_context_section(
         "Write shareable media under `OUTPUT_DIR`; reply with `output_url(name)` "
         "or `[VIDEO:/local/...]`/`[IMAGE:...]`/`[GIF:...]`/`[FILE:...]` — auto-rendered. "
         "Camera/media specifics live in their tool descriptions. "
-        "This is NOT a voice channel — the user is reading, not listening."
+        f"{non_voice_pipeline_note}"
         f"{lang_instruction}"
     )
 
@@ -337,7 +351,10 @@ def build_turn_context_prompt(
             history_prompt += f"### Shared Context\n{shared_context}\n"
         history_prompt += (
             f'\nFocus on the current request: "{text}"\n'
-            "Reuse prior context only when it helps the current turn."
+            "Reuse prior context only when it helps the current turn. "
+            "Treat old channel/voice/text statements in history as historical "
+            "claims, not current facts; the current Channel section is "
+            "authoritative for this turn."
         )
         sections.append(history_prompt.strip())
 
