@@ -72,11 +72,13 @@ from .self_edit_tools import (
     ReviewSelfSkillsTool,
     UpsertGuideDocTool,
 )
+from .ccr_tools import RetrieveOriginalTool
+from .skill_tools import GetSkillIndexTool
 from ..delegation.tool import DelegateTaskTool, DelegateBatchTool, DelegateStatusTool, DelegateAskParentTool, DelegateGetPendingQuestionsTool
 
 TOOL_REGISTRY: dict[str, dict[str, Any]] = {
     "ServiceCall": {"category": "device", "desc": "Call a HA entity service. Params may be data dict or flat fields. entity_id required/fuzzy-matched. Only for services that target entities ([entity] in ListServices); system services (reload/restart/purge) are auto-bridged to HAControl. Use real service parameter names, not boolean word keys: light.turn_on uses color_name='white' or rgb_color=[r,g,b] or color_temp_kelvin, brightness/brightness_pct; climate uses temperature/hvac_mode; fan uses percentage; media volume uses volume_level(0-1). Service auto-routed per domain.", "priority": 2},
-    "EntityQuery": {"category": "query", "desc": "Query a single entity state. Params: entity_id (supports fuzzy matching such as 'living room light')", "priority": 1},
+    "EntityQuery": {"category": "query", "desc": "Query one entity state. BEST PRACTICE: use SmartDiscovery first to get exact exposed entity_id, then call EntityQuery(entity_id). A privacy-safe fuzzy fallback still exists for compatibility when only rough names are provided.", "priority": 1},
     "GetLiveContext": {"category": "query", "desc": "Get the real-time state list of all exposed entities. No parameters required.", "priority": 1},
     "CameraCapture": {"category": "device", "desc": "Camera tool: capture snapshots or analyze live camera frames. camera_entity='list'/empty enumerates cameras. mode=snapshot returns snapshot_url+markdown_hint; mode=analyze returns base64 JPEG for vision. For uploaded images/GIFs/videos use MediaAnalyze. Params: camera_entity, mode(snapshot|analyze), max_dim(default 640), target_kb(default 40)", "priority": 1},
     "MediaAnalyze": {"category": "device", "desc": "Analyze uploaded media (images/GIFs/videos). Images→single JPEG. Videos→key frames. First call auto-extracts overview frames with timestamp_sec per frame. For deeper analysis, call again with timestamps=[1.5,3.0,...] to extract at exact seconds. Describe what you see and respond to intent/mood. Params: file_path(required), max_dim(default 640), target_kb(default 40), timestamps(optional list of seconds)", "priority": 1},
@@ -85,7 +87,7 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
     "WebSearch": {"category": "search", "desc": "Web search (bing first, baidu fallback). Returns titles+snippets. Then use UrlFetch(url) to read full page, WebReadChunk(doc_id, position) for more. Params: query, num_results(default 5), engine(google/bing/baidu/bing_cn, leave empty for auto)", "priority": 2},
     "BatchControl": {"category": "device", "desc": "Control multiple devices in one request. Params: entity_ids(list) OR discovery filters domain/area/state/name_contains, action(turn_on/turn_off/toggle), data. Domain-aware: vacuum turn_on=start cleaning, turn_off=return to base; cover turn_on=open, turn_off=close; lock turn_on=unlock, turn_off=lock. For 'turn off all lights', call domain='light', state='on', action='turn_off'. For 'start/open all vacuums', call domain='vacuum', action='turn_on'.", "priority": 2},
     "AreaDevices": {"category": "query", "desc": "Get all devices in a specific area. Params: area", "priority": 2},
-    "HistoryQuery": {"category": "query", "desc": "Query entity history. Params: entity_id, hours (default 24)", "priority": 2},
+    "HistoryQuery": {"category": "query", "desc": "Query entity history. Prefer exact entity_id discovered via SmartDiscovery first. Params: entity_id, hours (default 24). A privacy-safe fuzzy fallback is retained for compatibility.", "priority": 2},
     "Automation": {"category": "system", "desc": "Manage automations via official APIs (NOT shell/ConfigFile!). Params: action (list/get/create/update/delete/trigger/enable/disable/traces/trace_get), entity_id, automation_id, config, icon, area_id, run_id. traces: list execution history. trace_get: get detailed trace by run_id. Workflow: get→modify→update. Always use this tool for automation CRUD.", "priority": 2},
     "Script": {"category": "system", "desc": "Manage scripts via official APIs (NOT shell/ConfigFile!). Params: action (list/get/create/update/delete/run/traces/trace_get), entity_id, script_id, config, variables, icon, area_id, run_id. traces: list execution history. trace_get: get detailed trace by run_id. update merges partial config; run executes with optional variables dict.", "priority": 2},
     "ExecutePython": {"category": "system", "desc": "Execute Python only when native HA tools cannot do the job cleanly. Tool description contains the full routing checklist. Inline(default): HA runtime tasks needing hass/files/frontend artefacts. Sandbox=true: isolated package/heavy/risky code without hass. Inline has OUTPUT_DIR/TMP_DIR, output_url(name), list_outputs(), list_tmp(). Destructive ops need consent. Params: code, sandbox, requirements, timeout", "priority": 2},
@@ -115,6 +117,7 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
     "CustomEntityManager": {"category": "system", "desc": "Create/list/edit/delete dynamic AI entities under claw_assistant device (diagnostic). Use this tool (NOT HAControl/shell) to create custom entities. Supports sensor(Jinja2), binary_sensor(Jinja2), switch(toggle), button(press_action). Params: action(create/list/edit/delete), platform, name, entity_id, state_template, icon, device_class, state_class, unit_of_measurement, press_action", "priority": 1},
     "HelperManager": {"category": "system", "desc": "Create/list/delete HA native helpers (input_boolean/input_number/input_text/input_select/input_datetime/input_button/timer/counter/template sensor/binary_sensor). Use this tool (NOT HAControl/shell) to manage helpers. All params are flat (no nested dict). action=create: helper_type+name+type-specific params. action=delete: entity_id or helper_type+name.", "priority": 1},
     "GetSystemIndex": {"category": "query", "desc": "Get the system structure index (areas/domains/device classes/people/automations/scripts overview). Params: force_refresh (default false)", "priority": 2},
+    "GetSkillIndex": {"category": "core", "desc": "List builtin routing skills and installed markdown skills. Params: keyword(optional)", "priority": 1},
     "SetConversationState": {"category": "core", "desc": "Set conversation state ONLY for complex multi-turn interactions. DO NOT use for simple device control or queries — the system auto-detects completion. Params: expecting_response(bool), reason", "priority": 3},
     "AgentHandoff": {"category": "core", "desc": "Consult another AI agent synchronously. You keep control. agent_id accepts real entity_id, agent_name, or aliases from available_agents. Params: agent_id(optional), question(required), context(optional), intent(consult|request|review). Reply comes back as tool result.", "priority": 2},
     "NextAgentHandoff": {"category": "core", "desc": "Consult the next available AI agent. Shortcut for AgentHandoff. Params: question(required), context(optional). Reply comes back as tool result.", "priority": 2},
@@ -123,6 +126,7 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
     "SmartDiscovery": {"category": "query", "desc": "Smart entity discovery. Params: area/domain/state/name_contains/name_pattern/device_class/inferred_type/person_name/pet_name/limit", "priority": 2},
     "IntentCall": {"category": "query", "desc": "List or call third-party Home Assistant intent handlers only. Do NOT use for Claw plugins, plugin tools, skills, slash commands, or tools already listed in the function schema. Plugin tools are separate tools and must be called directly by tool name. action=list discovers HA intents; action=call executes one with required slots.", "priority": 2},
     "ConfigFile": {"category": "system", "desc": "Access the Home Assistant config directory. Params: action(list/read/stage_write/stage_append/stage_mkdir/stage_delete/apply/cancel/list_pending), path/content/approval_id, user_consent(bool, only required for delete apply), consent_quote(str, audit). write/append/mkdir auto-apply on `apply` (reversible). delete is destructive — describe in chat what/why, judge the user's reply yourself (no keyword list), then `apply` with user_consent=true and consent_quote=\"<their words>\". For automations.yaml/configuration.yaml/sensors.yaml, prefer the Automation tool.", "priority": 3},
+    "RetrieveOriginal": {"category": "core", "desc": "Retrieve the full original content that context compression replaced with a summary. When a tool result shows a [CCR:<id>] handle, call RetrieveOriginal(id) to get the full output back. Params: id(required), offset(default 0), max_chars(default 8000).", "priority": 1},
     "ReadRuntimeArtifact": {"category": "system", "desc": "Read or search a Claw Assistant temp/output runtime artifact text file. Not for workspace docs; use GetWorkspaceDoc for .storage/claw_assistant/workspace/*.md. action=read(default, no char limit, use offset+max_chars for pagination), action=search(exact case-insensitive), action=search_fuzzy(multi-keyword fuzzy match), action=info(file size only). Params: path, action, offset, max_chars, query, context_chars.", "priority": 1},
     "DeleteSkill": {"category": "core", "desc": "Delete an installed Markdown skill (audited in changelog). Params: name, reason", "priority": 2},
     "UpsertGuideDoc": {"category": "core", "desc": "Create or overwrite a runtime Home Assistant guide Markdown. Params: relative_path, markdown, reason", "priority": 2},
@@ -197,6 +201,7 @@ def build_tool_map() -> dict[str, type]:
         "HeartbeatManager": HeartbeatManagerTool,
         "ParallelToolCall": ParallelToolCallTool,
         "GetSystemIndex": GetSystemIndexTool,
+        "GetSkillIndex": GetSkillIndexTool,
         "SetConversationState": SetConversationStateTool,
         "AgentHandoff": AgentHandoffTool,
         "NextAgentHandoff": NextAgentHandoffTool,
@@ -205,6 +210,7 @@ def build_tool_map() -> dict[str, type]:
         "SmartDiscovery": SmartDiscoveryTool,
         "GetLiveContext": GetLiveContextTool,
         "ReadRuntimeArtifact": ReadRuntimeArtifactTool,
+        "RetrieveOriginal": RetrieveOriginalTool,
         "ConfigFile": ConfigFileTool,
         "DeleteSkill": DeleteSkillTool,
         "UpsertGuideDoc": UpsertGuideDocTool,
