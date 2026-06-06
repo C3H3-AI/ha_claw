@@ -291,6 +291,23 @@ def _build_channel_context_section(
     )
 
 
+def _guard_cache_prefix(prompt: str) -> str:
+    try:
+        from .cache_aligner import extract_volatile, align
+
+        _stable, volatile = extract_volatile(prompt)
+        if volatile:
+            LOGGER.warning(
+                "Cache-prefix guard: %d volatile line(s) found in base system "
+                "prompt; relocating to tail to preserve KV-cache hits",
+                len(volatile),
+            )
+            return align(prompt)
+    except Exception:  # never let the guard break prompt assembly
+        return prompt
+    return prompt
+
+
 def build_base_prompt(
     hass: HomeAssistant,
     *,
@@ -303,10 +320,11 @@ def build_base_prompt(
     del conversation_id
 
     base_prompt = build_internal_llm_prompt("")
-    return _fit_base_prompt(
+    fitted = _fit_base_prompt(
         base_prompt,
         _build_runtime_preference_sections(runtime_config),
     )
+    return _guard_cache_prefix(fitted)
 
 
 def build_turn_context_prompt(
