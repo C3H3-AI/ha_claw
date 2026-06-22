@@ -140,7 +140,6 @@ async def websocket_chat_history_list(
 
 
 DEFAULT_DISPLAY_DEPTH = 10
-MAX_TOOL_CALLS_DISPLAY = 3
 
 
 @websocket_api.websocket_command(
@@ -222,8 +221,6 @@ async def websocket_chat_history_get(
             })
 
     display_turns = result_turns[-display_depth:] if display_depth > 0 else result_turns
-    for dt in display_turns:
-        dt["tool_calls"] = dt["tool_calls"][:MAX_TOOL_CALLS_DISPLAY]
 
     tokens_estimate = total_chars // 3 + len(turns) * 10 if total_chars else 0
 

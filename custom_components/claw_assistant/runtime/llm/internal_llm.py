@@ -765,7 +765,6 @@ def _patch_tool_call_tracking(hass: HomeAssistant) -> None:
         tool_results = get_tool_results_state(hass)
         tool_calls = get_tool_calls_state(hass)
         conv_id_before = get_active_conversation_state(hass).get("id")
-        tool_calls.append(tool_input.tool_name)
         tool_args = _json_safe(tool_input.tool_args)
         limits = get_execution_control_limits(hass)
         repeat_prompt, should_stop = check_tool_repeat(
@@ -808,6 +807,14 @@ def _patch_tool_call_tracking(hass: HomeAssistant) -> None:
                     "result": _compact_result_summary(result),
                 }
             )
+            tool_calls.append({
+                "tool_call_id": tool_input.id,
+                "tool_name": tool_input.tool_name,
+                "tool_args": tool_args if isinstance(tool_args, dict) else {},
+                "tool_result": _compact_result_summary(result),
+                "success": False,
+                "error": "tool_repeat_limit",
+            })
             return result
 
         try:
@@ -859,6 +866,14 @@ def _patch_tool_call_tracking(hass: HomeAssistant) -> None:
                     "result": result_summary,
                 }
             )
+            tool_calls.append({
+                "tool_call_id": tool_input.id,
+                "tool_name": tool_input.tool_name,
+                "tool_args": tool_args if isinstance(tool_args, dict) else {},
+                "tool_result": result_summary,
+                "success": success,
+                "error": error,
+            })
             record_tool_usage(
                 hass,
                 tool_name=tool_input.tool_name,
@@ -881,6 +896,14 @@ def _patch_tool_call_tracking(hass: HomeAssistant) -> None:
                     "result": None,
                 }
             )
+            tool_calls.append({
+                "tool_call_id": tool_input.id,
+                "tool_name": tool_input.tool_name,
+                "tool_args": tool_args if isinstance(tool_args, dict) else {},
+                "tool_result": None,
+                "success": False,
+                "error": str(err),
+            })
             record_tool_usage(
                 hass,
                 tool_name=tool_input.tool_name,

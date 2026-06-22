@@ -382,9 +382,12 @@ async def execute_kernel_turn(
                 device_id=device_id,
             )
             tool_calls_state.append({
+                "tool_call_id": "kernel_" + str(len(tool_calls_state)),
                 "tool_name": step.tool_name,
                 "tool_args": step.tool_args,
+                "tool_result": tool_result.get("result"),
                 "success": tool_result.get("success", False),
+                "error": tool_result.get("error"),
             })
             tool_results_state.append(
                 {
