@@ -1241,7 +1241,7 @@
             border-radius: 0;
         }
         .claw-ta-cmd-prompt { color: #6a9955; flex-shrink: 0; user-select: none; }
-        .claw-ta-panel { margin-top: 4px; padding: 0 2px; overflow: hidden; max-width: 100%; box-sizing: border-box; }
+        .claw-ta-panel { margin-top: 4px; margin-bottom: 5px; padding: 0 2px; overflow: hidden; max-width: 100%; box-sizing: border-box; }
         .claw-ta-panel.collapsed .claw-ta-panel-body { max-height: 0; }
         .claw-ta-panel-header {
             display: flex; align-items: center; gap: 6px;
@@ -1979,6 +1979,21 @@
         el.textContent = '💭 ' + truncated;
     };
 
+    const _cleanupToolArtifacts = () => {
+        window.__clawToolActivities = [];
+        window.__clawToolActivitySeen = false;
+        window.__clawTurnParts = [];
+        _turnEnded = false;
+        _mdStreamActive = false;
+        const chat = deepQuery('ha-assist-chat');
+        if (chat?.shadowRoot) {
+            chat.shadowRoot.querySelectorAll('.claw-ta-panel, .claw-ta-card').forEach(n => n.remove());
+            chat.shadowRoot.querySelectorAll('ha-markdown').forEach(md => {
+                md.shadowRoot?.querySelectorAll('.claw-ta-panel, .claw-ta-card').forEach(n => n.remove());
+            });
+        }
+    };
+
     const _renderToolActivities = () => {
         const chat = deepQuery('ha-assist-chat');
         const sr = chat?.shadowRoot;
@@ -2064,11 +2079,10 @@
                     } else {
                         mixed.appendChild(existingTail);
                     }
-                    let missingCards = false;
                     activities.forEach(act => {
                         const taId = act.id || (_normalizeToolName(act.tool_name) + '_' + (act.tool_call_id || ''));
                         const card = mixed.querySelector('.claw-ta-card[data-ta-id="' + taId + '"]');
-                        if (!card) { missingCards = true; return; }
+                        if (!card) return;
                         if (act._thinkText && act.tool_name === '_thinking') {
                             const summary = card.querySelector('.claw-ta-summary');
                             const body = card.querySelector('.claw-ta-args');
@@ -2081,7 +2095,7 @@
                         if ((act.result !== undefined || act.error) && !card.dataset.hasResult) _updateExistingCard(card, act);
                     });
                     el.__clawMixedSig = sig;
-                    if (!missingCards) return;
+                    return;
                 }
                 if (el.__clawMixedSig !== sig) {
                     el.__clawMixedSig = sig;
@@ -2566,11 +2580,6 @@
             if (!rawContent.includes('CLAW_TOOL') && rawContent.length < 60 && !rawContent.includes('\n') && !rawContent.includes('|') && !/[#*`|~\[\]>-]{2}/.test(rawContent)) return;
             const sig = rawContent.length + '_' + rawContent.slice(0, 120);
             if (el.__clawMdSig === sig) return;
-            const hasMixed = el.querySelector('.claw-md-mixed');
-            if (hasMixed && (window.__clawToolActivities?.length || _mdStreamActive)) {
-                el.__clawMdSig = sig;
-                return;
-            }
             el.__clawMdSig = sig;
             _injectMdStyles(msr);
             try {
@@ -2699,6 +2708,7 @@
 
     const _origStreamHook = window.__clawOnStreamDelta;
     window.__clawOnStreamDelta = (delta) => {
+        if (window.__clawIsStopReset) return;
         _mdStreamActive = true;
         if (_mdRenderTimer) clearTimeout(_mdRenderTimer);
         _mdRenderTimer = setTimeout(() => {
@@ -2711,6 +2721,7 @@
 
     const _origStreamEnd = window.__clawOnStreamEnd;
     window.__clawOnStreamEnd = () => {
+        if (window.__clawIsStopReset) return;
         _mdStreamActive = false;
         _turnEnded = true;
         if (_mdRenderTimer) clearTimeout(_mdRenderTimer);
@@ -3866,11 +3877,13 @@
             const conversation = [];
             const welcomeText = h.localize?.('ui.dialogs.voice_command.how_can_i_help') || '';
             conversation.push({ who: 'hass', text: welcomeText, thinking: '', tool_calls: {} });
+            const histActivities = [];
             for (const t of turns) {
                 if (t.user) {
                     conversation.push({ who: 'user', text: t.user, thinking: '', tool_calls: {} });
                 }
                 if (t.assistant) {
+                    const tc = t.tool_calls || [];
                     conversation.push({
                         who: 'hass',
                         text: t.assistant_display || t.assistant,
@@ -3879,8 +3892,29 @@
                         thinking: '',
                         tool_calls: {},
                     });
+                    for (const c of tc) {
+                        const cId = (c && c.tool_call_id) || ('hist_' + ((c && c.tool_name) || 'tool') + '_' + Math.random().toString(36).slice(2));
+                        const cResult = c && c.tool_result !== undefined ? c.tool_result : (c && c.result !== undefined ? c.result : (c && c.success !== undefined ? { success: c.success } : {}));
+                        histActivities.push({
+                            id: cId,
+                            tool_call_id: cId,
+                            marker_id: cId,
+                            tool_name: (c && c.tool_name) || (typeof c === 'string' ? c : 'tool'),
+                            tool_args: (c && c.tool_args) || (c && c.args) || {},
+                            result: cResult,
+                            error: (c && c.error) || null,
+                            warning: (c && c.warning) || null,
+                            _startTime: 0,
+                            _endTime: 0,
+                        });
+                    }
                 }
             }
+            if (histActivities.length) {
+                window.__clawToolActivities = histActivities;
+            }
+            _turnEnded = true;
+            _mdStreamActive = false;
 
             if (conversation.length <= 1) {
                 window.__clawResumeInProgress = false;
@@ -3911,6 +3945,7 @@
                         if (state) state.resetting = false;
                         window.__clawResumeInProgress = false;
                         window.dispatchEvent(new CustomEvent('claw-chat-updated'));
+                        _scheduleToolRender();
                     });
                 });
             } else if (state) {
@@ -4247,20 +4282,44 @@
                     originalAddMessage.call(this, message);
                     const conv = Array.isArray(this._conversation) ? this._conversation : [];
                     const prev = conv[conv.length - 2];
-                    if (prev?.who === 'user' && String(prev.text || '').trim() === '/new') {
+                    const prevText = String(prev?.text || '').trim();
+                    const isResetCmd = prev?.who === 'user' && (prevText === '/new' || prevText === '/reset' || prevText.startsWith('/history clear'));
+                    const isStopCmd = prev?.who === 'user' && prevText === '/stop';
+                    if (isResetCmd) {
                         state.resetting = true;
                         window.__clawIsNewReset = true;
+                        _cleanupToolArtifacts();
                         const welcomeText = this.hass?.localize?.('ui.dialogs.voice_command.how_can_i_help') || '';
                         const welcome = { who: 'hass', text: welcomeText, thinking: '', tool_calls: {} };
                         state.conversation = null;
                         state.conversationId = null;
-                        window.__clawResetContextStatusBar?.(false);
+                        window.__clawResetContextStatusBar?.(true);
                         this._conversation = [welcome];
                         this._conversationId = null;
                         this.requestUpdate?.('_conversation');
                         state.resetting = false;
                         state.persist?.();
                         if (typeof window.__clawPlaySound === 'function') window.__clawPlaySound('new');
+                        setTimeout(() => { window.__clawIsNewReset = false; }, 3000);
+                        return;
+                    }
+                    if (isStopCmd) {
+                        window.__clawIsStopReset = true;
+                        _turnEnded = true;
+                        _mdStreamActive = false;
+                        window.__clawLiveStreamSubscribed = false;
+                        window.__clawLiveStreamChecked = false;
+                        window.__clawLiveConvId = null;
+                        window.__clawLiveText = '';
+                        for (const a of (window.__clawToolActivities || [])) {
+                            if (a.result === undefined) {
+                                a.result = { stopped: true };
+                                a._endTime = Date.now();
+                            }
+                        }
+                        _scheduleToolRender();
+                        window.__clawResetContextStatusBar?.(false);
+                        setTimeout(() => { window.__clawIsStopReset = false; }, 3000);
                         return;
                     }
                     if (settings.continuous_conversation) {
@@ -4802,6 +4861,10 @@
         };
 
         const startTurn = (userText) => {
+            if (window.__clawResumeInProgress) {
+                window.__clawResumeInProgress = false;
+            }
+            window.__clawIsStopReset = false;
             const extraChars = window.__clawLastSendChars || 0;
             window.__clawLastSendChars = 0;
             totalChars = calcCurrentChars() + Math.max(extraChars, (userText||'').length);
@@ -5067,6 +5130,7 @@
 
         const clawApplyLiveDelta = (delta) => {
             if (!delta) return;
+            if (window.__clawIsStopReset) return;
             if (delta.role === 'assistant') phase = S_REPLYING;
             if ((delta.content || delta._tts_skip_content) && !delta._claw_thinking) {
                 const streamText = delta.content || delta._tts_skip_content || '';
@@ -5164,7 +5228,7 @@
                     render();
                     probeLiveEnd();
                     
-                    if (!window.__clawLiveStreamSubscribed && !window.__clawLiveStreamChecked && !window.__clawResumeInProgress) {
+                    if (!window.__clawLiveStreamSubscribed && !window.__clawLiveStreamChecked && !window.__clawResumeInProgress && !window.__clawIsNewReset && !window.__clawIsStopReset) {
                         window.__clawLiveStreamChecked = true;
                         try {
                             const snapshot = await hass.connection.sendMessagePromise({ type: 'ha_crack/live_turn_snapshot' });
@@ -5181,14 +5245,43 @@
                                         });
                                         if (histResp?.turns?.length > 0) {
                                             const newConv = [{ who: 'hass', text: chat.hass?.localize?.('ui.dialogs.voice_command.how_can_i_help') || '', thinking: '', tool_calls: {} }];
+                                            const snapActivities = [];
                                             for (const t of histResp.turns) {
                                                 if (t.user) newConv.push({ who: 'user', text: t.user, thinking: '', tool_calls: {} });
-                                                if (t.assistant) newConv.push({ who: 'hass', text: t.assistant_display || t.assistant, thinking: '', tool_calls: {} });
+                                                if (t.assistant) {
+                                                    const tc = t.tool_calls || [];
+                                                    newConv.push({ who: 'hass', text: t.assistant_display || t.assistant, thinking: '', tool_calls: {} });
+                                                    for (const c of tc) {
+                                                        const cId = (c && c.tool_call_id) || ('snap_' + ((c && c.tool_name) || 'tool') + '_' + Math.random().toString(36).slice(2));
+                                                        const cResult = c && c.tool_result !== undefined ? c.tool_result : (c && c.result !== undefined ? c.result : (c && c.success !== undefined ? { success: c.success } : {}));
+                                                        snapActivities.push({
+                                                            id: cId,
+                                                            tool_call_id: cId,
+                                                            marker_id: cId,
+                                                            tool_name: (c && c.tool_name) || (typeof c === 'string' ? c : 'tool'),
+                                                            tool_args: (c && c.tool_args) || (c && c.args) || {},
+                                                            result: cResult,
+                                                            error: (c && c.error) || null,
+                                                            warning: (c && c.warning) || null,
+                                                            _startTime: 0,
+                                                            _endTime: 0,
+                                                        });
+                                                    }
+                                                }
                                             }
+                                            if (snapActivities.length) {
+                                                window.__clawToolActivities = snapActivities;
+                                                _turnEnded = true;
+                                                _mdStreamActive = false;
+                                            }
+                                            chat.shadowRoot?.querySelectorAll('ha-markdown').forEach(md => {
+                                                md.shadowRoot?.querySelectorAll('.claw-ta-panel, .claw-ta-card').forEach(n => n.remove());
+                                            });
                                             chat._conversation = newConv;
                                             chat.requestUpdate?.('_conversation');
                                             state.conversation = newConv;
                                             state.persist?.();
+                                            if (snapActivities.length) _scheduleToolRender();
                                         }
                                     } catch(e) {}
                                 }
