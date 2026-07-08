@@ -520,7 +520,15 @@ def _build_user_prompt_block(content: str) -> str:
     return "\n".join(selected)
 
 
-def get_user_context_prefix() -> str:
+def get_user_context_prefix(user_key: str | None = None) -> str:
+    # #### @C3H3-AI ha_claw#14 — get_user_context_prefix(user_key)
+    if user_key is not None:
+        from .persona_store import PersonaStore
+
+        prefix = PersonaStore.build_user_context_prefix(user_key)
+        if prefix:
+            return prefix
+
     snapshot = _WORKSPACE_STORE.get("snapshot") or WorkspaceSnapshot()
     user_block = _build_user_prompt_block(snapshot.user)
     identity_block = _build_user_prompt_block(snapshot.identity)
