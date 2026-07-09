@@ -154,7 +154,10 @@ async def _load_cn_im_hub_targets(hass: HomeAssistant) -> dict[str, dict[str, st
     return result
 
 
-def _load_history_targets(hass: HomeAssistant) -> dict[str, dict[str, str]]:
+def _load_history_targets(
+    hass: HomeAssistant,
+    skip_ext_ids: set[str] | None = None,
+) -> dict[str, dict[str, str]]:
     from ...conversation_utils import get_conversation_history
 
     result: dict[str, dict[str, str]] = {}
@@ -164,9 +167,11 @@ def _load_history_targets(hass: HomeAssistant) -> dict[str, dict[str, str]]:
         if not parsed:
             continue
         provider, ext_id = parsed
+        if skip_ext_ids and ext_id in skip_ext_ids:
+            continue
         bucket = result.setdefault(provider, {})
         if ext_id not in bucket:
-            bucket[ext_id] = _short_id(ext_id)
+            bucket[ext_id] = f"对话 · {_short_id(ext_id)}"
     return result
 
 
@@ -186,17 +191,40 @@ async def collect_provider_targets(hass: HomeAssistant) -> dict[str, dict[str, s
     from .user_mapping import MappingStore
 
     merged: dict[str, dict[str, str]] = {}
+    # 1. CN IM Hub targets (best labels, load first)
+    cn_im_sources = await _load_cn_im_hub_targets(hass)
+    # Collect normalized ext_ids so history can skip duplicates
+    history_skip: set[str] = set()
+    for provider, targets in cn_im_sources.items():
+        provider_clean = provider.rstrip(":").lower()
+        suffix = f"@im.{provider_clean}"
+        for ext_id in targets:
+            normalized = ext_id
+            if normalized.endswith(suffix):
+                normalized = normalized[: -len(suffix)]
+            if normalized:
+                history_skip.add(normalized)
+
     for source in (
-        await _load_cn_im_hub_targets(hass),
-        _load_history_targets(hass),
+        cn_im_sources,
+        _load_history_targets(hass, skip_ext_ids=history_skip),
         _load_mapping_targets(MappingStore.load()),
     ):
         for provider, targets in source.items():
             bucket = merged.setdefault(provider, {})
+            # Normalize: strip @im.{provider} suffix so CN IM Hub and
+            # history-derived ext_ids use the same key format.
+            provider_clean = provider.rstrip(":").lower()
+            suffix = f"@im.{provider_clean}"
             for ext_id, display in targets.items():
-                if not ext_id or ext_id in bucket:
+                if not ext_id:
                     continue
-                bucket[ext_id] = display
+                normalized = ext_id
+                if normalized.endswith(suffix):
+                    normalized = normalized[: -len(suffix)]
+                if not normalized or normalized in bucket:
+                    continue
+                bucket[normalized] = display
     return merged
 
 

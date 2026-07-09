@@ -317,6 +317,38 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             for key, value in config_entry.options.items()
             if key not in _REMOVED_OPTION_KEYS
         }
+        self._um_provider = ""
+        self._um_ext_id = ""
+
+    @property
+    def _um_store_key(self) -> str:
+        return f"{DOMAIN}.options_flow.{self._config_entry.entry_id}"
+
+    def _get_um_provider(self) -> str:
+        """Read _um_provider from instance attr with hass.data fallback."""
+        val = str(getattr(self, "_um_provider", "")).strip().lower()
+        if val:
+            return val
+        # Fallback: check hass.data (survives flow handler recreation)
+        try:
+            store = self.hass.data.setdefault(self._um_store_key, {})
+            saved = str(store.get("um_provider", "")).strip().lower()
+            if saved:
+                LOGGER.debug(
+                    "UM: _um_provider recovered from hass.data: %s", saved
+                )
+                self._um_provider = saved
+            return saved
+        except Exception:
+            return ""
+
+    def _set_um_provider(self, val: str) -> None:
+        self._um_provider = val
+        try:
+            store = self.hass.data.setdefault(self._um_store_key, {})
+            store["um_provider"] = val
+        except Exception:
+            pass
 
     def _process_user_input(self, user_input: dict[str, Any], exclude_keys: list[str] = ["back"],
                            allow_agent_changes: bool = False, allow_conversation_changes: bool = False) -> None:
@@ -528,6 +560,11 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     def _clear_um_draft(self) -> None:
         self._um_provider = ""
         self._um_ext_id = ""
+        try:
+            store = self.hass.data.setdefault(self._um_store_key, {})
+            store.pop("um_provider", None)
+        except Exception:
+            pass
 
     def _provider_label(self, provider: str) -> str:
         labels_zh = {
@@ -609,7 +646,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 return await self.async_step_user_mapping()
             provider = str(user_input.get("provider", "")).strip().lower()
             if provider in provider_keys:
-                self._um_provider = provider
+                self._set_um_provider(provider)
+                LOGGER.debug("UM: channel set to %s", provider)
                 return await self.async_step_um_pick_identity()
             return self.async_show_form(
                 step_id="um_pick_channel",
@@ -621,7 +659,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             )
 
         if len(provider_keys) == 1:
-            self._um_provider = provider_keys[0]
+            self._set_um_provider(provider_keys[0])
+            LOGGER.debug("UM: auto-set channel to %s (single provider)", provider_keys[0])
             return await self.async_step_um_pick_identity()
 
         return self.async_show_form(
@@ -643,9 +682,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         )
 
         await ensure_claw_storage(self.hass)
-        provider = str(getattr(self, "_um_provider", "")).strip().lower()
+        provider = self._get_um_provider()
         provider_keys = await get_configured_provider_keys(self.hass)
         if not provider or provider not in provider_keys:
+            LOGGER.debug("UM: provider=%r not in %s → redirect to channel pick", provider, provider_keys)
             return await self.async_step_um_pick_channel()
 
         manual_label = _manual_ext_id_label(self.hass)
@@ -701,7 +741,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         from .runtime.storage.user_mapping import MappingStore
 
         await ensure_claw_storage(self.hass)
-        provider = str(getattr(self, "_um_provider", "")).strip().lower()
+        provider = self._get_um_provider()
         ext_id = str(getattr(self, "_um_ext_id", "")).strip()
         provider_keys = await get_configured_provider_keys(self.hass)
         if not provider or provider not in provider_keys or not ext_id:
