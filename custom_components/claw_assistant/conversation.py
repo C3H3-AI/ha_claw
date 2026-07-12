@@ -122,39 +122,6 @@ class FallbackConversationAgent(
         return resolve_user_key(user_id, conv_id)
 
 
-def resolve_user_key(
-    user_id: str | None, conversation_id: str | None
-) -> str | None:
-    """Resolve the isolation key for a request.
-
-    Priority:
-    1. explicit user_id (HA App, deterministic)
-    2. conversation_id → MappingStore → HA user_id
-    3. conversation_id → shadow:{provider}:{ext_id}
-    4. None (global fallback)
-
-    Safe to call from tool/API layers that only have an ``llm.LLMContext``.
-    """
-    if user_id:
-        return user_id
-
-    if conversation_id:
-        mapped = MappingStore.resolve_by_conversation_id(conversation_id)
-        if mapped:
-            return mapped
-        from .const import IM_CHANNEL_NAMES
-        for prefix in IM_CHANNEL_NAMES:
-            if conversation_id.lower().startswith(prefix.lower()):
-                provider = IM_CHANNEL_NAMES[prefix]
-                rest = conversation_id[len(prefix):]
-                parts = rest.split(":", 1)
-                ext_id = parts[1] if len(parts) >= 2 else parts[0]
-                shadow_key = f"shadow:{provider.lower()}:{ext_id}"
-                PersonaStore.touch_shadow(shadow_key)
-                return shadow_key
-
-    return None
-
     async def async_process(
         self, user_input: conversation.ConversationInput
     ) -> conversation.ConversationResult:
@@ -441,3 +408,37 @@ def resolve_user_key(
             self.last_used_agent = result.response.speech["plain"].get("agent_id")
             self.async_write_ha_state()
         return result
+
+
+def resolve_user_key(
+    user_id: str | None, conversation_id: str | None
+) -> str | None:
+    """Resolve the isolation key for a request.
+
+    Priority:
+    1. explicit user_id (HA App, deterministic)
+    2. conversation_id → MappingStore → HA user_id
+    3. conversation_id → shadow:{provider}:{ext_id}
+    4. None (global fallback)
+
+    Safe to call from tool/API layers that only have an ``llm.LLMContext``.
+    """
+    if user_id:
+        return user_id
+
+    if conversation_id:
+        mapped = MappingStore.resolve_by_conversation_id(conversation_id)
+        if mapped:
+            return mapped
+        from .const import IM_CHANNEL_NAMES
+        for prefix in IM_CHANNEL_NAMES:
+            if conversation_id.lower().startswith(prefix.lower()):
+                provider = IM_CHANNEL_NAMES[prefix]
+                rest = conversation_id[len(prefix):]
+                parts = rest.split(":", 1)
+                ext_id = parts[1] if len(parts) >= 2 else parts[0]
+                shadow_key = f"shadow:{provider.lower()}:{ext_id}"
+                PersonaStore.touch_shadow(shadow_key)
+                return shadow_key
+
+    return None
