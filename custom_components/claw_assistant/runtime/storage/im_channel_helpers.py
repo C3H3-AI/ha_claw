@@ -196,14 +196,9 @@ async def collect_provider_targets(hass: HomeAssistant) -> dict[str, dict[str, s
     # Collect normalized ext_ids so history can skip duplicates
     history_skip: set[str] = set()
     for provider, targets in cn_im_sources.items():
-        provider_clean = provider.rstrip(":").lower()
-        suffix = f"@im.{provider_clean}"
         for ext_id in targets:
-            normalized = ext_id
-            if normalized.endswith(suffix):
-                normalized = normalized[: -len(suffix)]
-            if normalized:
-                history_skip.add(normalized)
+            if ext_id:
+                history_skip.add(ext_id)
 
     for source in (
         cn_im_sources,
@@ -212,19 +207,10 @@ async def collect_provider_targets(hass: HomeAssistant) -> dict[str, dict[str, s
     ):
         for provider, targets in source.items():
             bucket = merged.setdefault(provider, {})
-            # Normalize: strip @im.{provider} suffix so CN IM Hub and
-            # history-derived ext_ids use the same key format.
-            provider_clean = provider.rstrip(":").lower()
-            suffix = f"@im.{provider_clean}"
             for ext_id, display in targets.items():
-                if not ext_id:
+                if not ext_id or ext_id in bucket:
                     continue
-                normalized = ext_id
-                if normalized.endswith(suffix):
-                    normalized = normalized[: -len(suffix)]
-                if not normalized or normalized in bucket:
-                    continue
-                bucket[normalized] = display
+                bucket[ext_id] = display
     return merged
 
 
