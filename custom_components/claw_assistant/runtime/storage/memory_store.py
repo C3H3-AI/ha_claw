@@ -301,6 +301,7 @@ async def async_save_memory_entry_result(
     value: str,
     *,
     target: str = "memory",
+    user_key: str | None = None,
 ) -> dict[str, Any]:
 
     target = _normalize_target(target)
@@ -341,7 +342,13 @@ async def async_save_memory_entry_result(
     )
     if outcome.status in ("stored", "updated"):
         try:
-            from .graph_service import async_link, async_recall, async_remember
+            from .graph_service import (
+                async_link,
+                async_recall,
+                async_remember,
+                ANONYMOUS_USER_KEY,
+            )
+            effective_user = user_key or ANONYMOUS_USER_KEY
             kind = "preference" if target == "user" else "fact"
             result = await async_remember(
                 hass,
@@ -349,17 +356,20 @@ async def async_save_memory_entry_result(
                 title=outcome.key,
                 body=outcome.value,
                 source_doc=f"ConversationMemory/{target}",
+                user=effective_user,
             )
             if result is not None:
                 new_id, was_new = result
                 if was_new:
                     hits = await async_recall(
                         hass, f"{outcome.key} {outcome.value}",
-                        limit=3, expand=False,
+                        limit=3, expand=False, user=effective_user,
                     )
                     for h in hits:
                         if h.node.id != new_id:
-                            await async_link(hass, new_id, h.node.id, "related_to")
+                            await async_link(
+                                hass, new_id, h.node.id, "related_to", user=effective_user
+                            )
         except Exception:
             pass
     return {

@@ -433,6 +433,7 @@ async def async_apply_proposal(
     executors: dict[str, ProposalExecutor],
     *,
     approved_by: str = "human",
+    user_key: str | None = None,
 ) -> dict[str, Any]:
 
     proposal = await async_read_proposal(hass, slug)
@@ -444,8 +445,13 @@ async def async_apply_proposal(
     frontmatter["approved_by"] = approved_by
     frontmatter["approved_at"] = _now_iso()
 
-    executor = executors[target_type]
-    result = await executor(hass, frontmatter, proposal["body"])
+    if target_type == "memory":
+        result = await _apply_memory_proposal(
+            hass, frontmatter, proposal["body"], user_key=user_key
+        )
+    else:
+        executor = executors[target_type]
+        result = await executor(hass, frontmatter, proposal["body"])
 
     await hass.async_add_executor_job(partial(_discard_proposal_sync, slug))
     LOGGER.info(

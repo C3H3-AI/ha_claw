@@ -490,7 +490,7 @@ async def _apply_guide_proposal(
 
 
 async def _apply_memory_proposal(
-    hass: HomeAssistant, frontmatter: dict[str, Any], body: str
+    hass: HomeAssistant, frontmatter: dict[str, Any], body: str, user_key: str | None = None
 ) -> dict[str, Any]:
     action = str(frontmatter.get("action") or "").lower()
     target_id = str(frontmatter.get("target_id") or "").strip()
@@ -511,7 +511,7 @@ async def _apply_memory_proposal(
     if action in {"create", "update"}:
         if not body.strip():
             raise ValueError("memory proposal body must contain the new value")
-        result = await async_save_memory_entry_result(hass, target_id, body)
+        result = await async_save_memory_entry_result(hass, target_id, body, user_key=user_key)
         return {
             "action": action,
             "path": result.get("path", ""),
@@ -553,9 +553,14 @@ class ApplyProposalTool(llm.Tool):
         args = tool_input.tool_args
         slug = (args.get("slug") or "").strip()
         approved_by = (args.get("approved_by") or "human").strip() or "human"
+        from ..conversation import resolve_user_key
+        user_key = resolve_user_key(
+            getattr(llm_context, "user_id", None),
+            getattr(llm_context, "conversation_id", None),
+        )
         try:
             result = await async_apply_proposal(
-                hass, slug, _EXECUTORS, approved_by=approved_by
+                hass, slug, _EXECUTORS, approved_by=approved_by, user_key=user_key
             )
         except FileNotFoundError as err:
             return {"success": False, "error": str(err)}

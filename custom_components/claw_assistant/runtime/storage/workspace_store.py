@@ -412,7 +412,7 @@ def _strip_leading_heading(text: str) -> str:
     return text
 
 
-def _build_memory_prompt_block(memory_markdown: str, user_text: str) -> str:
+def _build_memory_prompt_block(memory_markdown: str, user_text: str, user_key: str | None = None) -> str:
     if not memory_markdown.strip():
         return ""
     bullet_lines = [
@@ -423,7 +423,7 @@ def _build_memory_prompt_block(memory_markdown: str, user_text: str) -> str:
     total_count = len(bullet_lines) if bullet_lines else 0
 
     if user_text.strip():
-        matched = _recall_relevant_memory_lines(bullet_lines, user_text)
+        matched = _recall_relevant_memory_lines(bullet_lines, user_text, user_key=user_key)
         if matched:
             suffix = ""
             if total_count > len(matched):
@@ -444,7 +444,7 @@ def _build_memory_prompt_block(memory_markdown: str, user_text: str) -> str:
 
 
 def _recall_relevant_memory_lines(
-    bullet_lines: list[str], user_text: str
+    bullet_lines: list[str], user_text: str, user_key: str | None = None
 ) -> list[str]:
     from .graph_service import get_graph_store_sync
 
@@ -457,6 +457,7 @@ def _recall_relevant_memory_lines(
                 limit=_MAX_MEMORY_LINES,
                 expand=False,
                 touch=False,
+                user=user_key,
             )
             if hits:
                 hit_texts = {h.node.title.lower() for h in hits} | {
@@ -591,7 +592,7 @@ def _workspace_doc_map(snapshot: WorkspaceSnapshot) -> dict[str, str]:
 
 
 def _build_workspace_startup_docs(
-    *, user_text: str = ""
+    *, user_text: str = "", user_key: str | None = None
 ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     snapshot = _ensure_workspace_store_fresh()
     doc_map = _workspace_doc_map(snapshot)
@@ -644,7 +645,7 @@ def _build_workspace_startup_docs(
             skipped_docs.append((name, "template_only"))
             continue
         if name == "MEMORY":
-            content = _build_memory_prompt_block(content, user_text)
+            content = _build_memory_prompt_block(content, user_text, user_key=user_key)
             if not content:
                 skipped_docs.append((name, "empty_after_filter"))
                 continue
@@ -666,14 +667,14 @@ def _build_workspace_startup_docs(
     return loaded_docs, skipped_docs
 
 
-def get_workspace_startup_doc_names(*, user_text: str = "") -> tuple[str, ...]:
-    loaded_docs, _ = _build_workspace_startup_docs(user_text=user_text)
+def get_workspace_startup_doc_names(*, user_text: str = "", user_key: str | None = None) -> tuple[str, ...]:
+    loaded_docs, _ = _build_workspace_startup_docs(user_text=user_text, user_key=user_key)
     return tuple(name for name, _ in loaded_docs)
 
 
-def build_workspace_startup_bundle(*, user_text: str = "", index_only: bool = False) -> str:
+def build_workspace_startup_bundle(*, user_text: str = "", index_only: bool = False, user_key: str | None = None) -> str:
 
-    loaded_docs, skipped_docs = _build_workspace_startup_docs(user_text=user_text)
+    loaded_docs, skipped_docs = _build_workspace_startup_docs(user_text=user_text, user_key=user_key)
     sections: list[str] = []
 
     sections.append("## Workspace")
@@ -717,6 +718,7 @@ def build_workspace_prompt_sections(
     mode: str = "conversation",
     user_text: str = "",
     exclude_doc_names: set[str] | None = None,
+    user_key: str | None = None,
 ) -> tuple[str, ...]:
 
     snapshot = _ensure_workspace_store_fresh()
@@ -747,7 +749,7 @@ def build_workspace_prompt_sections(
             )
             sections.append(f"## User File\n{fenced_user}")
 
-    memory_block = _build_memory_prompt_block(snapshot.memory, user_text)
+    memory_block = _build_memory_prompt_block(snapshot.memory, user_text, user_key=user_key)
     if memory_block and "MEMORY" not in excluded:
         fenced = (
             "<memory-context>\n"
@@ -764,8 +766,8 @@ def build_workspace_prompt_sections(
     return tuple(section for section in sections if section.strip())
 
 
-def build_workspace_prompt_block(*, mode: str = "conversation", user_text: str = "") -> str:
+def build_workspace_prompt_block(*, mode: str = "conversation", user_text: str = "", user_key: str | None = None) -> str:
 
     return "\n\n".join(
-        build_workspace_prompt_sections(mode=mode, user_text=user_text)
+        build_workspace_prompt_sections(mode=mode, user_text=user_text, user_key=user_key)
     )

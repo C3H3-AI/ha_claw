@@ -1055,10 +1055,16 @@ class ConversationMemoryTool(llm.Tool):
     })
 
     async def async_call(self, hass: HomeAssistant, tool_input: llm.ToolInput, llm_context: llm.LLMContext) -> JsonObjectType:
+        from ..conversation import resolve_user_key
+
         action = tool_input.tool_args.get("action", "")
         target = tool_input.tool_args.get("target", "memory") or "memory"
         key = tool_input.tool_args.get("key", "")
         value = tool_input.tool_args.get("value", "")
+        user_key = resolve_user_key(
+            getattr(llm_context, "user_id", None),
+            getattr(llm_context, "conversation_id", None),
+        )
         if action == "save" and key:
             (
                 transient_reason,
@@ -1091,7 +1097,7 @@ class ConversationMemoryTool(llm.Tool):
                         recommendation=recommendation,
                     ),
                 }
-            save_result = await async_save_memory_entry_result(hass, key, value, target=target)
+            save_result = await async_save_memory_entry_result(hass, key, value, target=target, user_key=user_key)
             status = save_result["status"]
             if status in {"stored", "updated"}:
                 return {
@@ -1626,12 +1632,17 @@ class MemoryGraphTool(llm.Tool):
             async_remember,
             get_graph_store,
         )
+        from ..conversation import resolve_user_key
 
         args = tool_input.tool_args
         action = str(args.get("action", "")).strip().lower()
         store = get_graph_store(hass)
         if store is None:
             return {"success": False, "error": "graph store not initialised"}
+        user_key = resolve_user_key(
+            getattr(llm_context, "user_id", None),
+            getattr(llm_context, "conversation_id", None),
+        )
 
         if action == "recall":
             query = str(args.get("query", "")).strip()
@@ -1643,7 +1654,7 @@ class MemoryGraphTool(llm.Tool):
             limit = int(args.get("limit", 8))
             expand = bool(args.get("expand", True))
             hits = await async_recall(
-                hass, query, kinds=kinds, limit=limit, expand=expand
+                hass, query, kinds=kinds, limit=limit, expand=expand, user=user_key
             )
             return {
                 "success": True,
@@ -1686,6 +1697,7 @@ class MemoryGraphTool(llm.Tool):
                 source_doc=(str(args["source_doc"]) if args.get("source_doc") else None),
                 confidence=float(args.get("confidence", 1.0)),
                 pinned=bool(args.get("pinned", False)),
+                user=user_key,
             )
             if result is None:
                 return {"success": False, "error": "graph store unavailable"}
@@ -1693,11 +1705,11 @@ class MemoryGraphTool(llm.Tool):
             if was_new:
                 try:
                     hits = await async_recall(
-                        hass, f"{title} {body[:100]}", limit=3, expand=False
+                        hass, f"{title} {body[:100]}", limit=3, expand=False, user=user_key
                     )
                     for h in hits:
                         if h.node.id != node_id:
-                            await async_link(hass, node_id, h.node.id, "related_to")
+                            await async_link(hass, node_id, h.node.id, "related_to", user=user_key)
                 except Exception:
                     pass
             return {"success": True, "id": node_id, "created": was_new}
@@ -1717,6 +1729,7 @@ class MemoryGraphTool(llm.Tool):
                 dst_id,
                 relation,
                 weight=float(args.get("weight", 1.0)),
+                user=user_key,
             )
             return {"success": ok}
 

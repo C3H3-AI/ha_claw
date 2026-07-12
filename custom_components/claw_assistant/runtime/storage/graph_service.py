@@ -7,7 +7,7 @@ from typing import Iterable
 from homeassistant.core import HomeAssistant
 
 from ..utils.data_path import get_data_dir
-from .graph_store import GraphStore, Node, RecallHit
+from .graph_store import GraphStore, Node, RecallHit, ANONYMOUS_USER_KEY
 from .md_to_graph import reindex_markdown
 
 LOGGER = logging.getLogger(__name__)
@@ -75,7 +75,7 @@ async def async_unload_graph_store(hass: HomeAssistant) -> None:
 
 
 def recall_memory_lines_sync(
-    user_text: str, *, limit: int = 12, kinds: tuple[str, ...] | None = None
+    user_text: str, *, limit: int = 12, kinds: tuple[str, ...] | None = None, user: str | None = None
 ) -> list[str]:
 
 
@@ -84,7 +84,7 @@ def recall_memory_lines_sync(
         return []
     try:
         hits = store.recall(
-            user_text, kinds=list(kinds) if kinds else None, limit=limit
+            user_text, kinds=list(kinds) if kinds else None, limit=limit, user=user
         )
     except Exception:
         LOGGER.exception("Sync graph recall failed")
@@ -157,6 +157,7 @@ async def async_recall(
     kinds: Iterable[str] | None = None,
     limit: int = 8,
     expand: bool = True,
+    user: str | None = None,
 ) -> list[RecallHit]:
 
     store = get_graph_store(hass)
@@ -166,7 +167,7 @@ async def async_recall(
 
     def _do() -> list[RecallHit]:
         return store.recall(
-            query, kinds=kinds_list, limit=limit, expand=expand
+            query, kinds=kinds_list, limit=limit, expand=expand, user=user
         )
 
     try:
@@ -185,7 +186,12 @@ async def async_remember(
     source_doc: str | None = None,
     confidence: float = 1.0,
     pinned: bool = False,
+    user: str | None = None,
 ) -> tuple[int, bool] | None:
+    if user is None:
+        # Unidentified conversation context: keep the memory private to a
+        # dedicated sentinel rather than polluting the family public layer.
+        user = ANONYMOUS_USER_KEY
     store = get_graph_store(hass)
     if store is None:
         return None
@@ -198,6 +204,7 @@ async def async_remember(
             source_doc=source_doc,
             confidence=confidence,
             pinned=pinned,
+            user=user,
         )
 
     try:
@@ -214,13 +221,16 @@ async def async_link(
     relation: str,
     *,
     weight: float = 1.0,
+    user: str | None = None,
 ) -> bool:
     store = get_graph_store(hass)
     if store is None:
         return False
 
     def _do() -> None:
-        store.link(int(src_id), int(dst_id), str(relation), weight=float(weight))
+        store.link(
+            int(src_id), int(dst_id), str(relation), weight=float(weight), user=user
+        )
 
     try:
         await hass.async_add_executor_job(_do)

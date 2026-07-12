@@ -404,17 +404,18 @@ _PER_TURN_HINT = (
 )
 
 
-def build_internal_llm_prompt(user_text: str = "", *, full: bool = True, index_only: bool = False) -> str:
+def build_internal_llm_prompt(user_text: str = "", *, full: bool = True, index_only: bool = False, user_key: str | None = None) -> str:
 
     if not full:
         return _PER_TURN_HINT
 
-    workspace_block = build_workspace_startup_bundle(user_text=user_text, index_only=index_only)
-    loaded_workspace_docs = set(get_workspace_startup_doc_names(user_text=user_text))
+    workspace_block = build_workspace_startup_bundle(user_text=user_text, index_only=index_only, user_key=user_key)
+    loaded_workspace_docs = set(get_workspace_startup_doc_names(user_text=user_text, user_key=user_key))
     selective_workspace_sections = list(
         build_workspace_prompt_sections(
             user_text=user_text,
             exclude_doc_names=loaded_workspace_docs,
+            user_key=user_key,
         )
     )
     prompt_kwargs = _build_runtime_prompt_kwargs(user_text)
@@ -437,17 +438,18 @@ def build_internal_llm_prompt(user_text: str = "", *, full: bool = True, index_o
     return prompt
 
 
-def build_native_tool_prompt(user_text: str = "", *, full: bool = True, index_only: bool = False) -> str:
+def build_native_tool_prompt(user_text: str = "", *, full: bool = True, index_only: bool = False, user_key: str | None = None) -> str:
 
     if not full:
         return _PER_TURN_HINT
 
-    workspace_block = build_workspace_startup_bundle(user_text=user_text, index_only=index_only)
-    loaded_workspace_docs = set(get_workspace_startup_doc_names(user_text=user_text))
+    workspace_block = build_workspace_startup_bundle(user_text=user_text, index_only=index_only, user_key=user_key)
+    loaded_workspace_docs = set(get_workspace_startup_doc_names(user_text=user_text, user_key=user_key))
     selective_workspace_sections = list(
         build_workspace_prompt_sections(
             user_text=user_text,
             exclude_doc_names=loaded_workspace_docs,
+            user_key=user_key,
         )
     )
     prompt_kwargs = _build_runtime_prompt_kwargs(user_text)
@@ -623,8 +625,14 @@ class EnhancedAPI(llm.API):
     name: str = "HA Crack Enhanced API"
 
     async def async_get_api_instance(self, llm_context: llm.LLMContext) -> llm.APIInstance:
+        from ..conversation import resolve_user_key
+
+        user_key = resolve_user_key(
+            getattr(llm_context, "user_id", None),
+            getattr(llm_context, "conversation_id", None),
+        )
         tools = build_runtime_tool_list()
-        api_prompt = build_internal_llm_prompt(full=False)
+        api_prompt = build_internal_llm_prompt(full=False, user_key=user_key)
         _record_prefix_fingerprint(
             self.hass,
             api_prompt=api_prompt,

@@ -15,7 +15,14 @@ __all__ = [
     "Node",
     "RecallHit",
     "compute_checksum",
+    "ANONYMOUS_USER_KEY",
 ]
+
+# Owner for memories saved from an unidentified conversation context.
+# Deliberately distinct from NULL, which is reserved for workspace-derived
+# *public* facts (visible to everyone). "anonymous" memories stay private to
+# that unknown identity and never leak into the family public layer.
+ANONYMOUS_USER_KEY = "anonymous"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS nodes (
@@ -30,7 +37,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     access_count INTEGER NOT NULL DEFAULT 1,
     confidence REAL NOT NULL DEFAULT 1.0,
     pinned INTEGER NOT NULL DEFAULT 0,
-    embedding BLOB
+    embedding BLOB,
+    user TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
@@ -43,6 +51,7 @@ CREATE TABLE IF NOT EXISTS edges (
     relation TEXT NOT NULL,
     weight REAL NOT NULL DEFAULT 1.0,
     created_at REAL NOT NULL,
+    user TEXT,
     PRIMARY KEY (src_id, dst_id, relation)
 );
 
@@ -61,9 +70,10 @@ def _normalize(text: str) -> str:
     return _WS_RE.sub(" ", text or "").strip().lower()
 
 
-def compute_checksum(kind: str, title: str, body: str) -> str:
+def compute_checksum(kind: str, title: str, body: str, user: str | None = None) -> str:
     payload = (
         f"{_normalize(kind)}\x00{_normalize(title)}\x00{_normalize(body)}"
+        f"\x00{_normalize(user or '')}"
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -80,6 +90,7 @@ class Node:
     access_count: int
     confidence: float
     pinned: bool
+    user: str | None
 
 
 @dataclass(slots=True)
@@ -102,6 +113,7 @@ def _row_to_node(row: sqlite3.Row) -> Node:
         access_count=int(row["access_count"]),
         confidence=float(row["confidence"]),
         pinned=bool(row["pinned"]),
+        user=(str(row["user"]) if row["user"] is not None else None),
     )
 
 
@@ -149,6 +161,26 @@ class GraphStore:
         except sqlite3.DatabaseError:
             pass
         self._conn.executescript(_SCHEMA)
+        self._migrate_schema()
+
+    def _migrate_schema(self) -> None:
+        """Add the per-user isolation column/index to existing graph databases."""
+        with self._lock:
+            cols = {
+                row[1]
+                for row in self._conn.execute("PRAGMA table_info(nodes)").fetchall()
+            }
+            if "user" not in cols:
+                self._conn.execute("ALTER TABLE nodes ADD COLUMN user TEXT")
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_nodes_user ON nodes(user)"
+            )
+            edge_cols = {
+                row[1]
+                for row in self._conn.execute("PRAGMA table_info(edges)").fetchall()
+            }
+            if "user" not in edge_cols:
+                self._conn.execute("ALTER TABLE edges ADD COLUMN user TEXT")
 
     def close(self) -> None:
         with self._lock:
@@ -170,12 +202,13 @@ class GraphStore:
         source_doc: str | None = None,
         confidence: float = 1.0,
         pinned: bool = False,
+        user: str | None = None,
     ) -> tuple[int, bool]:
         title = title.strip()
         body = body.strip()
         if not title and not body:
             raise ValueError("node requires title or body")
-        checksum = compute_checksum(kind, title, body)
+        checksum = compute_checksum(kind, title, body, user=user)
         now = time.time()
         with self._lock:
             row = self._conn.execute(
@@ -195,8 +228,8 @@ class GraphStore:
             cur = self._conn.execute(
                 "INSERT INTO nodes("
                 "kind, title, body, checksum, source_doc, "
-                "created_at, last_accessed_at, access_count, confidence, pinned"
-                ") VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "created_at, last_accessed_at, access_count, confidence, pinned, user"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     kind,
                     title,
@@ -208,6 +241,7 @@ class GraphStore:
                     1,
                     float(confidence),
                     1 if pinned else 0,
+                    user,
                 ),
             )
             node_id = int(cur.lastrowid)
@@ -224,15 +258,23 @@ class GraphStore:
         relation: str,
         *,
         weight: float = 1.0,
+        user: str | None = None,
     ) -> None:
         if src_id == dst_id:
             raise ValueError("self-loop edges are not allowed")
         with self._lock:
             self._conn.execute(
                 "INSERT OR REPLACE INTO edges("
-                "src_id, dst_id, relation, weight, created_at"
-                ") VALUES (?,?,?,?,?)",
-                (int(src_id), int(dst_id), str(relation), float(weight), time.time()),
+                "src_id, dst_id, relation, weight, created_at, user"
+                ") VALUES (?,?,?,?,?,?)",
+                (
+                    int(src_id),
+                    int(dst_id),
+                    str(relation),
+                    float(weight),
+                    time.time(),
+                    user,
+                ),
             )
 
     def pin(self, node_id: int, pinned: bool = True) -> None:
@@ -265,7 +307,11 @@ class GraphStore:
         return _row_to_node(row) if row else None
 
     def neighbors(
-        self, node_id: int, *, relations: Iterable[str] | None = None
+        self,
+        node_id: int,
+        *,
+        relations: Iterable[str] | None = None,
+        user: str | None = None,
     ) -> list[tuple[Node, str, float]]:
         sql = (
             "SELECT n.*, e.relation AS _rel, e.weight AS _w "
@@ -277,6 +323,9 @@ class GraphStore:
             rels = list(relations)
             sql += f"AND e.relation IN ({','.join('?' * len(rels))}) "
             params.extend(rels)
+        if user is not None:
+            sql += "AND (e.user = ? OR e.user IS NULL) "
+            params.append(user)
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
         return [
@@ -358,12 +407,15 @@ class GraphStore:
 
         with self._lock:
             remaining = self._conn.execute(
-                "SELECT id, title, body FROM nodes ORDER BY id"
+                "SELECT id, title, body, user FROM nodes ORDER BY id"
             ).fetchall()
         for row in remaining:
             nid = int(row["id"])
+            src_user = str(row["user"]) if row["user"] is not None else None
             query_text = f"{row['title']} {str(row['body'])[:100]}"
-            hits = self.recall(query_text, limit=3, expand=False, touch=False)
+            hits = self.recall(
+                query_text, limit=3, expand=False, touch=False, include_all=True
+            )
             for h in hits:
                 if h.node.id != nid:
                     with self._lock:
@@ -373,7 +425,7 @@ class GraphStore:
                         ).fetchone()
                     if not existing:
                         try:
-                            self.link(nid, h.node.id, "related_to")
+                            self.link(nid, h.node.id, "related_to", user=src_user)
                             new_edges += 1
                         except ValueError:
                             pass
@@ -394,6 +446,8 @@ class GraphStore:
         expand: bool = True,
         half_life_days: float = 30.0,
         touch: bool = True,
+        user: str | None = None,
+        include_all: bool = False,
     ) -> list[RecallHit]:
         fts_query = _build_fts_query(query)
         if not fts_query:
@@ -409,6 +463,15 @@ class GraphStore:
             kinds_list = list(kinds)
             sql += f"AND n.kind IN ({','.join('?' * len(kinds_list))}) "
             params.extend(kinds_list)
+        if include_all:
+            pass  # system/admin view: no user scoping
+        elif user is None:
+            # Unidentified viewer sees ONLY the family public layer (NULL),
+            # never another user's private memories.
+            sql += "AND n.user IS NULL "
+        else:
+            sql += "AND (n.user = ? OR n.user IS NULL) "
+            params.append(user)
         sql += "ORDER BY rank LIMIT ?"
         params.append(max(limit * 3, limit))
 
@@ -443,7 +506,12 @@ class GraphStore:
                     hits[src_id].related_edges.append((dst_id, relation))
                     if dst_id not in hits:
                         neighbour = self.get(dst_id)
-                        if neighbour is not None:
+                        if neighbour is not None and (
+                            include_all
+                            or user is None
+                            or neighbour.user == user
+                            or neighbour.user is None
+                        ):
                             base = _decay_score(neighbour, now, half_life_days)
                             hits[dst_id] = RecallHit(
                                 node=neighbour,
@@ -453,7 +521,12 @@ class GraphStore:
                             )
                 if dst_id in hits and src_id not in hits:
                     neighbour = self.get(src_id)
-                    if neighbour is not None:
+                    if neighbour is not None and (
+                        include_all
+                        or user is None
+                        or neighbour.user == user
+                        or neighbour.user is None
+                    ):
                         base = _decay_score(neighbour, now, half_life_days)
                         hits[src_id] = RecallHit(
                             node=neighbour,

@@ -115,42 +115,45 @@ class FallbackConversationAgent(
 
     @staticmethod
     def _resolve_user_key(user_input: conversation.ConversationInput) -> str | None:
-        """Resolve user_key from ConversationInput.
-
-        Priority:
-        1. context.user_id (HA App, deterministric)
-        2. conversation_id → parse → MappingStore → HA user_id
-        3. conversation_id → parse → shadow:{provider}:{ext_id}
-        4. None (global fallback)
-        """
-        # Path 1: HA App deterministric identity
+        """Resolve user_key from ConversationInput (delegates to module helper)."""
         ctx = getattr(user_input, "context", None)
-        if ctx and getattr(ctx, "user_id", None):
-            user_id = ctx.user_id
-            if user_id:
-                return user_id
-
-        # Path 2 & 3: external IM via conversation_id
+        user_id = getattr(ctx, "user_id", None) if ctx else None
         conv_id = getattr(user_input, "conversation_id", None)
-        if conv_id:
-            # Path 2: check MappingStore first
-            mapped = MappingStore.resolve_by_conversation_id(conv_id)
-            if mapped:
-                return mapped
-            # Path 3: shadow identity — parse provider + ext_id
-            from .const import IM_CHANNEL_NAMES
-            for prefix in IM_CHANNEL_NAMES:
-                if conv_id.lower().startswith(prefix.lower()):
-                    provider = IM_CHANNEL_NAMES[prefix]
-                    rest = conv_id[len(prefix):]
-                    parts = rest.split(":", 1)
-                    ext_id = parts[1] if len(parts) >= 2 else parts[0]
-                    shadow_key = f"shadow:{provider.lower()}:{ext_id}"
-                    PersonaStore.touch_shadow(shadow_key)
-                    return shadow_key
+        return resolve_user_key(user_id, conv_id)
 
-        # Path 4: fallback to global
-        return None
+
+def resolve_user_key(
+    user_id: str | None, conversation_id: str | None
+) -> str | None:
+    """Resolve the isolation key for a request.
+
+    Priority:
+    1. explicit user_id (HA App, deterministic)
+    2. conversation_id → MappingStore → HA user_id
+    3. conversation_id → shadow:{provider}:{ext_id}
+    4. None (global fallback)
+
+    Safe to call from tool/API layers that only have an ``llm.LLMContext``.
+    """
+    if user_id:
+        return user_id
+
+    if conversation_id:
+        mapped = MappingStore.resolve_by_conversation_id(conversation_id)
+        if mapped:
+            return mapped
+        from .const import IM_CHANNEL_NAMES
+        for prefix in IM_CHANNEL_NAMES:
+            if conversation_id.lower().startswith(prefix.lower()):
+                provider = IM_CHANNEL_NAMES[prefix]
+                rest = conversation_id[len(prefix):]
+                parts = rest.split(":", 1)
+                ext_id = parts[1] if len(parts) >= 2 else parts[0]
+                shadow_key = f"shadow:{provider.lower()}:{ext_id}"
+                PersonaStore.touch_shadow(shadow_key)
+                return shadow_key
+
+    return None
 
     async def async_process(
         self, user_input: conversation.ConversationInput

@@ -321,12 +321,13 @@ def build_base_prompt(
     text: str,
     conversation_id: str | None,
     runtime_config: ConversationRuntimeConfig,
+    user_key: str | None = None,
 ) -> str:
     del hass
     del text
     del conversation_id
 
-    base_prompt = build_internal_llm_prompt("")
+    base_prompt = build_internal_llm_prompt("", user_key=user_key)
     fitted = _fit_base_prompt(
         base_prompt,
         _build_runtime_preference_sections(runtime_config),

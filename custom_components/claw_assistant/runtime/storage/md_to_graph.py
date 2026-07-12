@@ -113,6 +113,7 @@ def reindex_markdown(
     markdown: str,
     *,
     confidence: float = 1.0,
+    user: str | None = None,
 ) -> dict[str, int]:
     inserted = 0
     updated = 0
@@ -123,6 +124,7 @@ def reindex_markdown(
             body=node.body,
             source_doc=doc_name,
             confidence=confidence,
+            user=user,
         )
         if is_new:
             inserted += 1
@@ -132,11 +134,11 @@ def reindex_markdown(
 
 
 def reindex_many(
-    store: GraphStore, documents: Iterable[tuple[str, str]]
+    store: GraphStore, documents: Iterable[tuple[str, str]], *, user: str | None = None
 ) -> dict[str, int]:
     totals = {"inserted": 0, "updated": 0}
     for doc_name, markdown in documents:
-        result = reindex_markdown(store, doc_name, markdown)
+        result = reindex_markdown(store, doc_name, markdown, user=user)
         totals["inserted"] += result["inserted"]
         totals["updated"] += result["updated"]
     return totals

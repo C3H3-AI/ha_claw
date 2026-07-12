@@ -630,6 +630,7 @@ async def _execute_conversation_turn_inner(
                 text=text,
                 conversation_id=conversation_id,
                 runtime_config=runtime_config,
+                user_key=user_key,
             )
             recovered_context = build_recovered_history_context_prompt(
                 hass,
