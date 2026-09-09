@@ -665,8 +665,15 @@ class EnhancedAPI(llm.API):
     name: str = "HA Crack Enhanced API"
 
     async def async_get_api_instance(self, llm_context: llm.LLMContext) -> llm.APIInstance:
-        tools = build_runtime_tool_list()
-        api_prompt = build_internal_llm_prompt(full=False)
+        # Prompt build can hit disk on the master-prompt cache-miss path
+        # (plugin catalog scan, rules document). Keep it off the event loop.
+        def _build():
+            return (
+                build_runtime_tool_list(),
+                build_internal_llm_prompt(full=False),
+            )
+
+        tools, api_prompt = await self.hass.async_add_executor_job(_build)
         _record_prefix_fingerprint(
             self.hass,
             api_prompt=api_prompt,

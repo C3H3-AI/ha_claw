@@ -3013,17 +3013,17 @@ class PluginManagerTool(llm.Tool):
         if action == "load":
             if not plugin_name:
                 return {"success": False, "error": "plugin_name required"}
-            return hot_load_plugin(hass, plugin_name)
+            return await hass.async_add_executor_job(hot_load_plugin, hass, plugin_name)
 
         if action == "unload":
             if not plugin_name:
                 return {"success": False, "error": "plugin_name required"}
-            return hot_unload_plugin(hass, plugin_name)
+            return await hass.async_add_executor_job(hot_unload_plugin, hass, plugin_name)
 
         if action == "hot_reload":
             if not plugin_name:
                 return {"success": False, "error": "plugin_name required"}
-            return hot_reload_plugin(hass, plugin_name)
+            return await hass.async_add_executor_job(hot_reload_plugin, hass, plugin_name)
 
         if action == "reload_all":
             result = await hass.async_add_executor_job(reload_plugins, hass)

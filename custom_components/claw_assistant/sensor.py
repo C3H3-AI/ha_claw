@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.event import TrackTemplate, async_track_template_result
+from homeassistant.helpers.event import TrackTemplate, async_track_template_result, async_track_time_interval
 from homeassistant.helpers.template import Template, TemplateError
 
 from .const import DOMAIN, VERSION, CONF_ENTRY_TYPE, ENTRY_TYPE_DASHBOARD
@@ -258,6 +258,20 @@ class ClawConfigSensor(SensorEntity):
         self.hass = hass
         self._attr_name = "Claw Config"
 
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        await self.async_update()
+        # should_poll=False so HA never calls async_update; refresh the
+        # disk-backed caches periodically ourselves (off the event loop).
+        self.async_on_remove(
+            async_track_time_interval(
+                self.hass, self._refresh_caches, timedelta(minutes=5)
+            )
+        )
+
+    async def _refresh_caches(self, _now: datetime) -> None:
+        await self.async_update()
+
     @property
     def device_info(self) -> DeviceInfo:
         return DeviceInfo(
@@ -305,14 +319,16 @@ class ClawConfigSensor(SensorEntity):
         except Exception:
             attrs["docs"] = []
         try:
-            from .runtime.storage.plugin_store import list_installed_plugins
-            plugins = list_installed_plugins()
+            # Disk I/O (dir scan + YAML parse) must not run on the event loop;
+            # read the executor-maintained snapshot instead.
+            from .runtime.storage.plugin_store import list_installed_plugins_cached
+            plugins = list_installed_plugins_cached()
             attrs["plugins"] = [p.get("name", p.get("key", "?")) for p in plugins]
         except Exception:
             attrs["plugins"] = []
         try:
-            from .runtime.storage.user_mapping import MappingStore
-            mappings = MappingStore.load()
+            from .runtime.storage.user_mapping import get_cached_user_mappings
+            mappings = get_cached_user_mappings()
             attrs["user_mappings"] = mappings
         except Exception:
             attrs["user_mappings"] = []
@@ -323,4 +339,16 @@ class ClawConfigSensor(SensorEntity):
         return attrs
 
     async def async_update(self) -> None:
+        # Refresh disk-backed caches off the event loop so the synchronous
+        # extra_state_attributes property can serve fresh data without I/O.
+        try:
+            from .runtime.storage.plugin_store import _refresh_installed_plugins_cache_sync
+            await self.hass.async_add_executor_job(_refresh_installed_plugins_cache_sync)
+        except Exception:
+            pass
+        try:
+            from .runtime.storage.user_mapping import refresh_user_mappings_cache
+            await self.hass.async_add_executor_job(refresh_user_mappings_cache)
+        except Exception:
+            pass
         self.async_write_ha_state()

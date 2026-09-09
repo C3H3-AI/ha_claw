@@ -93,6 +93,7 @@ class MappingStore:
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
                 yaml.dump(mappings, f, default_flow_style=False, allow_unicode=True)
+            _MAPPINGS_CACHE["data"] = list(mappings)
             return True
         except Exception as exc:
             LOGGER.error("Failed to save user mapping: %s", exc)
@@ -218,3 +219,23 @@ class MappingStore:
         if len(mappings) == before:
             return False
         return MappingStore.save(mappings)
+
+
+# ── Event-loop-safe mapping snapshot ─────────────────────────────────────
+# MappingStore.load() parses YAML from disk. Event-loop hot paths (sensor
+# attributes, collect_provider_targets) read this snapshot instead; the
+# snapshot is refreshed on the executor thread by refresh_user_mappings_cache
+# and invalidated on every save().
+_MAPPINGS_CACHE: dict[str, Any] = {"data": []}
+
+
+def get_cached_user_mappings() -> list[dict[str, Any]]:
+    """Return the last loaded mapping snapshot (memory only, no disk I/O)."""
+    return list(_MAPPINGS_CACHE["data"])
+
+
+def refresh_user_mappings_cache() -> list[dict[str, Any]]:
+    """Re-read mappings from disk. Call via hass.async_add_executor_job."""
+    data = MappingStore.load()
+    _MAPPINGS_CACHE["data"] = data
+    return data

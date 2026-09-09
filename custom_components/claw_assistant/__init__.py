@@ -85,9 +85,10 @@ async def _async_setup_core_entry(hass: HomeAssistant, entry: ConfigEntry) -> bo
     from .conversation_utils import async_setup_history_store
     await async_setup_history_store(hass)
     await async_setup_runtime(hass, entry)
-    from .runtime.storage.plugin_store import load_all_plugins
+    from .runtime.storage.plugin_store import load_all_plugins, _refresh_installed_plugins_cache_sync
     from .runtime.llm.internal_llm import invalidate_runtime_tool_cache
     loaded_plugins = await hass.async_add_executor_job(load_all_plugins, hass)
+    await hass.async_add_executor_job(_refresh_installed_plugins_cache_sync)
     if loaded_plugins:
         enabled = [p.manifest.name for p in loaded_plugins if p.enabled]
         failed = [p.manifest.name for p in loaded_plugins if not p.enabled]

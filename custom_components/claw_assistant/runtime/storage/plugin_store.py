@@ -78,6 +78,8 @@ __all__ = [
     "get_plugin_tools",
     "get_plugin_tool_registry",
     "list_installed_plugins",
+    "list_installed_plugins_cached",
+    "refresh_installed_plugins_cache",
     "reload_plugins",
     "hot_load_plugin",
     "hot_unload_plugin",
@@ -638,11 +640,51 @@ def list_installed_plugins() -> list[dict[str, Any]]:
     return result
 
 
+# ── Event-loop-safe plugin listing snapshot ──────────────────────────────
+# list_installed_plugins() does disk I/O (dir scan + YAML parse). Hot paths
+# that must not block the event loop (sensor attributes, LLM prompt build)
+# read this snapshot instead; refresh happens on the executor thread.
+_PLUGIN_LIST_CACHE: dict[str, Any] = {"data": [], "stamp": 0.0}
+_PLUGIN_LIST_TTL_SECONDS = 30.0
+
+
+def list_installed_plugins_cached(max_age: float = _PLUGIN_LIST_TTL_SECONDS) -> list[dict[str, Any]]:
+    """Return the last snapshot of installed plugins (memory only).
+
+    Safe to call from the event loop: never touches the filesystem. The
+    snapshot is populated by ``refresh_installed_plugins_cache`` (executor)
+    at startup / plugin load / on demand. Stale data only means a plugin
+    added on disk in the last TTL window is not yet visible to prompt
+    rendering — the management UI always reads the live listing.
+    """
+    return list(_PLUGIN_LIST_CACHE["data"])
+
+
+def _refresh_installed_plugins_cache_sync() -> list[dict[str, Any]]:
+    data = list_installed_plugins()
+    import time as _time
+
+    _PLUGIN_LIST_CACHE["data"] = data
+    _PLUGIN_LIST_CACHE["stamp"] = _time.monotonic()
+    return data
+
+
+async def refresh_installed_plugins_cache(hass: HomeAssistant) -> list[dict[str, Any]]:
+    """Re-scan installed plugins on the executor thread and update the snapshot."""
+    import time as _time
+
+    stamp = float(_PLUGIN_LIST_CACHE["stamp"])
+    if stamp and (_time.monotonic() - stamp) < _PLUGIN_LIST_TTL_SECONDS:
+        return list(_PLUGIN_LIST_CACHE["data"])
+    return await hass.async_add_executor_job(_refresh_installed_plugins_cache_sync)
+
+
 def reload_plugins(hass: HomeAssistant) -> dict[str, Any]:
     global _PLUGIN_STORE, _PLUGIN_TOOLS
     _PLUGIN_STORE.clear()
     _PLUGIN_TOOLS.clear()
     loaded = load_all_plugins(hass)
+    _refresh_installed_plugins_cache_sync()
     return {
         "success": True,
         "loaded": len([p for p in loaded if p.enabled]),
@@ -669,6 +711,12 @@ def hot_load_plugin(hass: HomeAssistant, plugin_name: str) -> dict[str, Any]:
     loaded = analyze_plugin(manifest, hass)
     if not loaded.enabled:
         return {"success": False, "error": loaded.load_error}
+    _refresh_installed_plugins_cache_sync()
+    try:
+        from ..llm.master_prompt import invalidate_master_prompt_cache
+        invalidate_master_prompt_cache()
+    except Exception:
+        pass
     return {
         "success": True,
         "plugin": manifest.name,
@@ -692,11 +740,17 @@ def hot_unload_plugin(hass: HomeAssistant, plugin_name: str) -> dict[str, Any]:
     tools = _PLUGIN_TOOLS.pop(key, [])
     clear_plugin_registrations(loaded.manifest.name)
     invalidate_runtime_tool_cache()
+    try:
+        from ..llm.master_prompt import invalidate_master_prompt_cache
+        invalidate_master_prompt_cache()
+    except Exception:
+        pass
     module = loaded.module
     if module:
         module_name = getattr(module, "__name__", None)
         if module_name and module_name in sys.modules:
             del sys.modules[module_name]
+    _refresh_installed_plugins_cache_sync()
     return {
         "success": True,
         "plugin": loaded.manifest.name,

@@ -183,13 +183,13 @@ def _load_mapping_targets(mappings: list[dict[str, str]]) -> dict[str, dict[str,
 
 
 async def collect_provider_targets(hass: HomeAssistant) -> dict[str, dict[str, str]]:
-    from .user_mapping import MappingStore
+    from .user_mapping import MappingStore, refresh_user_mappings_cache
 
     merged: dict[str, dict[str, str]] = {}
     for source in (
         await _load_cn_im_hub_targets(hass),
         _load_history_targets(hass),
-        _load_mapping_targets(MappingStore.load()),
+        _load_mapping_targets(await hass.async_add_executor_job(refresh_user_mappings_cache)),
     ):
         for provider, targets in source.items():
             bucket = merged.setdefault(provider, {})

@@ -73,7 +73,9 @@ def _build_capability_overview() -> str:
 
 def _build_plugin_catalog() -> str:
     try:
-        from ..storage.plugin_store import get_loaded_plugins, list_installed_plugins
+        # Memory-only snapshot: this runs on the event loop inside prompt
+        # build; the live scan would block on disk I/O (dir scan + YAML).
+        from ..storage.plugin_store import get_loaded_plugins, list_installed_plugins_cached
     except Exception:
         return ""
     loaded = get_loaded_plugins()
@@ -86,7 +88,7 @@ def _build_plugin_catalog() -> str:
         items.append(f"- {name} [loaded, {tool_count} tools]")
     if not items:
         try:
-            installed = list_installed_plugins()
+            installed = list_installed_plugins_cached()
         except Exception:
             installed = []
         for p in installed:
