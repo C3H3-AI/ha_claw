@@ -967,6 +967,38 @@ async def async_handle_chat_command(
     return outcome
 
 
+async def _send_menu_card(hass, conversation_id: str) -> bool:
+    """Push the interactive dropdown menu card to the originating chat.
+
+    Works like the /help text reply: resolve the target from conversation_id
+    and send the card back through the same cn_im_hub channel the message came
+    from. Only feishu renders it as a card today; other channels fall back to
+    normal chat. Returns True if sent, False if the channel is unsupported.
+    """
+    from .runtime.utils.data_path import BUNDLED_DATA_DIR
+
+    if not conversation_id or not conversation_id.startswith("feishu:"):
+        return False
+
+    target = conversation_id.split(":", 1)[1]
+    if not target:
+        return False
+
+    card_path = BUNDLED_DATA_DIR / "menu_card.json"
+    try:
+        card_json = card_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+
+    await hass.services.async_call(
+        "cn_im_hub",
+        "send_message",
+        {"channel": "feishu_chat_id", "target": target, "card_json": card_json},
+        blocking=True,
+    )
+    return True
+
+
 async def _dispatch_chat_command(
     hass,
     user_input: conversation.ConversationInput,
@@ -986,6 +1018,15 @@ async def _dispatch_chat_command(
                 _build_help_message(command.args, language=lang),
             )
         )
+
+    if command.name == "menu":
+        sent = await _send_menu_card(hass, conversation_id)
+        if sent:
+            return ChatCommandOutcome(
+                result=_build_result(user_input, "已为你打开命令菜单 👇（选下拉项即执行）")
+            )
+        # Unsupported channel (e.g. wechat/web): fall back to normal chat.
+        return None
 
     if command.name == "commands":
         return ChatCommandOutcome(result=_build_result(user_input, _build_command_catalog_message(lang)))

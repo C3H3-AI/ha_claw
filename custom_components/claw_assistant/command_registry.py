@@ -85,6 +85,14 @@ CORE_COMMAND_REGISTRY: tuple[CommandSpec, ...] = (
         aliases=("h",),
     ),
     CommandSpec(
+        name="menu",
+        usage="/menu",
+        description="Show the interactive command menu card (dropdown).",
+        description_zh="显示可交互的命令菜单卡片（下拉式）。",
+        category="Info",
+        aliases=("m",),
+    ),
+    CommandSpec(
         name="commands",
         usage="/commands",
         description="List all core commands and generated skill commands.",
