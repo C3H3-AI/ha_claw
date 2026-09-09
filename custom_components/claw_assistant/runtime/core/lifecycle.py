@@ -64,6 +64,41 @@ from ..storage.workspace_store import async_setup_workspace_store
 LOGGER = logging.getLogger(__name__)
 
 
+async def _warm_aihub_imports(hass: HomeAssistant) -> None:
+    """Import the ai_hub module tree on the executor thread.
+
+    ai_hub executes blocking file I/O at import time (consts/defaults.py
+    reads ai_providers.json when its package __init__ runs). Our ai_hub
+    patch functions import those modules from the event loop, which HA
+    flags as a blocking call. Pre-importing here on a worker thread makes
+    every subsequent import a sys.modules cache hit.
+    """
+
+    def _import_all() -> None:
+        import importlib
+
+        for mod in (
+            "custom_components.ai_hub.consts",
+            "custom_components.ai_hub.providers.base",
+            "custom_components.ai_hub.providers.openai_compatible",
+            "custom_components.ai_hub.providers.anthropic_compatible",
+            "custom_components.ai_hub.providers.ollama_compatible",
+            "custom_components.ai_hub.providers.edge_tts",
+            "custom_components.ai_hub.providers.siliconflow_stt",
+            "custom_components.ai_hub.markdown_filter",
+            "custom_components.ai_hub.http",
+            "custom_components.ai_hub.entity",
+            "custom_components.ai_hub.conversation",
+            "custom_components.ai_hub.intents",
+        ):
+            try:
+                importlib.import_module(mod)
+            except Exception:  # noqa: BLE001 — ai_hub may be absent or broken
+                break
+
+    await hass.async_add_executor_job(_import_all)
+
+
 async def async_setup_runtime(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
     from ..hooks.hook import install_conversation_hook
@@ -81,6 +116,12 @@ async def async_setup_runtime(hass: HomeAssistant, entry: ConfigEntry) -> None:
     await async_setup_curator(hass)
     await async_setup_frontend_loader(hass)
     await async_downgrade_intents_package(hass)
+    # The ai_hub patch functions below import ai_hub modules synchronously.
+    # That import chain runs ai_hub's module-level code (consts/defaults.py
+    # reads ai_providers.json), which HA flags as a blocking call on the
+    # event loop. Warm the import on the executor thread first so every
+    # later import in the patch group is a cache hit.
+    await _warm_aihub_imports(hass)
     patch_local_intents(hass)
     patch_websocket_binary_handler_noise(hass)
     patch_chat_log_result_extraction(hass)
