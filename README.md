@@ -272,3 +272,18 @@ No. After removing the integration, all Hooks automatically revert and HA return
 ## Source Code & Feedback
 - **Maintainer**: [@knoop7](https://github.com/knoop7)
 
+---
+
+## Fork 维护说明（C3H3-AI/ha_claw）
+
+本仓库是 [ha-china/ha_claw](https://github.com/ha-china/ha_claw) 的 fork，承载 **v9.4 / v9.5（G1–G6）功能线**：
+
+- G1 硬边界规则层（rules_store + prompt 注入 + 规则面板）
+- G2/G3 定时任务面板 + 被动学习确认流
+- G4/G6 个人/空间记忆分离 + 动态审计页
+- G5 成员权限与分级确认（PolicyGate 三态 + approval/audit + 成员面板）
+- G7 用户管理统一入口 + 对话历史配置化（成员名称可读化、任务 objective、历史保留时长可调）
+- `/menu` 飞书交互式命令菜单卡片
+
+> ⚠️ **重要**：上游已于 2026-08-20 通过 [PR #19](https://github.com/ha-china/ha_claw/pull/19) 将上述功能的承载提交（PR #16）整体 revert，上游版本回退至 9.2.0。**本 fork 是该功能线的唯一延续**——请勿直接 `git merge upstream/master`，会把上述功能全部删除。后续只从上游 cherry-pick 独立 bugfix，且需逐个确认不触碰 G1–G7 相关文件（`runtime/storage/rules_store.py`、`approval_store.py`、`audit_store.py`、`authorization.py`、`pending_insights.py`、`heartbeat_ticker.py` 等）。
+
