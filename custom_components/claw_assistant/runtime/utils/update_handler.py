@@ -232,6 +232,9 @@ def _dismiss_update_notification(hass: HomeAssistant) -> None:
 
 
 async def async_check_update(hass: HomeAssistant, _=None) -> None:
+    if not hasattr(hass, 'data'):
+        LOGGER.debug('async_check_update: 非 hass 上下文(%s)，跳过', type(hass).__name__)
+        return
     hacs = _get_hacs(hass)
     if hacs is None:
         LOGGER.debug("HACS not loaded, skip")
