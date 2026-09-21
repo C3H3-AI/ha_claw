@@ -1,3 +1,31 @@
+# ha_claw（自维护 fork）
+
+> ⚠️ 这是 `ha-china/ha_claw` 的自用 fork，**运行在生产 HA（192.168.3.3）上**。
+> 上游维护者与我们的开发路线已分叉（PR #14/#15/#16 被关闭，#16 被 revert），
+> **不再向上游提 PR** —— 所有改动先落在本仓库 main，再部署到生产。
+
+## 与上游的差异（自维护补丁）
+
+| 补丁 | 说明 |
+|---|---|
+| update_handler hass 防护 | `async_check_update` 入口校验首参，防止定时回调签名误用导致每 2h 一次 AttributeError |
+| user_mapping G5 扩展 | 成员元数据：role(owner/member)、allowed_areas、label、created_at |
+| persona 内存缓存 | 消除每轮对话的同步 markdown 读（事件循环阻塞） |
+| __init__ 前端静态资源 | HomeAssistantView 注册 dashboard 静态文件 |
+
+## 部署方式
+
+生产机 `/config/custom_components/claw_assistant/` 直接与本仓库 main 同步
+（2026-09-21 校验：216 文件完全一致）。
+
+## 更新流程
+
+1. 在生产机修改代码 → `ast.parse` 语法验证
+2. 打包对比本仓库 main → 差异文件逐个提交
+3. HA 里重载集成生效
+
+---
+
 <img width="2004" height="362" alt="Mac_2026-05-05 01 07 01" src="https://github.com/user-attachments/assets/65292c6e-8f15-423b-8c44-26e3a0c22527" />
 
 ---
