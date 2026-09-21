@@ -1052,10 +1052,13 @@ class ClawDashboardView(HomeAssistantView):
         from aiohttp import web
         hass = request.app["hass"]
 
+        # Reading the dashboard HTML must not block the event loop.
         www_file = Path(__file__).parent / "www" / "claw_control.html"
-        if www_file.is_file():
+        if await hass.async_add_executor_job(www_file.is_file):
             try:
-                text = www_file.read_text(encoding="utf-8")
+                text = await hass.async_add_executor_job(
+                    www_file.read_text, "utf-8"
+                )
             except Exception:
                 text = "<h1>Claw dashboard file could not be read</h1>"
             return web.Response(
@@ -1872,10 +1875,12 @@ class ClawDashboardView(HomeAssistantView):
             _ca_version = "unknown"
             _ca_path = _os.path.join(hass.config.config_dir,
                                      "custom_components", "claw_assistant", "manifest.json")
-            if _os.path.isfile(_ca_path):
+            if await hass.async_add_executor_job(_os.path.isfile, _ca_path):
                 try:
-                    with open(_ca_path, encoding="utf-8") as _f:
-                        _ca_version = _json.load(_f).get("version", "unknown")
+                    _raw = await hass.async_add_executor_job(
+                        Path(_ca_path).read_text, "utf-8"
+                    )
+                    _ca_version = _json.loads(_raw).get("version", "unknown")
                 except Exception:
                     pass
 
