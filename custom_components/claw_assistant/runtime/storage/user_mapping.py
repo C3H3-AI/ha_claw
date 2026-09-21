@@ -39,13 +39,29 @@ class MappingStore:
 
     @staticmethod
     def resolve(provider: str | None, ext_id: str | None) -> str | None:
+        """Resolve ha_user_id from the in-memory snapshot (no disk I/O).
+
+        Hot path: called on every inbound conversation turn. Reading YAML
+        from disk here blocks the event loop, so we read the snapshot that
+        refresh_user_mappings_cache() keeps warm instead. Falls back to a
+        single disk read only when the snapshot has never been populated.
+        """
         if not provider or not ext_id:
             return None
-        mappings = MappingStore.load()
+        mappings = MappingStore._get_cached_or_load()
         for entry in mappings:
             if entry.get("provider") == provider and entry.get("ext_id") == ext_id:
                 return entry.get("ha_user_id")
         return None
+
+    @staticmethod
+    def _get_cached_or_load() -> list[dict[str, Any]]:
+        """Return the cached snapshot, loading from disk only if unfilled."""
+        cached = _MAPPINGS_CACHE.get("data")
+        if cached:
+            return cached
+        # Cold start: populate the snapshot once. Subsequent calls hit memory.
+        return refresh_user_mappings_cache()
 
     @staticmethod
     def resolve_by_conversation_id(conversation_id: str | None) -> str | None:
@@ -142,7 +158,7 @@ class MappingStore:
         key = str(user_key)
         if key.startswith("shadow:"):
             return None
-        for entry in MappingStore.load():
+        for entry in MappingStore._get_cached_or_load():
             if entry.get("ha_user_id") == key:
                 return entry
             compound = f"{entry.get('provider', '')}:{entry.get('ext_id', '')}"
