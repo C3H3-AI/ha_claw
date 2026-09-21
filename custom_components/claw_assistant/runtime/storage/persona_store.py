@@ -23,6 +23,10 @@ _SHADOW_MAX = 20
 _PERSONA_DIR = "workspace/personas"
 _SHADOW_INDEX_FILE = "workspace/shadow_index.json"
 
+# In-memory persona cache keyed by user_key. Avoids synchronous markdown
+# reads on the event loop for every inbound conversation turn.
+_PERSONA_CACHE: dict[str, dict[str, str]] = {}
+
 _SYSTEM_PROMPT_KEYS = ("Name", "Role", "Tone", "Call me", "Language")
 _CONTEXT_PREFIX_KEYS = ("Name", "Call me")
 
@@ -117,11 +121,22 @@ class PersonaStore:
 
     @staticmethod
     def get(user_key: str | None) -> dict[str, str]:
+        """Return the persona for user_key, served from an in-memory cache.
+
+        Hot path: called on every inbound turn. Reading the markdown file
+        synchronously here blocks the event loop, so parsed personas are
+        cached and invalidated by set()/delete().
+        """
         if user_key is None:
             return {}
 
+        cached = _PERSONA_CACHE.get(user_key)
+        if cached is not None:
+            return dict(cached)
+
         path = _persona_path(user_key)
         if not path.exists():
+            _PERSONA_CACHE[user_key] = {}
             return {}
 
         try:
@@ -130,7 +145,9 @@ class PersonaStore:
             LOGGER.warning("Cannot read persona %s", path)
             return {}
 
-        return _parse_md_block(content)
+        parsed = _parse_md_block(content)
+        _PERSONA_CACHE[user_key] = parsed
+        return dict(parsed)
 
     @staticmethod
     def ensure(user_key: str | None, hass: HomeAssistant) -> dict[str, str]:
@@ -175,6 +192,8 @@ class PersonaStore:
             path.write_text(content, encoding="utf-8")
         except OSError as exc:
             LOGGER.error("Cannot write persona %s: %s", path, exc)
+        else:
+            _PERSONA_CACHE[user_key] = dict(data)
 
     @staticmethod
     def delete(user_key: str) -> None:
@@ -184,6 +203,8 @@ class PersonaStore:
                 path.unlink()
         except OSError as exc:
             LOGGER.error("Cannot delete persona %s: %s", path, exc)
+        finally:
+            _PERSONA_CACHE.pop(user_key, None)
 
     @staticmethod
     def build_system_prompt(user_key: str | None) -> str:
