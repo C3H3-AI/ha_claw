@@ -9,7 +9,6 @@ from urllib.parse import quote, urlparse
 
 import aiohttp
 import voluptuous as vol
-import voluptuous_serialize
 from homeassistant import config_entries, data_entry_flow
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
@@ -30,6 +29,31 @@ _SHELL_MAX_OUTPUT = 64 * 1024
 _SHELL_DEFAULT_TIMEOUT = 30
 _SHELL_MAX_TIMEOUT = 600
 _HA_TOKEN_RE = re.compile(r"ha_token\s*[:：]\s*`?([A-Za-z0-9._\-]+)`?")
+
+
+def _serialize_form_schema(schema: object) -> object:
+    """Serialize a config-flow schema into the field list the frontend receives.
+
+    HA 2026.4 replaced voluptuous_serialize with probatio.to_field_list; the
+    old third-party module is no longer installed with Home Assistant, so
+    importing it eagerly made this integration fail to load. Prefer probatio
+    and fall back to voluptuous_serialize only on older releases.
+    """
+    try:
+        from probatio import to_field_list
+
+        return to_field_list(schema, custom_serializer=cv.custom_serializer)
+    except ImportError:
+        pass
+    try:
+        import voluptuous_serialize
+
+        return voluptuous_serialize.convert(
+            schema, custom_serializer=cv.custom_serializer
+        )
+    except ImportError:
+        _LOGGER.debug("No schema serializer available; config flow form left empty")
+        return []
 
 
 def _read_ha_token_from_tools() -> str | None:
@@ -449,9 +473,7 @@ def _prepare_flow_result_json(
     schema = result.get("data_schema")
     fields: list[dict[str, object]] = []
     if schema is not None:
-        serialized = voluptuous_serialize.convert(
-            schema, custom_serializer=cv.custom_serializer
-        )
+        serialized = _serialize_form_schema(schema)
         fields = _extract_serialized_schema_fields(serialized)
     example_params: dict[str, object] = {"flow_id": flow_id}
     for f in fields:

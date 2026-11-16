@@ -1095,6 +1095,16 @@ def _install_recognize_intent_hook(hass) -> None:
     if hass.data.get(_INTENT_PATCH_KEY):
         return
 
+    # HA 2026.10 moved intent recognition to the pipeline processor, so
+    # PipelineRun no longer carries recognize_intent. Without this guard the
+    # AttributeError aborted the whole claw_assistant setup.
+    if not hasattr(PipelineRun, "recognize_intent"):
+        _LOGGER.info(
+            "PipelineRun.recognize_intent is gone in this Home Assistant version; "
+            "goal-continuation hook skipped"
+        )
+        return
+
     _original_recognize = PipelineRun.recognize_intent
 
     async def _hooked_recognize_intent(self, intent_input, conversation_id, conversation_extra_system_prompt):
