@@ -358,11 +358,37 @@ def unpatch_local_intents() -> None:
     LOGGER.debug("Restored async_handle_intents after claw_assistant unload")
 
 
+def _ha_version_at_least(major: int, minor: int) -> bool:
+    """Return True when the running Home Assistant is >= major.minor."""
+    try:
+        from homeassistant.const import MAJOR_VERSION, MINOR_VERSION
+
+        return (MAJOR_VERSION, MINOR_VERSION) >= (major, minor)
+    except Exception:  # noqa: BLE001 — never break setup on a version probe
+        return False
+
+
+# HA 2026.8 switched conversation/intents to APIs that only exist in the current
+# home-assistant-intents package (get_intent_info and friends). Force-downgrading
+# the package there breaks conversation, mobile_app, ai_task, esphome, wyoming and
+# every integration that builds intent handlers, so the downgrade is skipped.
+_INTENTS_DOWNGRADE_HA_CEILING = (2026, 8)
+
+
 async def async_downgrade_intents_package(hass: HomeAssistant) -> None:
     import os
     import sys
 
     if os.environ.get(_INTENTS_DOWNGRADE_DONE) == "1":
+        return
+
+    if _ha_version_at_least(*_INTENTS_DOWNGRADE_HA_CEILING):
+        os.environ[_INTENTS_DOWNGRADE_DONE] = "1"
+        LOGGER.info(
+            "Skipping home-assistant-intents downgrade: Home Assistant %s.%s+ "
+            "requires the current intents package",
+            *_INTENTS_DOWNGRADE_HA_CEILING,
+        )
         return
 
     def _check_current_version() -> str | None:
@@ -688,19 +714,33 @@ def patch_hide_tool_calls_from_pipeline(hass: HomeAssistant) -> None:
     PipelineRun.process_event = filtered_process_event
     setattr(PipelineRun, _PIPELINE_FILTER_ORIGINAL, original_process_event)
 
-    original_text_to_speech = PipelineRun.text_to_speech
+    # HA 2026.10 moved the pipeline stages out of PipelineRun; text_to_speech
+    # (and recognize_intent) live on the pipeline processor now. Skip the TTS
+    # hook when the method is gone instead of failing the whole setup.
+    if hasattr(PipelineRun, "text_to_speech"):
+        original_text_to_speech = PipelineRun.text_to_speech
 
-    async def filtered_text_to_speech(self, tts_input, override_media_path=None):
-        if tts_input and _agent_is_ours(self):
-            tts_input = _clean_for_tts(tts_input)
-        return await original_text_to_speech(self, tts_input, override_media_path=override_media_path)
+        async def filtered_text_to_speech(self, tts_input, override_media_path=None):
+            if tts_input and _agent_is_ours(self):
+                tts_input = _clean_for_tts(tts_input)
+            return await original_text_to_speech(
+                self, tts_input, override_media_path=override_media_path
+            )
 
-    PipelineRun.text_to_speech = filtered_text_to_speech
-    setattr(PipelineRun, "_claw_original_text_to_speech", original_text_to_speech)
+        PipelineRun.text_to_speech = filtered_text_to_speech
+        setattr(PipelineRun, "_claw_original_text_to_speech", original_text_to_speech)
+        patched_tts = True
+    else:
+        patched_tts = False
+        LOGGER.info(
+            "PipelineRun.text_to_speech is gone in this Home Assistant version; "
+            "TTS clean-up hook skipped"
+        )
 
     setattr(PipelineRun, _PIPELINE_FILTER_PATCHED, True)
     LOGGER.debug(
-        "Patched PipelineRun.process_event + text_to_speech for claw_assistant pipelines"
+        "Patched PipelineRun.process_event%s for claw_assistant pipelines",
+        " + text_to_speech" if patched_tts else "",
     )
 
 

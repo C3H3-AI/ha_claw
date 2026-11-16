@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -115,32 +117,53 @@ async def async_setup_runtime(hass: HomeAssistant, entry: ConfigEntry) -> None:
     await async_setup_tmp_cleanup(hass)
     await async_setup_curator(hass)
     await async_setup_frontend_loader(hass)
-    await async_downgrade_intents_package(hass)
+    await _safe_patch("intents-downgrade", async_downgrade_intents_package, hass)
     # The ai_hub patch functions below import ai_hub modules synchronously.
     # That import chain runs ai_hub's module-level code (consts/defaults.py
     # reads ai_providers.json), which HA flags as a blocking call on the
     # event loop. Warm the import on the executor thread first so every
     # later import in the patch group is a cache hit.
     await _warm_aihub_imports(hass)
-    patch_local_intents(hass)
-    patch_websocket_binary_handler_noise(hass)
-    patch_chat_log_result_extraction(hass)
-    patch_hide_tool_calls_from_pipeline(hass)
-    patch_strip_thinking_content_serialization(hass)
-    patch_tool_progress(hass)
-    patch_apiinstance_tool_fallback(hass)
-    patch_global_response_format(hass)
-    patch_pipeline_timeout(hass)
-    patch_aihub_provider_timeout(hass)
-    patch_aihub_markdown_filter(hass)
-    patch_aihub_dynamic_max_tokens(hass)
-    patch_aihub_image_url_retry(hass)
-    patch_pipeline_websocket_detach(hass)
-    await async_patch_openai_allow_empty_key(hass)
-    install_official_websocket_process_hook(hass)
-    setup_ai_coordinator(hass, entry)
-    install_conversation_hook(hass, entry)
-    _patch_ai_hub_intent_bypass()
+    for name, patch in (
+        ("local-intents", patch_local_intents),
+        ("websocket-binary-noise", patch_websocket_binary_handler_noise),
+        ("chat-log-result", patch_chat_log_result_extraction),
+        ("pipeline-tool-hiding", patch_hide_tool_calls_from_pipeline),
+        ("thinking-strip", patch_strip_thinking_content_serialization),
+        ("tool-progress", patch_tool_progress),
+        ("apiinstance-fallback", patch_apiinstance_tool_fallback),
+        ("global-response-format", patch_global_response_format),
+        ("pipeline-timeout", patch_pipeline_timeout),
+        ("aihub-provider-timeout", patch_aihub_provider_timeout),
+        ("aihub-markdown-filter", patch_aihub_markdown_filter),
+        ("aihub-max-tokens", patch_aihub_dynamic_max_tokens),
+        ("aihub-image-retry", patch_aihub_image_url_retry),
+        ("pipeline-websocket-detach", patch_pipeline_websocket_detach),
+    ):
+        await _safe_patch(name, patch, hass)
+    await _safe_patch("openai-empty-key", async_patch_openai_allow_empty_key, hass)
+    await _safe_patch(
+        "websocket-process-hook", install_official_websocket_process_hook, hass
+    )
+    await _safe_patch("ai-coordinator", setup_ai_coordinator, hass, entry)
+    await _safe_patch("conversation-hook", install_conversation_hook, hass, entry)
+    await _safe_patch("ai-hub-intent-bypass", _patch_ai_hub_intent_bypass)
+
+
+async def _safe_patch(name: str, func: Any, *args: Any) -> None:
+    """Run one hook installation step without aborting the whole setup.
+
+    A single Home Assistant internals change used to raise out of
+    async_setup_runtime, which surfaced as ConfigEntryNotReady/setup_error and
+    took the entire integration down. Each step now logs and continues.
+    """
+    try:
+        result = func(*args)
+        if inspect.isawaitable(result):
+            await result
+    except Exception as exc:  # noqa: BLE001 — one broken hook must not abort setup
+        LOGGER.warning("claw_assistant hook '%s' failed to install: %s", name, exc)
+
 
 
 def _patch_ai_hub_intent_bypass() -> None:
@@ -173,21 +196,39 @@ async def async_unload_runtime(hass: HomeAssistant) -> None:
     await async_unload_tmp_cleanup(hass)
     await async_unload_curator(hass)
     async_unload_frontend_loader(hass)
-    uninstall_conversation_hook(hass)
-    uninstall_official_websocket_process_hook(hass)
-    unpatch_tool_progress()
-    unpatch_global_response_format()
-    unpatch_apiinstance_tool_fallback()
-    unpatch_strip_thinking_content_serialization()
-    unpatch_hide_tool_calls_from_pipeline()
-    unpatch_chat_log_result_extraction()
-    unpatch_local_intents()
-    unpatch_websocket_binary_handler_noise()
-    unpatch_pipeline_timeout()
-    unpatch_aihub_provider_timeout()
-    unpatch_aihub_dynamic_max_tokens()
-    unpatch_aihub_image_url_retry()
-    unpatch_pipeline_websocket_detach(hass)
-    unpatch_openai_allow_empty_key()
-    unpatch_aihub_markdown_filter()
+    for name, uninstall, args in (
+        ("conversation-hook", uninstall_conversation_hook, (hass,)),
+        (
+            "websocket-process-hook",
+            uninstall_official_websocket_process_hook,
+            (hass,),
+        ),
+        ("tool-progress", unpatch_tool_progress, ()),
+        ("global-response-format", unpatch_global_response_format, ()),
+        ("apiinstance-fallback", unpatch_apiinstance_tool_fallback, ()),
+        (
+            "thinking-strip",
+            unpatch_strip_thinking_content_serialization,
+            (),
+        ),
+        ("pipeline-tool-hiding", unpatch_hide_tool_calls_from_pipeline, ()),
+        ("chat-log-result", unpatch_chat_log_result_extraction, ()),
+        ("local-intents", unpatch_local_intents, ()),
+        ("websocket-binary-noise", unpatch_websocket_binary_handler_noise, ()),
+        ("pipeline-timeout", unpatch_pipeline_timeout, ()),
+        ("aihub-provider-timeout", unpatch_aihub_provider_timeout, ()),
+        ("aihub-max-tokens", unpatch_aihub_dynamic_max_tokens, ()),
+        ("aihub-image-retry", unpatch_aihub_image_url_retry, ()),
+        ("pipeline-websocket-detach", unpatch_pipeline_websocket_detach, (hass,)),
+        ("openai-empty-key", unpatch_openai_allow_empty_key, ()),
+        ("aihub-markdown-filter", unpatch_aihub_markdown_filter, ()),
+    ):
+        try:
+            result = uninstall(*args)
+            if inspect.isawaitable(result):
+                await result
+        except Exception as exc:  # noqa: BLE001 — unload must always continue
+            LOGGER.warning(
+                "claw_assistant hook '%s' failed to uninstall: %s", name, exc
+            )
     async_unload_internal_llm(hass)
